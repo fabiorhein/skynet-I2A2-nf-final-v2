@@ -1,5 +1,6 @@
+import logging
 from ..tools import fiscal_validator
-from typing import Dict, Any
+from typing import Dict, Any, Union, List, Tuple
 
 
 def classify_document(parsed: Dict[str, Any]) -> Dict[str, Any]:
@@ -19,8 +20,18 @@ def classify_document(parsed: Dict[str, Any]) -> Dict[str, Any]:
     # Get CFOP from document or first item
     cfop = None
     try:
-        cfop = parsed.get('cfop') or (parsed.get('itens', [])[0] or {}).get('cfop')
-    except (IndexError, TypeError, AttributeError):
+        # Primeiro tenta obter o CFOP diretamente do documento
+        cfop = parsed.get('cfop')
+        
+        # Se não encontrou, tenta obter do primeiro item
+        if not cfop:
+            itens = parsed.get('itens', [])
+            # Verifica se itens é uma lista e não está vazia
+            if isinstance(itens, (list, tuple)) and itens and isinstance(itens[0], dict):
+                cfop = itens[0].get('cfop')
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.warning(f'Erro ao obter CFOP: {str(e)}')
         cfop = None
     
     tipo = 'unknown'

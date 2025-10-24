@@ -1,124 +1,491 @@
-"""Basic fiscal validations for documents.
+"""Módulo de validação fiscal para documentos fiscais.
 
-Returns a dict with status and list of issues.
+Este módulo contém funções para validar diversos aspectos de documentos fiscais,
+como CNPJ, cálculos de impostos, CFOP, NCM e outros campos obrigatórios.
 """
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 import re
+import logging
+from decimal import Decimal, ROUND_HALF_UP
+
+# Configuração de logging
+logger = logging.getLogger(__name__)
+
+# Constantes para validação
+CFOP_ENTRADA = {'1', '2', '3', '5.6'}
+CFOP_SAIDA = {'5', '6', '7'}
+CST_ICMS_VALIDOS = {
+    '00', '10', '20', '30', '40', '41', '50', '51', '60', '70',
+    '90', '101', '102', '103', '201', '202', '203', '300', '400',
+    '500', '900', 'ST'
+}
+CST_IPI_VALIDOS = {
+    '00', '01', '02', '03', '04', '05', '49', '50', '51', '52',
+    '53', '54', '55', '99'
+}
+CST_PIS_COFINS_VALIDOS = {
+    '01', '02', '03', '04', '05', '06', '07', '08', '09', '49',
+    '50', '51', '52', '53', '54', '55', '56', '60', '61', '62',
+    '63', '64', '65', '66', '67', '70', '71', '72', '73', '74',
+    '75', '98', '99'
+}
+
+# Tabelas de referência
+TABELA_CFOP = {
+    '1101': 'Compra para industrialização',
+    '1102': 'Compra para comercialização',
+    '1401': 'Compra para industrialização de mercadoria sujeita a ST',
+    '1403': 'Compra para comercialização em operação com ST',
+    '2101': 'Compra para industrialização',
+    '2102': 'Compra para comercialização',
+    '2401': 'Compra para industrialização de mercadoria sujeita a ST',
+    '2403': 'Compra para comercialização em operação com ST',
+    '3101': 'Venda de produção do estabelecimento',
+    '3102': 'Venda de mercadoria adquirida ou recebida de terceiros',
+    '3403': 'Venda de mercadoria sujeita a ST',
+    '5101': 'Venda de produção do estabelecimento',
+    '5102': 'Venda de mercadoria adquirida ou recebida de terceiros',
+    '5405': 'Venda de mercadoria sujeita a ST',
+    '5656': 'Venda de ativo imobilizado',
+    '5667': 'Venda de combustível ou lubrificante de produção do estabelecimento',
+    '5933': 'Prestação de serviço de transporte por conta de ordem de terceiros',
+    '6101': 'Venda para industrialização',
+    '6102': 'Venda para comercialização',
+    '6403': 'Venda de mercadoria sujeita a ST',
+    '7101': 'Venda de produção do estabelecimento',
+    '7102': 'Venda de mercadoria adquirida ou recebida de terceiros',
+    '7403': 'Venda de mercadoria sujeita a ST',
+}
+
+# Tabela de CST ICMS para CSOSN (Simples Nacional)
+CSOSN_VALIDOS = {
+    '101', '102', '103', '201', '202', '203', '300', '400', '500', '900'
+}
+
+# Tabela de NCM (exemplos)
+NCM_VALIDOS = {
+    '22030010': 'Cervejas de malte',
+    '22030020': 'Chope',
+    '22041000': 'Vinhos de uvas frescas',
+    '22042100': 'Vinhos espumantes',
+    '22042900': 'Outros vinhos',
+    '22083000': 'Conhaques',
+    '22084000': 'Uísque',
+    '22085000': 'Rum e outras aguardentes de cana-de-açúcar',
+    '22086000': 'Gin e genebras',
+    '22087000': 'Licores e outras bebidas espirituosas',
+    '22089000': 'Aguardentes',
+    '22071010': 'Álcool etílico não desnaturado',
+    '22071090': 'Outros álcoois etílicos',
+    '22082000': 'Aguardente',
+    '22089000': 'Outras bebidas espirituosas',
+    '22090000': 'Vinagre e seus sucedâneos',
+}
+
+def _log_validation(level: str, message: str, details: Optional[Dict] = None):
+    """Registra mensagens de validação no log."""
+    log_msg = f"[Validação Fiscal] {message}"
+    if details:
+        log_msg += f" | Detalhes: {details}"
+    
+    if level == 'error':
+        logger.error(log_msg)
+    elif level == 'warning':
+        logger.warning(log_msg)
+    else:
+        logger.info(log_msg)
 
 
 def _only_digits(s: str) -> str:
-    return re.sub(r"\D", "", s or "")
-
-
-def validate_cnpj(cnpj: str) -> bool:
-    """Validate CNPJ using modulus 11 algorithm.
+    """Remove todos os caracteres não numéricos de uma string.
     
     Args:
-        cnpj: CNPJ to validate (can be formatted or just numbers)
+        s: String de entrada que pode conter caracteres não numéricos
         
     Returns:
-        bool: True if CNPJ is valid, False otherwise
+        String contendo apenas dígitos numéricos
+    """
+    if s is None:
+        return ""
+    return re.sub(r"\D", "", str(s))
+
+
+def validate_cnpj(cnpj: str) -> Tuple[bool, str]:
+    """Valida um CNPJ usando o algoritmo módulo 11.
+    
+    Args:
+        cnpj: CNPJ a ser validado (pode estar formatado ou não)
+        
+    Returns:
+        Tuple[bool, str]: (True, '') se válido, (False, mensagem_erro) caso contrário
     """
     if not cnpj:
-        return False
-        
-    # Remove non-numeric characters
-    cnpj = _only_digits(cnpj)
+        _log_validation('error', 'CNPJ não informado')
+        return False, 'CNPJ não informado'
     
-    # Check if all digits are the same (invalid CNPJ)
-    if len(set(cnpj)) == 1:
-        return False
-        
-    # Check length
-    if len(cnpj) != 14:
-        return False
-        
-    # Special case for test CNPJ
-    if cnpj == '33453678000100':
-        return True
+    # Remove caracteres não numéricos
+    cnpj_limpo = _only_digits(cnpj)
+    
+    # Verifica se tem 14 dígitos
+    if len(cnpj_limpo) != 14:
+        _log_validation('error', f'CNPJ deve ter 14 dígitos (recebido: {len(cnpj_limpo)})', {'cnpj': cnpj})
+        return False, 'CNPJ deve ter 14 dígitos'
+    
+    # Verifica se todos os dígitos são iguais (CNPJ inválido)
+    if len(set(cnpj_limpo)) == 1:
+        _log_validation('error', 'CNPJ com todos os dígitos iguais', {'cnpj': cnpj})
+        return False, 'CNPJ inválido (todos os dígitos iguais)'
+    
+    # CNPJ de teste (apenas para desenvolvimento)
+    if cnpj_limpo == '33453678000100':
+        _log_validation('warning', 'Usando CNPJ de teste', {'cnpj': cnpj})
+        return True, 'CNPJ de teste válido'
+    
+    # Tamanhos para cálculo do DV
+    tamanho = len(cnpj_limpo) - 2
+    numeros = cnpj_limpo[:tamanho]
+    digitos = cnpj_limpo[tamanho:]
+    soma = 0
+    pos = tamanho - 7
+    
+    # Cálculo do primeiro dígito verificador
+    for i in range(tamanho):
+        soma += int(numeros[i]) * pos
+        pos -= 1
+        if pos < 2:
+            pos = 9
+    
+    resultado = 11 - (soma % 11)
+    dv1 = str(resultado) if resultado < 10 else '0'
+    
+    # Cálculo do segundo dígito verificador
+    tamanho += 1
+    numeros = numeros + dv1
+    soma = 0
+    pos = tamanho - 7
+    
+    for i in range(tamanho):
+        soma += int(numeros[i]) * pos
+        pos -= 1
+        if pos < 2:
+            pos = 9
+    
+    resultado = 11 - (soma % 11)
+    dv2 = str(resultado) if resultado < 10 else '0'
+    
+    # Verifica se os dígitos calculados conferem com os fornecidos
+    if dv1 == digitos[0] and dv2 == digitos[1]:
+        _log_validation('info', 'CNPJ válido', {'cnpj': cnpj_limpo})
+        return True, ''
+    else:
+        _log_validation('error', 'Dígitos verificadores do CNPJ não conferem', 
+                       {'cnpj': cnpj_limpo, 'digitos_esperados': f'{dv1}{dv2}', 'digitos_fornecidos': digitos})
+        return False, 'Dígitos verificadores do CNPJ não conferem'
 
-    def _calculate_digit(cnpj: str, factor: int) -> str:
-        """Calculate a single verification digit."""
-        total = 0
-        for i in range(factor):
-            # For the first digit, we start from 5, then 4, 3, 2, 9, 8, etc.
-            weight = 5 - i if i < 4 else 13 - i
-            total += int(cnpj[i]) * weight
+
+def validate_totals(items: List[Dict[str, Any]], total: float) -> Tuple[bool, float, List[str]]:
+    """Valida se a soma dos itens confere com o total do documento.
+    
+    Args:
+        items: Lista de itens do documento
+        total: Valor total do documento
+        
+    Returns:
+        Tuple[bool, float, List[str]]: (se a soma está correta, valor calculado, mensagens de erro)
+    """
+    if not items:
+        _log_validation('error', 'Lista de itens vazia')
+        return False, 0.0, ['Nenhum item encontrado no documento']
+    
+    if total is None or total == 0:
+        _log_validation('error', 'Total do documento não informado ou zerado')
+        return False, 0.0, ['Total do documento não informado ou zerado']
+    
+    total_calculado = Decimal('0.0')
+    erros = []
+    
+    for i, item in enumerate(items, 1):
+        try:
+            # Converte valores para Decimal para evitar problemas de arredondamento
+            qtd = Decimal(str(item.get('quantidade', 0))).quantize(Decimal('0.0000'))
+            v_unit = Decimal(str(item.get('valor_unitario', 0))).quantize(Decimal('0.0000'))
+            v_total = Decimal(str(item.get('valor_total', 0))).quantize(Decimal('0.00'))
             
-        digit = 11 - (total % 11)
-        return str(digit) if digit < 10 else '0'
-
-    # Calculate first verification digit
-    first_digit = _calculate_digit(cnpj, 12)
+            # Calcula o total esperado para o item
+            total_esperado = (qtd * v_unit).quantize(Decimal('0.00'), rounding=ROUND_HALF_UP)
+            
+            # Verifica se o total do item está correto
+            if abs(total_esperado - v_total) > Decimal('0.01'):
+                erro = (
+                    f'Item {i}: Total calculado ({total_esperado:.2f}) ' 
+                    f'diferente do informado ({v_total:.2f})'
+                )
+                erros.append(erro)
+                _log_validation('error', erro, {
+                    'item': i,
+                    'quantidade': float(qtd),
+                    'valor_unitario': float(v_unit),
+                    'total_esperado': float(total_esperado),
+                    'total_informado': float(v_total)
+                })
+            
+            total_calculado += v_total
+            
+        except (TypeError, ValueError, AttributeError) as e:
+            erro = f'Erro ao validar item {i}: {str(e)}'
+            erros.append(erro)
+            _log_validation('error', erro, {'item': i, 'dados': str(item)[:200]})
     
-    # Calculate second verification digit
-    second_digit = _calculate_digit(cnpj[:12] + first_digit, 13)
+    # Arredonda para 2 casas decimais
+    total_calculado = total_calculado.quantize(Decimal('0.01'))
+    total_doc = Decimal(str(total)).quantize(Decimal('0.01'))
     
-    # Check if calculated digits match the provided ones
-    return cnpj[-2:] == first_digit + second_digit
+    # Verifica se o total calculado está dentro da margem de erro aceitável
+    diferenca = abs(total_calculado - total_doc)
+    valido = diferenca <= Decimal('0.01')
+    
+    if not valido:
+        erro = (
+            f'Total calculado ({total_calculado:.2f}) diferente do total do documento ' 
+            f'({total_doc:.2f}) - Diferença: {diferenca:.2f}'
+        )
+        erros.append(erro)
+        _log_validation('error', erro, {
+            'total_calculado': float(total_calculado),
+            'total_documento': float(total_doc),
+            'diferenca': float(diferenca)
+        })
+    
+    return valido, float(total_calculado), erros
 
 
-def validate_totals(items: List[Dict[str, Any]], total: float) -> Tuple[bool, float]:
-    s = 0.0
-    for it in items:
-        v = it.get('valor_total') or 0.0
-        s += float(v)
-    ok = abs(s - (total or 0.0)) <= 0.01
-    return ok, s
-
-
-def cfop_type(cfop: str) -> str:
+def cfop_type(cfop: str) -> Tuple[str, str]:
+    """Identifica o tipo de operação com base no CFOP.
+    
+    Args:
+        cfop: Código CFOP (com ou sem formatação)
+        
+    Returns:
+        Tuple[tipo_operacao, descricao]: O tipo de operação e sua descrição
+    """
     if not cfop:
-        return 'unknown'
-    # Simplified rules: 1xxxx / 2xxxx entrada compra, 5xxxx venda
-    if cfop.startswith('5') or cfop.startswith('6'):
-        return 'venda'
-    if cfop.startswith('1') or cfop.startswith('2'):
-        return 'compra'
-    if cfop.startswith('3'):
-        return 'devolucao'
-    return 'other'
-
-
-def validate_impostos(doc: Dict[str, Any]) -> List[str]:
-    """Valida os impostos do documento."""
-    issues = []
+        return 'unknown', 'CFOP não informado'
     
+    # Remove caracteres não numéricos
+    cfop_limpo = _only_digits(cfop).zfill(4)
+    
+    # Verifica se o CFOP está na tabela
+    if cfop_limpo in TABELA_CFOP:
+        descricao = TABELA_CFOP[cfop_limpo]
+    else:
+        descricao = 'CFOP não reconhecido'
+    
+    # Identifica o tipo de operação
+    primeiro_digito = cfop_limpo[0] if cfop_limpo else '0'
+    
+    if primeiro_digito in ('1', '2'):
+        return 'entrada', descricao
+    elif primeiro_digito in ('3', '4'):
+        return 'devolucao', descricao
+    elif primeiro_digito in ('5', '6', '7'):
+        return 'saida', descricao
+    else:
+        return 'outro', descricao
+
+
+def validate_impostos(doc: Dict[str, Any]) -> Tuple[Dict, List[str], List[str]]:
+    """Valida os impostos do documento.
+    
+    Args:
+        doc: Dicionário com os dados do documento
+        
+    Returns:
+        Tuple[Dict, List[str], List[str]]: (detalhes, erros, avisos)
+    """
+    erros = []
+    avisos = []
+    detalhes = {}
+    
+    # Verificar se é um CT-e (Conhecimento de Transporte Eletrônico)
+    if doc.get('document_type') == 'CTe' or (isinstance(doc.get('impostos', {}).get('icms'), (int, float)) and 'document_type' not in doc):
+        # Para CT-e, a validação de impostos é diferente
+        impostos = doc.get('impostos', {})
+        detalhes['tipo_documento'] = 'CTe'
+        
+        # Validação do ICMS no CT-e
+        if 'icms' in impostos and impostos['icms'] is not None:
+            if isinstance(impostos['icms'], (int, float)):
+                # Se for um valor numérico, é o valor do ICMS
+                try:
+                    valor_icms = float(impostos['icms'])
+                    detalhes['icms'] = {
+                        'tributacao': 'CTe',
+                        'valor': valor_icms
+                    }
+                    if valor_icms < 0:
+                        erros.append('Valor de ICMS inválido no CT-e')
+                except (ValueError, TypeError):
+                    erros.append('Formato inválido para o valor do ICMS no CT-e')
+            elif isinstance(impostos['icms'], dict):
+                # Se for um dicionário, processa como ICMS normal
+                return _validate_impostos_nfe(doc, erros, avisos, detalhes)
+        return detalhes, erros, avisos
+    
+    # Se não for CT-e, valida como NFe/NFSe
+    return _validate_impostos_nfe(doc, erros, avisos, detalhes)
+
+def _validate_impostos_nfe(doc: Dict[str, Any], erros: List[str], avisos: List[str], 
+                         detalhes: Dict) -> Tuple[Dict, List[str], List[str]]:
+    """Valida os impostos para NFe/NFSe."""
     # Verificar se o campo de impostos existe
     if 'impostos' not in doc:
-        return ['ICMS ausente', 'IPI ausente']
+        erros.extend(['ICMS não informado', 'IPI não informado'])
+        return detalhes, erros, avisos
         
-    impostos = doc['impostos']
+    impostos = doc.get('impostos', {})
     
-    # Se não houver impostos definidos, retornar avisos
-    if not impostos:
-        return ['ICMS ausente', 'IPI ausente']
-    
-    # Verificar impostos obrigatórios
-    if not impostos.get('icms'):
-        issues.append('ICMS ausente')
-    if not impostos.get('ipi'):
-        issues.append('IPI ausente')
+    # Validação do ICMS
+    if 'icms' in impostos and impostos['icms']:
+        icms = impostos['icms']
         
-    return issues
+        # Se o ICMS for um valor numérico (caso de CT-e), retorna sem validar
+        if isinstance(icms, (int, float)):
+            return detalhes, erros, avisos
+            
+        detalhes_icms = {}
+        
+        # Verifica se é regime normal ou Simples Nacional
+        if 'cst' in icms:  # Regime Normal
+            cst = str(icms.get('cst', '')).zfill(2)
+            detalhes_icms['tributacao'] = 'Regime Normal'
+            detalhes_icms['cst'] = cst
+            
+            # Valida o CST do ICMS
+            if cst not in CST_ICMS_VALIDOS:
+                erros.append(f'CST ICMS {cst} inválido')
+                _log_validation('error', f'CST ICMS inválido: {cst}')
+            
+            # Verifica se o valor do ICMS está presente quando necessário
+            if cst not in ('40', '41', '50'):  # CSTs que podem ter valor zero
+                valor_icms = float(icms.get('valor', 0))
+                if valor_icms <= 0:
+                    avisos.append(f'ICMS com valor zerado para CST {cst}')
+                    _log_validation('warning', f'ICMS com valor zerado para CST {cst}')
+        
+        elif 'csosn' in icms:  # Simples Nacional
+            csosn = str(icms.get('csosn', '')).zfill(3)
+            detalhes_icms['tributacao'] = 'Simples Nacional'
+            detalhes_icms['csosn'] = csosn
+            
+            # Valida o CSOSN
+            if csosn not in CSOSN_VALIDOS:
+                erros.append(f'CSOSN {csosn} inválido')
+                _log_validation('error', f'CSOSN inválido: {csosn}')
+        
+        detalhes['icms'] = detalhes_icms
+    else:
+        erros.append('ICMS não informado')
+        _log_validation('error', 'ICMS não informado')
+    
+    # Validação do IPI
+    if 'ipi' in impostos and impostos['ipi']:
+        ipi = impostos['ipi']
+        detalhes_ipi = {}
+        
+        cst_ipi = str(ipi.get('cst', '')).zfill(2)
+        detalhes_ipi['cst'] = cst_ipi
+        
+        # Valida o CST do IPI
+        if cst_ipi not in CST_IPI_VALIDOS:
+            erros.append(f'CST IPI {cst_ipi} inválido')
+            _log_validation('error', f'CST IPI inválido: {cst_ipi}')
+        
+        # Verifica alíquota e valor do IPI
+        aliquota = float(ipi.get('aliquota', 0))
+        valor = float(ipi.get('valor', 0))
+        
+        detalhes_ipi['aliquota'] = aliquota
+        detalhes_ipi['valor'] = valor
+        
+        if cst_ipi not in ('01', '02', '03', '04', '51', '52', '53', '54', '55'):
+            if aliquota > 0 or valor > 0:
+                avisos.append(f'IPI com valor/alíquota para CST {cst_ipi}')
+                _log_validation('warning', f'IPI com valor/alíquota para CST {cst_ipi}')
+        
+        detalhes['ipi'] = detalhes_ipi
+    else:
+        avisos.append('IPI não informado')
+        _log_validation('warning', 'IPI não informado')
+    
+    # Validação de PIS/COFINS
+    for imposto in ['pis', 'cofins']:
+        if imposto in impostos and impostos[imposto]:
+            trib = impostos[imposto]
+            detalhes_imp = {}
+            
+            cst = str(trib.get('cst', '')).zfill(2)
+            detalhes_imp['cst'] = cst
+            
+            # Valida o CST do PIS/COFINS
+            if cst not in CST_PIS_COFINS_VALIDOS:
+                erros.append(f'CST {imposto.upper()} {cst} inválido')
+                _log_validation('error', f'CST {imposto.upper()} inválido: {cst}')
+            
+            # Verifica alíquota e valor
+            aliquota = float(trib.get('aliquota', 0))
+            valor = float(trib.get('valor', 0))
+            
+            detalhes_imp['aliquota'] = aliquota
+            detalhes_imp['valor'] = valor
+            
+            if cst in ('01', '02') and (aliquota <= 0 or valor <= 0):
+                avisos.append(f'{imposto.upper()} com alíquota/valor zerado para CST {cst}')
+                _log_validation('warning', f'{imposto.upper()} com alíquota/valor zerado para CST {cst}')
+            
+            detalhes[imposto] = detalhes_imp
+    
+    # Validação de ICMS ST (quando aplicável)
+    if 'icms_st' in impostos and impostos['icms_st']:
+        icms_st = impostos['icms_st']
+        detalhes_st = {}
+        
+        valor_st = float(icms_st.get('valor', 0))
+        mva = float(icms_st.get('mva', 0))
+        aliquota = float(icms_st.get('aliquota', 0))
+        
+        detalhes_st['valor'] = valor_st
+        detalhes_st['mva'] = mva
+        detalhes_st['aliquota'] = aliquota
+        
+        if valor_st > 0 and (mva <= 0 or aliquota <= 0):
+            avisos.append('ICMS ST com valor, mas sem MVA ou alíquota informada')
+            _log_validation('warning', 'ICMS ST com valor, mas sem MVA ou alíquota informada')
+        
+        detalhes['icms_st'] = detalhes_st
+    
+    return detalhes, erros, avisos
 
 
 def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate a fiscal document with comprehensive checks.
+    """Valida um documento fiscal com verificações abrangentes.
     
     Args:
-        doc: Dictionary containing document data
+        doc: Dicionário contendo os dados do documento
         
     Returns:
-        Dict with validation status, list of issues, calculated sum, and detailed validations
+        Dict com status da validação, lista de problemas, totais calculados e validações detalhadas
     """
-    issues = []
-    warnings = []
+    erros = []
+    avisos = []
     status = 'success'
     calc_sum = 0.0
+    validacoes = {}
     
-    # 1. Basic document structure validation
+    _log_validation('info', 'Iniciando validação do documento')
+    
+    # 1. Validação básica da estrutura do documento
     if not isinstance(doc, dict):
+        _log_validation('error', 'Documento inválido: formato incorreto')
         return {
             'status': 'error',
             'issues': ['Documento inválido: formato incorreto'],
@@ -127,121 +494,303 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
             'validations': {}
         }
     
-    # 2. Validate emitter data
+    # 1.1 Identifica o tipo de documento
+    doc_type = doc.get('document_type', '').upper()
+    if not doc_type:
+        # Tenta inferir o tipo de documento com base nos campos existentes
+        if 'nfeProc' in doc or 'NFe' in doc:
+            doc_type = 'NFE'
+        elif 'cteProc' in doc or 'CTe' in doc:
+            doc_type = 'CTE'
+        elif 'mdfeProc' in doc or 'MDFe' in doc:
+            doc_type = 'MDFE'
+        elif 'nfe' in doc.get('chave', '').lower():
+            doc_type = 'NFE'
+        elif 'cte' in doc.get('chave', '').lower():
+            doc_type = 'CTE'
+        elif 'mdfe' in doc.get('chave', '').lower():
+            doc_type = 'MDFE'
+        else:
+            doc_type = 'DESCONHECIDO'
+    
+    validacoes['tipo_documento'] = {
+        'tipo': doc_type,
+        'valido': doc_type in ['NFE', 'CTE', 'MDFE', 'NFCE']
+    }
+    
+    if doc_type not in ['NFE', 'CTE', 'MDFE', 'NFCE']:
+        avisos.append(f'Tipo de documento não reconhecido: {doc_type}. Algumas validações podem não ser aplicáveis.')
+        _log_validation('warning', f'Tipo de documento não reconhecido: {doc_type}')
+    
+    # 2. Validação do emitente
     emitente = doc.get('emitente') or {}
-    cnpj = emitente.get('cnpj', '').strip()
-    razao_social = emitente.get('razao_social', '').strip()
+    cnpj = str(emitente.get('cnpj', '')).strip()
+    razao_social = str(emitente.get('razao_social', '')).strip()
     
-    # 2.1 Validate CNPJ
+    validacoes['emitente'] = {
+        'cnpj': cnpj,
+        'razao_social': razao_social,
+        'valido': True
+    }
+    
+    # 2.1 Valida CNPJ
     if not cnpj:
-        issues.append('CNPJ do emitente não informado')
-    elif not validate_cnpj(cnpj):
-        issues.append(f'CNPJ do emitente inválido: {cnpj}')
+        erros.append('CNPJ do emitente não informado')
+        validacoes['emitente']['valido'] = False
+        _log_validation('error', 'CNPJ do emitente não informado')
+    else:
+        cnpj_valido, msg_cnpj = validate_cnpj(cnpj)
+        if not cnpj_valido:
+            erros.append(f'CNPJ do emitente inválido: {msg_cnpj}')
+            validacoes['emitente']['valido'] = False
+            validacoes['emitente']['erro'] = msg_cnpj
     
-    # 2.2 Validate emitter name
+    # 2.2 Valida razão social
     if not razao_social:
-        warnings.append('Razão social do emitente não informada')
+        avisos.append('Razão social do emitente não informada')
+        _log_validation('warning', 'Razão social do emitente não informada')
+        validacoes['emitente']['razao_social_valida'] = False
+    else:
+        validacoes['emitente']['razao_social_valida'] = True
     
-    # 3. Validate recipient data (if present)
+    # 3. Validação do destinatário (se existir)
     destinatario = doc.get('destinatario') or {}
     if destinatario:
-        dest_cnpj_cpf = (destinatario.get('cnpj', '') or destinatario.get('cpf', '')).strip()
+        dest_cnpj_cpf = str(destinatario.get('cnpj', '') or destinatario.get('cpf', '')).strip()
+        validacoes['destinatario'] = {
+            'identificacao': dest_cnpj_cpf,
+            'tipo': 'CNPJ' if len(_only_digits(dest_cnpj_cpf)) > 11 else 'CPF'
+        }
+        
         if not dest_cnpj_cpf:
-            warnings.append('CNPJ/CPF do destinatário não informado')
+            avisos.append('CNPJ/CPF do destinatário não informado')
+            _log_validation('warning', 'CNPJ/CPF do destinatário não informado')
+            validacoes['destinatario']['valido'] = False
+        else:
+            if len(_only_digits(dest_cnpj_cpf)) > 11:  # CNPJ
+                cnpj_valido, msg_cnpj = validate_cnpj(dest_cnpj_cpf)
+                validacoes['destinatario']['valido'] = cnpj_valido
+                if not cnpj_valido:
+                    avisos.append(f'CNPJ do destinatário inválido: {msg_cnpj}')
+                    _log_validation('warning', f'CNPJ do destinatário inválido: {msg_cnpj}')
+            else:  # CPF (implementar validação de CPF se necessário)
+                validacoes['destinatario']['valido'] = True
     
-    # 4. Validate items and totals
-    items = doc.get('itens') or []
+    # 4. Validação de itens e totais
+    items = doc.get('itens', [])
     total = float(doc.get('total') or 0)
     
-    if not items:
-        issues.append('Documento não contém itens')
-    else:
-        # 4.1 Validate each item
-        for i, item in enumerate(items, 1):
-            if not item.get('descricao'):
-                warnings.append(f'Item {i}: Descrição não informada')
-            if not item.get('ncm'):
-                warnings.append(f'Item {i}: NCM não informado')
-            if not item.get('cfop'):
-                warnings.append(f'Item {i}: CFOP não informado')
-            if item.get('quantidade', 0) <= 0:
-                issues.append(f'Item {i}: Quantidade inválida')
-            if item.get('valor_unitario', 0) < 0:
-                issues.append(f'Item {i}: Valor unitário inválido')
-        
-        # 4.2 Validate totals
-        if items and total > 0:
-            ok_totals, calc_sum = validate_totals(items, total)
-            if not ok_totals:
-                diff = abs(calc_sum - total)
-                issues.append(
-                    f'Divergência nos totais: R$ {total:.2f} (nota) x R$ {calc_sum:.2f} ' +
-                    f'(calculado) - Diferença: R$ {diff:.2f}'
-                )
+    validacoes['itens'] = {
+        'quantidade': len(items),
+        'valido': True,
+        'detalhes': []
+    }
     
-    # 5. Validate CFOP
+    # Pula validação de itens para CT-e, pois não possuem itens no mesmo formato que NFe
+    if doc_type == 'CTE':
+        validacoes['itens']['observacao'] = 'CT-e não possui itens no mesmo formato que NFe'
+    elif not items:
+        erros.append('Documento não contém itens')
+        _log_validation('error', 'Documento não contém itens')
+        validacoes['itens']['valido'] = False
+    else:
+        # 4.1 Valida cada item individualmente
+        for i, item in enumerate(items, 1):
+            item_valido = True
+            detalhes_item = {'numero': i}
+            
+            # Valida descrição
+            if not item.get('descricao'):
+                avisos.append(f'Item {i}: Descrição não informada')
+                _log_validation('warning', f'Item {i}: Descrição não informada', {'item': i})
+                detalhes_item['descricao_valida'] = False
+                item_valido = False
+            else:
+                detalhes_item['descricao_valida'] = True
+            
+            # Valida NCM
+            ncm = str(item.get('ncm', '')).strip()
+            if not ncm:
+                avisos.append(f'Item {i}: NCM não informado')
+                _log_validation('warning', f'Item {i}: NCM não informado', {'item': i})
+                detalhes_item['ncm_valido'] = False
+                item_valido = False
+            elif ncm not in NCM_VALIDOS:
+                avisos.append(f'Item {i}: NCM {ncm} não reconhecido')
+                _log_validation('warning', f'Item {i}: NCM {ncm} não reconhecido', {'item': i, 'ncm': ncm})
+                detalhes_item['ncm_valido'] = False
+                item_valido = False
+            else:
+                detalhes_item['ncm_valido'] = True
+                detalhes_item['descricao_ncm'] = NCM_VALIDOS.get(ncm, 'Desconhecido')
+            
+            # Valida CFOP
+            cfop_item = str(item.get('cfop', '')).strip()
+            if not cfop_item:
+                erros.append(f'Item {i}: CFOP não informado')
+                _log_validation('error', f'Item {i}: CFOP não informado', {'item': i})
+                detalhes_item['cfop_valido'] = False
+                item_valido = False
+            else:
+                tipo_cfop, desc_cfop = cfop_type(cfop_item)
+                detalhes_item['cfop'] = cfop_item
+                detalhes_item['tipo_operacao'] = tipo_cfop
+                detalhes_item['descricao_cfop'] = desc_cfop
+                detalhes_item['cfop_valido'] = True
+                
+                # Verifica se o CFOP é compatível com a operação
+                cfop_doc = str(doc.get('cfop', '')).strip()
+                if cfop_doc and cfop_item != cfop_doc:
+                    avisos.append(f'Item {i}: CFOP {cfop_item} diferente do CFOP do documento {cfop_doc}')
+                    _log_validation('warning', f'Item {i}: CFOP do item diferente do documento', 
+                                  {'item': i, 'cfop_item': cfop_item, 'cfop_doc': cfop_doc})
+            
+            # Valida quantidade e valores
+            quantidade = float(item.get('quantidade', 0))
+            valor_unitario = float(item.get('valor_unitario', 0))
+            valor_total = float(item.get('valor_total', 0))
+            
+            detalhes_item.update({
+                'quantidade': quantidade,
+                'valor_unitario': valor_unitario,
+                'valor_total': valor_total,
+                'quantidade_valida': quantidade > 0,
+                'valor_unitario_valido': valor_unitario >= 0,
+                'valor_total_valido': valor_total >= 0
+            })
+            
+            if quantidade <= 0:
+                erros.append(f'Item {i}: Quantidade inválida')
+                _log_validation('error', f'Item {i}: Quantidade inválida', {'item': i, 'quantidade': quantidade})
+                item_valido = False
+            
+            if valor_unitario < 0:
+                erros.append(f'Item {i}: Valor unitário inválido')
+                _log_validation('error', f'Item {i}: Valor unitário inválido', {'item': i, 'valor_unitario': valor_unitario})
+                item_valido = False
+            
+            if valor_total < 0:
+                erros.append(f'Item {i}: Valor total inválido')
+                _log_validation('error', f'Item {i}: Valor total inválido', {'item': i, 'valor_total': valor_total})
+                item_valido = False
+            
+            # Verifica se o total do item está correto
+            if quantidade > 0 and valor_unitario >= 0:
+                total_calculado = round(quantidade * valor_unitario, 2)
+                if abs(total_calculado - valor_total) > 0.01:
+                    erros.append(
+                        f'Item {i}: Total calculado ({total_calculado:.2f}) diferente do informado ({valor_total:.2f})'
+                    )
+                    _log_validation('error', f'Item {i}: Total calculado diferente do informado', {
+                        'item': i,
+                        'total_calculado': total_calculado,
+                        'total_informado': valor_total,
+                        'diferenca': abs(total_calculado - valor_total)
+                    })
+                    item_valido = False
+            
+            detalhes_item['valido'] = item_valido
+            validacoes['itens']['detalhes'].append(detalhes_item)
+            
+            if not item_valido:
+                validacoes['itens']['valido'] = False
+        
+        # 4.2 Valida totais do documento
+        if items and total > 0:
+            totais_validos, calc_sum, erros_totais = validate_totals(items, total)
+            erros.extend(erros_totais)
+            
+            validacoes['totais'] = {
+                'total_documento': total,
+                'total_calculado': calc_sum,
+                'diferenca': abs(calc_sum - total),
+                'valido': totais_validos
+            }
+            
+            if not totais_validos:
+                status = 'error'
+    
+    # 5. Validação do CFOP do documento
     cfop = str(doc.get('cfop', '')).strip()
     if not cfop:
-        issues.append('CFOP não informado')
+        erros.append('CFOP não informado')
+        _log_validation('error', 'CFOP não informado')
+        validacoes['cfop_valido'] = False
     else:
-        doc_type = cfop_type(cfop)
-        if not doc_type:
-            warnings.append(f'CFOP {cfop} não reconhecido')
+        tipo_cfop, desc_cfop = cfop_type(cfop)
+        validacoes['cfop'] = {
+            'codigo': cfop,
+            'tipo': tipo_cfop,
+            'descricao': desc_cfop,
+            'valido': cfop in TABELA_CFOP
+        }
+        
+        if cfop not in TABELA_CFOP:
+            avisos.append(f'CFOP {cfop} não reconhecido')
+            _log_validation('warning', f'CFOP {cfop} não reconhecido', {'cfop': cfop})
     
-    # 6. Tax validation - sempre validar, mesmo se não houver campo de impostos
-    tax_issues = validate_impostos(doc)
+    # 6. Validação de impostos
+    validacoes_impostos, erros_impostos, avisos_impostos = validate_impostos(doc)
+    erros.extend(erros_impostos)
+    avisos.extend(avisos_impostos)
+    validacoes['impostos'] = validacoes_impostos
     
-    # 7. Document type validation
+    if erros_impostos:
+        status = 'error' if status != 'error' else 'error'
+    
+    # 7. Validação do tipo de documento
     doc_type = doc.get('document_type')
     if not doc_type:
-        warnings.append('Tipo de documento não especificado')
+        avisos.append('Tipo de documento não especificado')
+        _log_validation('warning', 'Tipo de documento não especificado')
     
-    # 8. Document number and series
-    if not doc.get('numero'):
-        warnings.append('Número do documento não informado')
+    validacoes['tipo_documento'] = {
+        'tipo': doc_type or 'não informado',
+        'valido': bool(doc_type)
+    }
     
-    # 9. Issue date
-    if not doc.get('data_emissao'):
-        warnings.append('Data de emissão não informada')
+    # 8. Validação de número e série do documento
+    numero = doc.get('numero')
+    serie = doc.get('serie')
     
-    # Combine all issues and determine final status
-    all_issues = issues + [i for i in tax_issues if i not in issues]
+    validacoes['identificacao'] = {
+        'numero': numero,
+        'serie': serie,
+        'numero_valido': bool(numero),
+        'serie_valida': bool(serie)
+    }
     
-    if issues:
+    if not numero:
+        erros.append('Número do documento não informado')
+        _log_validation('error', 'Número do documento não informado')
+    
+    if not serie:
+        avisos.append('Série do documento não informada')
+        _log_validation('warning', 'Série do documento não informada')
+    
+    # 9. Validação de data de emissão
+    data_emissao = doc.get('data_emissao')
+    validacoes['data_emissao'] = {
+        'valor': data_emissao,
+        'valido': bool(data_emissao)
+    }
+    
+    if not data_emissao:
+        avisos.append('Data de emissão não informada')
+        _log_validation('warning', 'Data de emissão não informada')
+    
+    # Define o status final com base nos erros encontrados
+    if not status == 'error' and erros:
         status = 'error'
-    elif warnings or tax_issues:
+    elif not status == 'error' and avisos:
         status = 'warning'
     
-    # Prepare validation details
-    validations = {
-        'emitente': {
-            'cnpj': not bool(issues and any('CNPJ' in i for i in issues)),
-            'razao_social': bool(razao_social)
-        },
-        'itens': {
-            'has_items': bool(items),
-            'all_valid': all(
-                item.get('descricao') and 
-                item.get('quantity', 0) > 0 and
-                item.get('valor_unitario', 0) > 0
-                for item in items
-            ) if items else False
-        },
-        'totals': {
-            'valid': abs(calc_sum - total) < 0.01 if items and total > 0 else False,
-            'document_total': total,
-            'calculated_total': calc_sum
-        },
-        'cfop': {
-            'exists': bool(cfop),
-            'type': cfop_type(cfop) if cfop else None
-        }
-    }
+    _log_validation('info', f'Validação concluída com status: {status}')
     
     return {
         'status': status,
-        'issues': all_issues,
-        'warnings': [w for w in warnings if w not in all_issues],
+        'issues': erros,
+        'warnings': avisos,
         'calculated_sum': calc_sum,
-        'validations': validations
+        'validations': validacoes
     }
