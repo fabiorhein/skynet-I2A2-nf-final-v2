@@ -1,10 +1,22 @@
 """Upload Document page for processing XML/PDF/image files."""
+import logging
 import streamlit as st
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from backend.agents import coordinator
 from backend.tools.ocr_processor import ocr_text_to_document
+
+# Configuração do logger
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('upload_document.log')
+    ]
+)
 
 
 def _validate_document_data(data: any) -> bool:
@@ -209,30 +221,93 @@ def render(storage):
                     record = _prepare_document_record(uploaded, parsed, classification)
                     saved = storage.save_document(record)
                     
-                    # Get the document ID from the saved record
-                    document_id = saved.get('id')
+                    # Debug: Exibir a estrutura da resposta salva
+                    logger.info(f"Resposta do save_document: {saved}")
                     
-                    # If we don't have an ID, try to get it from the response data
-                    if not document_id and hasattr(saved, 'data') and saved.data and isinstance(saved.data, list) and len(saved.data) > 0:
-                        document_id = saved.data[0].get('id')
+                    # Tentar obter o ID do documento de várias maneiras diferentes
+                    document_id = None
                     
-                    # Save history if we have a document ID and the storage supports it
+                    # 1. Tenta obter diretamente do dicionário retornado
+                    if isinstance(saved, dict):
+                        # Se tiver 'data' e dentro dele 'id'
+                        if 'data' in saved and isinstance(saved['data'], dict):
+                            # Tenta obter o ID de várias maneiras dentro de data
+                            if 'id' in saved['data']:
+                                document_id = saved['data']['id']
+                            # Se data for uma lista não vazia
+                            elif isinstance(saved['data'].get('data'), list) and saved['data']['data']:
+                                document_id = saved['data']['data'][0].get('id')
+                        # Se tiver 'id' no nível raiz
+                        if not document_id and 'id' in saved:
+                            document_id = saved['id']
+                        # Se 'data' for uma lista não vazia
+                        elif not document_id and 'data' in saved and isinstance(saved['data'], list) and saved['data']:
+                            document_id = saved['data'][0].get('id')
+                    
+                    # 2. Se ainda não tem ID, tenta acessar como atributo
+                    if not document_id and hasattr(saved, 'data'):
+                        if hasattr(saved.data, 'get') and callable(saved.data.get):
+                            document_id = saved.data.get('id')
+                        elif hasattr(saved.data, 'data'):
+                            # Tenta acessar saved.data.data
+                            if hasattr(saved.data.data, 'get') and callable(saved.data.data.get):
+                                document_id = saved.data.data.get('id')
+                            # Se for uma lista
+                            elif hasattr(saved.data.data, '__iter__') and not isinstance(saved.data.data, (str, bytes)):
+                                first_item = next(iter(saved.data.data), None)
+                                if first_item and hasattr(first_item, 'get') and callable(first_item.get):
+                                    document_id = first_item.get('id')
+                        elif hasattr(saved.data, '__iter__') and not isinstance(saved.data, (str, bytes)):
+                            # Se for iterável (como uma lista), pega o primeiro item
+                            first_item = next(iter(saved.data), None)
+                            if first_item and hasattr(first_item, 'get') and callable(first_item.get):
+                                document_id = first_item.get('id')
+                    
+                    # 3. Se ainda não tem ID, tenta obter da resposta bruta
+                    if not document_id and hasattr(saved, 'data') and isinstance(saved.data, dict):
+                        document_id = saved.data.get('id')
+                    
+                    # 4. Última tentativa: verifica se o próprio saved tem um ID
+                    if not document_id and hasattr(saved, 'id'):
+                        document_id = saved.id
+                    
+                    logger.info(f"ID do documento obtido: {document_id}")
+                    
+                    # Se encontrou o ID, salva o histórico
                     if document_id and hasattr(storage, 'save_history'):
                         try:
-                            storage.save_history({
+                            history_data = {
                                 'fiscal_document_id': document_id,
                                 'event_type': 'created',
                                 'event_data': {
                                     'source': 'xml_upload',
                                     'file_type': file_type,
-                                    'validation_status': record.get('validation_status', 'pending')
-                                }
-                            })
+                                    'validation_status': record.get('validation_status', 'pending'),
+                                    'document_number': record.get('document_number', ''),
+                                    'issuer_cnpj': record.get('issuer_cnpj', '')
+                                },
+                                'created_at': datetime.now(ZoneInfo('UTC')).isoformat()
+                            }
+                            
+                            logger.info(f"Tentando salvar histórico: {history_data}")
+                            storage.save_history(history_data)
+                            logger.info("Histórico salvo com sucesso")
+                            
                         except Exception as history_error:
-                            st.warning(f'Documento salvo, mas houve um erro ao registrar o histórico: {str(history_error)}')
-                            logger.error(f'Erro ao salvar histórico: {str(history_error)}')
+                            error_msg = f'Erro ao salvar histórico: {str(history_error)}'
+                            st.warning(f'Documento salvo, mas houve um erro ao registrar o histórico.')
+                            logger.error(error_msg, exc_info=True)
+                    elif not document_id:
+                        logger.warning('Documento salvo, mas não foi possível obter o ID para registrar o histórico.')
+                        logger.warning(f'Resposta completa do save_document: {saved}')
                     
                     st.success('✅ Documento processado e salvo com sucesso!')
+                    
+                    # Debug: Exibir o ID do documento salvo
+                    if document_id:
+                        st.info(f'ID do documento: {document_id}')
+                    else:
+                        st.warning('Não foi possível obter o ID do documento salvo. Verifique os logs para mais detalhes.')
                     
                 except Exception as e:
                     st.error(f'Erro ao salvar documento: {str(e)}')

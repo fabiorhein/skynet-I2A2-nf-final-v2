@@ -539,14 +539,15 @@ class SupabaseStorage(StorageInterface):
     def _table_url(self, table: str) -> str:
         return f"{self.url}/rest/v1/{table}"
 
-    def _handle_response(self, r: requests.Response) -> dict:
+    def _handle_response(self, r: requests.Response, preserve_list: bool = False) -> Union[dict, list]:
         """Processa a resposta da API do Supabase.
         
         Args:
             r: Resposta da requisição HTTP
+            preserve_list: Se True, preserva a lista de resultados em vez de retornar apenas o primeiro item
             
         Returns:
-            dict: Dados da resposta como dicionário
+            Union[dict, list]: Dados da resposta como dicionário ou lista, dependendo do parâmetro preserve_list
             
         Raises:
             SupabaseStorageError: Se houver erro na resposta
@@ -557,9 +558,15 @@ class SupabaseStorage(StorageInterface):
             # Tenta fazer parse do JSON
             try:
                 response_data = r.json()
-                # Se for uma lista, retorna o primeiro item
-                if isinstance(response_data, list) and response_data:
-                    return response_data[0]
+                
+                # Se for uma lista
+                if isinstance(response_data, list):
+                    if preserve_list:
+                        return response_data  # Retorna a lista completa
+                    elif response_data:
+                        return response_data[0]  # Retorna apenas o primeiro item
+                    else:
+                        return [] if preserve_list else {}
                 # Se for um dicionário, retorna ele mesmo
                 elif isinstance(response_data, dict):
                     return response_data
@@ -571,7 +578,7 @@ class SupabaseStorage(StorageInterface):
                 # Se não for JSON, retorna o texto da resposta em um dicionário
                 if r.text:
                     return {"message": r.text.strip()}
-                return {"message": "Resposta vazia do servidor"}
+                return {"message": "Resposta vazia do servidor"} if not preserve_list else []
                 
         except requests.exceptions.HTTPError as e:
             # Tratamento de erros HTTP
@@ -690,10 +697,212 @@ class SupabaseStorage(StorageInterface):
                 print(f"[DEBUG] Resposta do servidor - Status: {response.status_code}")
                 
                 # Processa a resposta
+                print(f"[DEBUG] Cabeçalhos da resposta: {dict(response.headers)}")
+                print(f"[DEBUG] Status code: {response.status_code}")
+                print(f"[DEBUG] Corpo da resposta: {response.text}")
+                
                 result = self._handle_response(response)
+                print(f"[DEBUG] Resultado processado: {result}")
                 
                 # Se chegou até aqui, o documento foi salvo com sucesso
                 print("[SUCESSO] Documento salvo com sucesso no Supabase")
+                
+                # Tenta obter o ID de várias fontes possíveis
+                document_id = None
+                
+                # 1. Tenta obter do cabeçalho Location
+                if 'Location' in response.headers:
+                    location = response.headers['Location']
+                    print(f"[DEBUG] Cabeçalho Location encontrado: {location}")
+                    # Extrai o ID da URL de localização (último segmento)
+                    # Remove qualquer parâmetro de consulta
+                    location = location.split('?')[0]
+                    # Obtém o último segmento não vazio
+                    segments = [s for s in location.split('/') if s]
+                    if segments:
+                        document_id = segments[-1]
+                        print(f"[DEBUG] ID extraído do cabeçalho Location: {document_id}")
+                    else:
+                        print("[DEBUG] Não foi possível extrair ID do cabeçalho Location")
+                
+                # 2. Tenta obter do corpo da resposta (pode estar em diferentes formatos)
+                if not document_id and isinstance(result, dict):
+                    print("[DEBUG] Buscando ID no corpo da resposta...")
+                    
+                    # Lista de possíveis chaves que podem conter o ID
+                    possible_id_keys = [
+                        'id', 'document_id', 'fiscal_document_id', 'documento_id',
+                        'data.id', 'data.document_id', 'data.fiscal_document_id',
+                        'record.id', 'record.document_id', 'record.fiscal_document_id'
+                    ]
+                    
+                    # Função auxiliar para buscar valor em dicionário aninhado
+                    def get_nested_value(data, keys):
+                        for key in keys:
+                            if isinstance(data, dict) and key in data:
+                                data = data[key]
+                            else:
+                                return None
+                        return data
+                    
+                    # Tenta obter o ID de diferentes chaves possíveis
+                    for key in possible_id_keys:
+                        if '.' in key:
+                            # Para chaves aninhadas como 'data.id'
+                            parts = key.split('.')
+                            value = get_nested_value(result, parts)
+                            if value is not None:
+                                document_id = str(value)
+                                print(f"[DEBUG] ID encontrado em {key}: {document_id}")
+                                break
+                        elif key in result:
+                            document_id = str(result[key])
+                            print(f"[DEBUG] ID encontrado em {key}: {document_id}")
+                            break
+                    
+                    # Se ainda não encontrou, verifica se o próprio resultado é uma lista com um único item
+                    if not document_id and isinstance(result, list) and len(result) == 1:
+                        if isinstance(result[0], dict) and 'id' in result[0]:
+                            document_id = str(result[0]['id'])
+                            print(f"[DEBUG] ID encontrado no primeiro item da lista: {document_id}")
+                    
+                    # Se ainda não encontrou, verifica se há um campo 'data' que é uma lista
+                    if not document_id and 'data' in result and isinstance(result['data'], list) and result['data']:
+                        if 'id' in result['data'][0]:
+                            document_id = str(result['data'][0]['id'])
+                            print(f"[DEBUG] ID encontrado em data[0].id: {document_id}")
+                
+                # 3. Se ainda não encontrou, tenta obter da resposta bruta
+                if not document_id and response.text:
+                    try:
+                        import json
+                        json_response = json.loads(response.text)
+                        print(f"[DEBUG] Resposta JSON parseada: {json_response}")
+                        
+                        # Tenta extrair o ID de diferentes formatos de resposta
+                        if isinstance(json_response, dict):
+                            # Caso 1: Resposta direta com ID
+                            if 'id' in json_response and json_response['id'] is not None:
+                                document_id = str(json_response['id'])
+                                print(f"[DEBUG] ID encontrado na raiz da resposta JSON: {document_id}")
+                            # Caso 2: Resposta com dados aninhados
+                            elif 'data' in json_response and isinstance(json_response['data'], dict):
+                                if 'id' in json_response['data']:
+                                    document_id = str(json_response['data']['id'])
+                                    print(f"[DEBUG] ID encontrado em data.id: {document_id}")
+                            # Caso 3: Resposta com lista de dados
+                            elif 'data' in json_response and isinstance(json_response['data'], list) and json_response['data']:
+                                if 'id' in json_response['data'][0]:
+                                    document_id = str(json_response['data'][0]['id'])
+                                    print(f"[DEBUG] ID encontrado em data[0].id: {document_id}")
+                    except Exception as e:
+                        print(f"[DEBUG] Erro ao tentar extrair ID da resposta JSON: {e}")
+                
+                # 4. Se ainda não encontrou, tenta extrair o ID da URL de redirecionamento
+                if not document_id and response.history:
+                    print("[DEBUG] Verificando histórico de redirecionamento...")
+                    for hist in response.history:
+                        if 'Location' in hist.headers:
+                            location = hist.headers['Location']
+                            print(f"[DEBUG] URL de redirecionamento encontrada: {location}")
+                            
+                            # Tenta extrair o ID de diferentes formatos de URL
+                            for pattern in ['fiscal_documents/', 'id=']:
+                                if pattern in location:
+                                    parts = location.split(pattern, 1)
+                                    if len(parts) > 1:
+                                        # Pega o que vem depois do padrão e remove qualquer parâmetro adicional
+                                        possible_id = parts[1].split('&')[0].split('/')[0].strip()
+                                        if possible_id and all(c.isalnum() or c in '_-' for c in possible_id):
+                                            document_id = possible_id
+                                            print(f"[DEBUG] ID extraído da URL de redirecionamento: {document_id}")
+                                            break
+                            
+                            if document_id:
+                                break
+                
+                # 5. Tenta encontrar o documento por diferentes combinações de campos
+                if not document_id and 'document_number' in prepared_record:
+                    try:
+                        doc_number = prepared_record['document_number']
+                        
+                        # Lista de estratégias de busca, da mais específica para a menos específica
+                        search_strategies = []
+                        
+                        # Estratégia 1: Número e CNPJ do emitente (se disponível)
+                        if 'issuer_cnpj' in prepared_record and prepared_record['issuer_cnpj']:
+                            search_strategies.append({
+                                'name': 'número e CNPJ do emitente',
+                                'params': {
+                                    'document_number': f'eq.{doc_number}',
+                                    'issuer_cnpj': f'eq.{prepared_record["issuer_cnpj"]}'
+                                }
+                            })
+                        
+                        # Estratégia 2: Número e nome do emitente (se disponível)
+                        if 'issuer_name' in prepared_record and prepared_record['issuer_name']:
+                            search_strategies.append({
+                                'name': 'número e nome do emitente',
+                                'params': {
+                                    'document_number': f'eq.{doc_number}',
+                                    'issuer_name': f'eq.{prepared_record["issuer_name"]}'
+                                }
+                            })
+                        
+                        # Estratégia 3: Apenas número do documento (menos específico, mas pode funcionar)
+                        search_strategies.append({
+                            'name': 'apenas número do documento',
+                            'params': {
+                                'document_number': f'eq.{doc_number}'
+                            }
+                        })
+                        
+                        # Tenta cada estratégia até encontrar o documento
+                        for strategy in search_strategies:
+                            if document_id:
+                                break
+                                
+                            try:
+                                print(f"[DEBUG] Buscando documento por {strategy['name']}...")
+                                
+                                # Adiciona parâmetros padrão
+                                params = {
+                                    'select': 'id',
+                                    'order': 'created_at.desc',
+                                    'limit': '1'
+                                }
+                                
+                                # Adiciona os parâmetros específicos da estratégia
+                                params.update(strategy['params'])
+                                
+                                url = self._table_url('fiscal_documents')
+                                response = requests.get(url, headers=self._headers(), params=params)
+                                
+                                if response.status_code == 200:
+                                    data = response.json()
+                                    if data and isinstance(data, list) and len(data) > 0:
+                                        document_id = str(data[0].get('id'))
+                                        print(f"[DEBUG] ID encontrado na busca por {strategy['name']}: {document_id}")
+                                        break
+                                        
+                            except Exception as e:
+                                print(f"[DEBUG] Erro na busca por {strategy['name']}: {e}")
+                                continue
+                                
+                    except Exception as e:
+                        print(f"[DEBUG] Erro ao tentar encontrar o documento: {e}")
+                
+                # 6. Se ainda não encontrou, gera um ID temporário
+                if not document_id:
+                    import uuid
+                    document_id = str(uuid.uuid4())  # Gera um UUID válido
+                    print(f"[AVISO] Usando ID temporário: {document_id}")
+                    
+                    # Adiciona um aviso ao resultado
+                    if not isinstance(result, dict):
+                        result = {}
+                    result['_warning'] = 'ID temporário gerado - documento pode não ter sido salvo corretamente'
+                    result['_is_temporary'] = True
                 
                 # Adiciona os dados de validação ao resultado
                 if 'validation_status' in prepared_record:
@@ -703,7 +912,7 @@ class SupabaseStorage(StorageInterface):
                 
                 # Retorna o resultado com os dados completos
                 return {
-                    'id': result.get('id'),
+                    'id': document_id,  # Usa o ID extraído do cabeçalho ou do resultado
                     'success': True,
                     'message': 'Documento salvo com sucesso',
                     'data': result,
@@ -783,38 +992,164 @@ class SupabaseStorage(StorageInterface):
             'order': 'created_at.desc'
         }
         r = requests.get(url, headers=self._headers(), params=params)
-        result = self._handle_response(r)
+        result = self._handle_response(r, preserve_list=True)
         return result if isinstance(result, list) else []
 
     def save_history(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        """Save a history event."""
-        # Verifica se o fiscal_document_id está presente
-        fiscal_document_id = event.get('fiscal_document_id')
+        """Save a history event.
         
-        # Para compatibilidade com versões antigas
-        if not fiscal_document_id:
-            fiscal_document_id = event.get('document_id')
-            if fiscal_document_id:
-                event['fiscal_document_id'] = fiscal_document_id
+        Args:
+            event: Dictionary containing history event data. Must include 'fiscal_document_id'.
             
-        if not fiscal_document_id:
-            raise ValueError("fiscal_document_id is required in the event data")
+        Returns:
+            Dict containing the saved history event or an error message if it's a temporary document.
             
-        # Verifica se o fiscal_document_id existe na tabela fiscal_documents
+        Raises:
+            ValueError: If fiscal_document_id is missing or invalid.
+            StorageError: If there's an error communicating with the storage backend.
+        """
         try:
-            doc_url = self._table_url(f'fiscal_documents?id=eq.{fiscal_document_id}')
-            r = requests.get(doc_url, headers=self._headers())
+            # Verifica se o fiscal_document_id está presente
+            fiscal_document_id = event.get('fiscal_document_id')
             
-            if r.status_code == 200 and not r.json():
-                raise ValueError(f"fiscal_document_id {fiscal_document_id} not found in fiscal_documents table")
+            # Para compatibilidade com versões antigas
+            if not fiscal_document_id:
+                fiscal_document_id = event.get('document_id')
+                if fiscal_document_id:
+                    event['fiscal_document_id'] = fiscal_document_id
+            
+            if not fiscal_document_id:
+                raise ValueError("fiscal_document_id is required in the event data")
+            
+            # Verifica se é um documento temporário (marcado com _is_temporary)
+            event_data = event.get('event_data', {})
+            is_temporary = (
+                event.get('_is_temporary', False) or 
+                event_data.get('_is_temporary', False) or
+                '_is_temporary' in str(event)
+            )
+            
+            if is_temporary:
+                print(f"[AVISO] Não é possível salvar histórico para documento temporário: {fiscal_document_id}")
+                return {
+                    'success': False,
+                    'message': 'Histórico não salvo - documento temporário',
+                    'temporary': True,
+                    'document_id': fiscal_document_id
+                }
                 
-        except requests.exceptions.RequestException as e:
-            raise StorageError(f"Error verifying fiscal_document_id: {str(e)}")
-        
-        # Salva o histórico
-        url = self._table_url('document_history')
-        r = requests.post(url, json=event, headers=self._headers())
-        return self._handle_response(r)
+            # Verifica se o fiscal_document_id existe na tabela fiscal_documents
+            try:
+                doc_url = self._table_url(f'fiscal_documents?id=eq.{fiscal_document_id}')
+                r = requests.get(doc_url, headers=self._headers())
+                
+                if r.status_code == 200 and not r.json():
+                    print(f"[AVISO] Documento não encontrado: {fiscal_document_id}")
+                    return {
+                        'success': False,
+                        'message': f'Documento {fiscal_document_id} não encontrado',
+                        'not_found': True,
+                        'document_id': fiscal_document_id
+                    }
+                    
+            except requests.exceptions.RequestException as e:
+                error_msg = f"Erro ao verificar documento: {str(e)}"
+                print(f"[ERRO] {error_msg}")
+                raise StorageError(error_msg) from e
+            
+            # Salva o histórico
+            url = self._table_url('document_history')
+            try:
+                # Remove campos internos antes de salvar
+                clean_event = {k: v for k, v in event.items() if not k.startswith('_')}
+                if 'event_data' in clean_event and isinstance(clean_event['event_data'], dict):
+                    clean_event['event_data'] = {k: v for k, v in clean_event['event_data'].items() 
+                                               if not k.startswith('_')}
+                
+                # Adiciona timestamp se não existir
+                if 'created_at' not in clean_event:
+                    clean_event['created_at'] = datetime.now(timezone.utc).isoformat()
+                
+                print(f"[DEBUG] Enviando histórico para {url}")
+                print(f"[DEBUG] Dados do histórico: {clean_event}")
+                
+                r = requests.post(url, json=clean_event, headers=self._headers(), timeout=10)
+                r.raise_for_status()
+                
+                # Processa a resposta manualmente para garantir que temos o ID
+                try:
+                    saved_history = {}
+                    
+                    # Tenta extrair o ID do cabeçalho Location
+                    if 'Location' in r.headers:
+                        location = r.headers['Location']
+                        if location:
+                            # Extrai o ID da URL (assumindo formato padrão do Supabase)
+                            import re
+                            match = re.search(r'/([^/]+)$', location)
+                            if match:
+                                saved_history['id'] = match.group(1)
+                    
+                    # Tenta extrair do corpo da resposta (pode estar vazio)
+                    if r.content:
+                        try:
+                            response_data = r.json()
+                            print(f"[DEBUG] Resposta do servidor (raw): {response_data}")
+                            
+                            # Se for uma lista, pega o primeiro item
+                            if isinstance(response_data, list) and response_data:
+                                saved_history.update(response_data[0])
+                            # Se for um dicionário, atualiza com os dados
+                            elif isinstance(response_data, dict):
+                                saved_history.update(response_data)
+                            
+                        except ValueError as json_error:
+                            print(f"[AVISO] Resposta não é um JSON válido: {r.text}")
+                            saved_history['raw_response'] = r.text
+                    
+                    # Se chegou aqui sem ID, tenta buscar o histórico mais recente
+                    if not saved_history.get('id') and fiscal_document_id:
+                        try:
+                            print(f"[DEBUG] Tentando buscar histórico mais recente para o documento {fiscal_document_id}")
+                            history = self.get_document_history(fiscal_document_id)
+                            if history and isinstance(history, list) and history:
+                                latest = max(history, key=lambda x: x.get('created_at', ''))
+                                saved_history.update(latest)
+                        except Exception as history_error:
+                            print(f"[AVISO] Erro ao buscar histórico recente: {history_error}")
+                    
+                    # Se ainda não tem ID, gera um ID temporário
+                    if not saved_history.get('id'):
+                        import uuid
+                        saved_history['id'] = str(uuid.uuid4())
+                        saved_history['_temporary_id'] = True
+                    
+                    print(f"[DEBUG] Histórico processado: {saved_history}")
+                    return saved_history
+                    
+                except Exception as json_error:
+                    print(f"[ERRO] Erro inesperado ao processar resposta: {json_error}")
+                    # Se não conseguir processar, retorna o que temos até agora
+                    saved_history = saved_history or {}
+                    saved_history.update({
+                        'message': 'Histórico salvo, mas houve um erro ao processar a resposta',
+                        'error': str(json_error),
+                        'status_code': r.status_code,
+                        'headers': dict(r.headers)
+                    })
+                    return saved_history
+                
+            except requests.exceptions.RequestException as e:
+                error_msg = f"Erro ao salvar histórico: {str(e)}"
+                if hasattr(e, 'response') and e.response is not None:
+                    error_msg += f" - Status: {e.response.status_code} - Resposta: {e.response.text}"
+                print(f"[ERRO] {error_msg}")
+                raise StorageError(error_msg) from e
+                
+        except Exception as e:
+            error_msg = f"Erro inesperado em save_history: {str(e)}"
+            print(f"[ERRO CRÍTICO] {error_msg}")
+            raise StorageError(error_msg) from e
 
     def upsert_fiscal_document(self, record: Dict[str, Any], conflict_target: str = 'id') -> Dict[str, Any]:
         """Upsert a document using POST with ?on_conflict."""
