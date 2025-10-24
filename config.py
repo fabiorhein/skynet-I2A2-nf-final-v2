@@ -52,30 +52,44 @@ def _get(key: str, default=None):
 
 
 # Common config entries
-SUPABASE_URL = _get('SUPABASE_URL')
-SUPABASE_KEY = _get('SUPABASE_KEY')
+# Try to get Supabase URL and KEY from environment variables or secrets.toml
+SUPABASE_URL = _get('SUPABASE_URL') or _get('connections.supabase.URL')
+SUPABASE_KEY = _get('SUPABASE_KEY') or _get('connections.supabase.KEY')
 
-# Database connection settings
-DATABASE = _get('DATABASE', 'postgres')
-DB_USER = _get('USER')
-DB_PASSWORD = _get('PASSWORD')
-DB_HOST = _get('HOST')
-DB_PORT = _get('PORT', '5432')
+# Database connection settings for direct database access (migrations)
+DATABASE = _get('DATABASE') or _get('connections.supabase.DATABASE', 'postgres')
+DB_USER = _get('USER') or _get('connections.supabase.USER')
+DB_PASSWORD = _get('PASSWORD') or _get('connections.supabase.PASSWORD')
+DB_HOST = _get('HOST') or _get('connections.supabase.HOST')
+DB_PORT = _get('PORT') or _get('connections.supabase.PORT', '5432')
 
 # Other settings
 GOOGLE_API_KEY = _get('GOOGLE_API_KEY')
 TESSERACT_PATH = _get('TESSERACT_PATH')
 LOG_LEVEL = _get('LOG_LEVEL', 'INFO')
 
-# Supabase connection details
-SUPABASE_CONFIG = {
+# Database connection details for direct database access (migrations and direct queries)
+DATABASE_CONFIG = {
     'dbname': DATABASE,
     'user': DB_USER,
     'password': DB_PASSWORD,
     'host': DB_HOST,
     'port': DB_PORT,
-    'sslmode': 'require'
+    'sslmode': 'require'  # or 'prefer' if you have SSL issues
 }
+
+# Connection string for direct database access (for SQLAlchemy, psycopg2, etc.)
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DATABASE}?sslmode=require"
+
+# Supabase client configuration (for API access)
+SUPABASE_CONFIG = {
+    'url': SUPABASE_URL,
+    'key': SUPABASE_KEY,
+    'service_key': SUPABASE_KEY  # Add this if you need to use the service role key
+}
+
+# SQLAlchemy engine URL for migrations
+SQLALCHEMY_DATABASE_URL = DATABASE_URL
 # Tesseract path - try common install locations if not set in env/secrets
 TESSERACT_PATH = _get('TESSERACT_PATH') or 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
 if not Path(TESSERACT_PATH).exists():

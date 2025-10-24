@@ -1,5 +1,6 @@
 """Home page of the Streamlit app."""
 import streamlit as st
+from backend.storage import storage_manager
 
 
 def render():
@@ -22,17 +23,39 @@ def render():
     2. Use "Upload CSV" para análise exploratória
     3. Veja documentos processados em "Histórico"
     
-    ## Armazenamento
-    
-    O sistema suporta armazenamento local (arquivos JSON) ou 
-    Supabase (PostgreSQL). O backend atual está configurado para:
+    ## Status do Armazenamento
     """)
-
-    # Display storage configuration status
-    storage_info = st.session_state.get('storage_info')
-    if storage_info and "✓ Connected to Supabase" in storage_info:
-        st.success(storage_info)  # Show success message in green
-    elif storage_info and "local storage" in storage_info.lower():
-        st.info(storage_info)     # Show local storage message in blue
-    else:
-        st.warning("Status do storage não disponível")  # Fallback warning in yellow
+    
+    # Display storage status using the storage manager
+    status_container = st.container(border=True)
+    with status_container:
+        st.markdown("### Configuração de Armazenamento")
+        
+        # Get status from storage manager
+        status = storage_manager.status
+        status_type = storage_manager.status_type
+        
+        # Display status with appropriate color
+        if status_type == "success":
+            st.success(f"✅ {status}")
+        elif status_type == "warning":
+            st.warning(f"⚠️ {status}")
+        elif status_type == "error":
+            st.error(f"❌ {status}")
+        else:
+            st.info(f"ℹ️ {status}")
+        
+        # Show storage details
+        if "Supabase" in status:
+            st.markdown("""
+            - **Tipo**: Banco de Dados Supabase (PostgreSQL)
+            - **Status**: Conectado
+            - **Tabelas**: fiscal_documents, document_analyses
+            """)
+        else:
+            st.markdown("""
+            - **Tipo**: Armazenamento Local (JSON)
+            - **Status**: Ativo
+            - **Local**: Pasta local do aplicativo
+            - **Observação**: Dados não serão persistidos entre reinicializações do servidor
+            """)

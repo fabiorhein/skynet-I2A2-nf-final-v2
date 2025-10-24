@@ -355,7 +355,8 @@ def render(storage):
     if 'processed_documents' in st.session_state:
         try:
             result = storage.get_fiscal_documents(page=1, page_size=1000)
-            st.session_state.processed_documents = result.get('items', [])
+            # Acessa items diretamente do objeto PaginatedResponse
+            st.session_state.processed_documents = result.items if hasattr(result, 'items') else []
         except Exception as e:
             st.warning('Não foi possível atualizar a lista de documentos.')
             st.exception(e)  # Show full traceback in logs

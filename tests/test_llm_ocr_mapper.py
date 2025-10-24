@@ -11,7 +11,27 @@ def test_llm_mapper_heuristic_fallback():
     """
     mapper = LLMOCRMapper()
     result = mapper.map_ocr_text(sample)
-    assert isinstance(result, dict)
-    assert result.get('raw_text') == sample
-    # heuristic should at least locate cnpj or total (one of them)
-    assert 'emitente' in result and isinstance(result['emitente'], dict)
+    
+    # Verifica se o resultado é um dicionário
+    assert isinstance(result, dict), "O resultado deve ser um dicionário"
+    
+    # Verifica se os campos obrigatórios estão presentes
+    assert 'emitente' in result, "O resultado deve conter o campo 'emitente'"
+    assert isinstance(result['emitente'], dict), "O campo 'emitente' deve ser um dicionário"
+    
+    # Verifica se o CNPJ foi extraído corretamente
+    assert 'cnpj' in result['emitente'], "O emitente deve conter o CNPJ"
+    assert result['emitente']['cnpj'] == '12.345.678/0001-95', "O CNPJ extraído está incorreto"
+    
+    # Verifica se a data foi extraída corretamente
+    assert 'data_emissao' in result, "O resultado deve conter a data de emissão"
+    assert result['data_emissao'] == '10/10/2020', "A data de emissão extraída está incorreta"
+    
+    # Verifica se os itens foram extraídos corretamente
+    assert 'itens' in result, "O resultado deve conter a lista de itens"
+    assert isinstance(result['itens'], list), "O campo 'itens' deve ser uma lista"
+    assert len(result['itens']) > 0, "Deve haver pelo menos um item na lista"
+    
+    # Verifica se o total foi extraído corretamente
+    assert 'total' in result, "O resultado deve conter o total"
+    assert result['total'] == 15.0, "O total extraído está incorreto"

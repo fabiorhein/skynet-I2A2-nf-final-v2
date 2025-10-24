@@ -5,29 +5,11 @@ from backend.agents import coordinator
 from pathlib import Path
 import json
 
-# centralized config loader
-from config import SUPABASE_URL, SUPABASE_KEY
-from backend.storage_interface import StorageError
-from backend.storage import LocalJSONStorage
-from backend.storage_supabase import SupabaseStorage
+# Import the storage manager
+from backend.storage import storage_manager, StorageManager
 
 # Initialize storage backend
-storage_info = "Using local storage (JSON files)"
-try:
-    if SUPABASE_URL and SUPABASE_KEY:
-        storage = SupabaseStorage(SUPABASE_URL, SUPABASE_KEY)
-        # Test connection by making a simple query
-        storage.get_fiscal_documents(page=1, page_size=1)
-        storage_info = "✓ Connected to Supabase PostgreSQL"
-        st.sidebar.success(storage_info)
-    else:
-        storage = LocalJSONStorage()
-        storage_info = "⚠️ Using local storage (JSON files) - Supabase not configured"
-        st.sidebar.info(storage_info)
-except Exception as e:
-    storage = LocalJSONStorage()
-    storage_info = f"❌ Failed to connect to Supabase: {str(e)}. Using local storage fallback."
-    st.sidebar.error(storage_info)
+storage = storage_manager.storage
 
 from frontend.components import document_renderer
 
@@ -35,17 +17,20 @@ st.title('SkyNET-I2A2 - Processamento Fiscal (MVP)')
 
 menu = st.sidebar.selectbox('Navegação', ['Home', 'Upload Documento', 'Upload CSV (EDA)', 'Histórico'])
 
-# Store consistent storage info across all pages
-st.session_state.storage_info = storage_info
-st.session_state._sidebar_storage_text = storage_info  # Ensure sidebar is in sync
-
+# Initialize session state for storage info and documents
 if 'processed_documents' not in st.session_state:
+    st.session_state.processed_documents = []
+
+# Display storage status in the sidebar
+storage_manager.display_status()
+
+# Load documents if not already loaded
+if not st.session_state.processed_documents:
     try:
-        # Both backends implement get_fiscal_documents now
         result = storage.get_fiscal_documents(page=1, page_size=1000)
-        st.session_state.processed_documents = result['items']
-    except StorageError as e:
-        st.error(f'Erro ao carregar documentos: {e}')
+        st.session_state.processed_documents = result.items  # Acessando items diretamente do objeto PaginatedResponse
+    except Exception as e:
+        st.sidebar.error(f'Erro ao carregar documentos: {str(e)[:150]}')
         st.session_state.processed_documents = []
 
 # Import and render the selected page

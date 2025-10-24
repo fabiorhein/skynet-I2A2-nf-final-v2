@@ -36,8 +36,9 @@ def render(storage):
             page=st.session_state.doc_page,
             page_size=page_size
         )
-        docs = result['items']
-        total = result['total']
+        # Acessa os atributos diretamente do objeto PaginatedResponse
+        docs = result.items if hasattr(result, 'items') else []
+        total = result.total if hasattr(result, 'total') else 0
         
         # Show pagination info
         if total > 0:

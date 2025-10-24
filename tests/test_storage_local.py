@@ -37,7 +37,10 @@ class TestLocalJSONStorage(StorageComplianceTests):
 
     def test_storage_path_creation(self, storage):
         """Test that storage directories are created as needed."""
-        storage.save_document({'file': 'test.xml'})
+        # Usando save_fiscal_document em vez de save_document
+        doc = {'file': 'test.xml', 'document_type': 'NFe', 'document_number': '123'}
+        storage.save_fiscal_document(doc)
         data_dir = Path(storage.data_dir)
         assert data_dir.exists()
-        assert (data_dir / 'processed_documents.json').exists()
+        # Verifica se o arquivo documents.json foi criado
+        assert (data_dir / 'documents.json').exists()

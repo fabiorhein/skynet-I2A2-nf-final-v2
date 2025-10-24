@@ -3,8 +3,7 @@ import sys
 import pathlib
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from backend.storage_supabase import SupabaseStorage
-from backend.storage_interface import StorageError
+from backend.storage import SupabaseStorage, StorageError
 import pytest
 import os
 import uuid
