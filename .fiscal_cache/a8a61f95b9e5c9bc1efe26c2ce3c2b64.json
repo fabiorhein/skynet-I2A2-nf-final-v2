@@ -1,0 +1,53 @@
+{
+  "data": {
+    "cfop": "5102",
+    "cst_icms": "00",
+    "cst_pis": "01",
+    "cst_cofins": "01",
+    "ncm": "22030010"
+  },
+  "result": {
+    "status": "success",
+    "validated_at": "2025-10-24T17:49:10.123683",
+    "original_data": {
+      "cfop": "5102",
+      "cst_icms": "00",
+      "cst_pis": "01",
+      "cst_cofins": "01",
+      "ncm": "22030010"
+    },
+    "validation": {
+      "cfop": {
+        "is_valid": true,
+        "normalized_code": "5102",
+        "description": "Venda de mercadoria adquirida ou recebida de terceiros",
+        "confidence": 0.98
+      },
+      "cst_icms": {
+        "is_valid": true,
+        "normalized_code": "00",
+        "description": "Tributada integralmente",
+        "confidence": 0.99
+      },
+      "cst_pis": {
+        "is_valid": true,
+        "normalized_code": "01",
+        "description": "Operação tributável com alíquota básica",
+        "confidence": 0.97
+      },
+      "cst_cofins": {
+        "is_valid": true,
+        "normalized_code": "01",
+        "description": "Operação tributável com alíquota básica",
+        "confidence": 0.97
+      },
+      "ncm": {
+        "is_valid": true,
+        "normalized_code": "22030010",
+        "description": "Cervejas de malte",
+        "confidence": 0.99
+      }
+    }
+  },
+  "cached_at": "2025-10-24T17:49:10.124176"
+}

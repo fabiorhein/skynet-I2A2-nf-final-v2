@@ -7,8 +7,9 @@ extraindo informações estruturadas e integrando-se com o restante do sistema.
 import os
 import json
 import logging
+import re
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Tuple
 import shutil
 from datetime import datetime
 
@@ -16,6 +17,7 @@ from ..tools.fiscal_document_processor import FiscalDocumentProcessor
 from ..tools.ocr_processor import ocr_text_to_document
 from ..tools.llm_ocr_mapper import LLMOCRMapper
 from ..models.document import Document, DocumentType, DocumentStatus
+from .fiscal_validator_agent import create_fiscal_validator
 
 # Configura o logger
 logger = logging.getLogger(__name__)
@@ -40,11 +42,14 @@ class DocumentAgent:
         self.processed_dir = Path(processed_dir)
         self.processor = FiscalDocumentProcessor()
         
+        # Inicializa o validador fiscal com LLM
+        self.fiscal_validator = create_fiscal_validator()
+        
         # Cria os diretórios se não existirem
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
     
-    def process_uploaded_file(self, file_path: Union[str, Path], move_after_process: bool = True) -> Dict[str, Any]:
+    async def process_uploaded_file(self, file_path: Union[str, Path], move_after_process: bool = True) -> Dict[str, Any]:
         """
         Processa um arquivo enviado e extrai informações estruturadas.
         
@@ -53,7 +58,7 @@ class DocumentAgent:
             move_after_process: Se True, move o arquivo para o diretório de processados após o processamento
             
         Returns:
-            Dicionário com os resultados do processamento
+            Dicionário com os resultados do processamento, incluindo validação fiscal
         """
         file_path = Path(file_path)
         if not file_path.exists():
@@ -62,12 +67,34 @@ class DocumentAgent:
         logger.info(f"Processando arquivo: {file_path}")
         
         try:
-            # Processa o documento
+            # 1. Processa o documento
             result = self.processor.process_document(file_path)
             
-            # Se o processamento foi bem-sucedido, move o arquivo para o diretório de processados
-            if result.get('success') and move_after_process:
-                self._move_to_processed(file_path)
+            # 2. Se o processamento foi bem-sucedido, valida os códigos fiscais
+            if result.get('success'):
+                # Extrai os dados fiscais
+                fiscal_data = self._extract_fiscal_data(result)
+                
+                # Valida os códigos fiscais
+                if self.fiscal_validator and fiscal_data:
+                    validation_result = await self._validate_fiscal_codes(fiscal_data)
+                    result['fiscal_validation'] = validation_result
+                    
+                    # Adiciona um resumo da validação
+                    if 'summary' not in result:
+                        result['summary'] = {}
+                    
+                    result['summary']['fiscal_validation_summary'] = self._generate_validation_summary(validation_result)
+                    
+                    # Prepara os detalhes de validação para persistência
+                    result['validation_details'] = self._prepare_validation_details(validation_result)
+                    
+                    # Atualiza o status com base na validação
+                    result['validation_status'] = self._determine_validation_status(validation_result)
+                
+                # Move o arquivo para o diretório de processados
+                if move_after_process:
+                    self._move_to_processed(file_path)
             
             return result
             
@@ -95,7 +122,169 @@ class DocumentAgent:
         
         return new_path
     
-    def save_document_to_db(self, result: Dict[str, Any], user_id: Optional[str] = None) -> Document:
+    def _extract_fiscal_data(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extrai os dados fiscais do resultado do processamento.
+        
+        Args:
+            result: Resultado do processamento do documento
+            
+        Returns:
+            Dicionário com os dados fiscais extraídos
+        """
+        fiscal_data = {}
+        
+        # Extrai os dados do documento principal
+        doc_data = result.get('document', {})
+        
+        # CFOP
+        if 'cfop' in doc_data:
+            fiscal_data['cfop'] = doc_data['cfop']
+        
+        # CST ICMS
+        if 'cst_icms' in doc_data:
+            fiscal_data['cst_icms'] = doc_data['cst_icms']
+        
+        # CST PIS/COFINS
+        if 'cst_pis' in doc_data:
+            fiscal_data['cst_pis'] = doc_data['cst_pis']
+        if 'cst_cofins' in doc_data:
+            fiscal_data['cst_cofins'] = doc_data['cst_cofins']
+        
+        # NCM (pega o primeiro item se existir)
+        items = result.get('items', [])
+        if items and 'ncm' in items[0]:
+            fiscal_data['ncm'] = items[0]['ncm']
+        
+        return fiscal_data
+    
+    async def _validate_fiscal_codes(self, fiscal_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Valida os códigos fiscais usando o LLM.
+        
+        Args:
+            fiscal_data: Dicionário com os códigos fiscais a serem validados
+            
+        Returns:
+            Dicionário com os resultados da validação
+        """
+        if not self.fiscal_validator:
+            return {
+                'status': 'disabled',
+                'message': 'Validador fiscal não está disponível'
+            }
+        
+        try:
+            # Chama o validador fiscal
+            validation_result = await self.fiscal_validator.validate_document(fiscal_data)
+            
+            # Formata o resultado para incluir apenas os códigos fornecidos
+            filtered_result = {}
+            for code_type in fiscal_data:
+                if code_type in validation_result:
+                    filtered_result[code_type] = validation_result[code_type]
+            
+            return {
+                'status': 'success',
+                'validations': filtered_result,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Erro ao validar códigos fiscais: {e}", exc_info=True)
+            return {
+                'status': 'error',
+                'message': str(e),
+                'timestamp': datetime.now().isoformat()
+            }
+    
+    def _prepare_validation_details(self, validation_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepara os detalhes de validação para persistência."""
+        if not validation_result or validation_result.get('status') != 'success':
+            return {
+                'status': 'error',
+                'message': validation_result.get('message', 'Erro desconhecido na validação'),
+                'timestamp': datetime.now().isoformat()
+            }
+        
+        validations = validation_result.get('validations', {})
+        
+        # Conta validações bem-sucedidas e com falha
+        valid = sum(1 for v in validations.values() if v.get('is_valid', False))
+        invalid = len(validations) - valid
+        
+        return {
+            'status': 'success',
+            'validations': validations,
+            'summary': {
+                'valid': valid,
+                'invalid': invalid,
+                'total': len(validations)
+            },
+            'timestamp': datetime.now().isoformat()
+        }
+    
+    def _determine_validation_status(self, validation_result: Dict[str, Any]) -> str:
+        """Determina o status de validação com base nos resultados."""
+        if not validation_result or validation_result.get('status') != 'success':
+            return 'error'
+        
+        validations = validation_result.get('validations', {})
+        if not validations:
+            return 'pending'
+        
+        # Se todas as validações forem bem-sucedidas
+        if all(v.get('is_valid', False) for v in validations.values()):
+            return 'valid'
+        
+        # Se houver alguma validação com falha
+        if any(not v.get('is_valid', True) for v in validations.values()):
+            return 'invalid'
+        
+        return 'pending'
+
+    def _generate_validation_summary(self, validation_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Gera um resumo da validação fiscal.
+        
+        Args:
+            validation_result: Resultado da validação
+            
+        Returns:
+            Dicionário com um resumo da validação
+        """
+        if validation_result.get('status') != 'success' or 'validations' not in validation_result:
+            return {
+                'status': validation_result.get('status', 'unknown'),
+                'message': validation_result.get('message', 'Erro desconhecido na validação')
+            }
+        
+        validations = validation_result['validations']
+        summary = {
+            'status': 'success',
+            'valid_codes': 0,
+            'invalid_codes': 0,
+            'total_codes': len(validations),
+            'codes': {}
+        }
+        
+        for code_type, validation in validations.items():
+            is_valid = validation.get('is_valid', False)
+            if is_valid:
+                summary['valid_codes'] += 1
+            else:
+                summary['invalid_codes'] += 1
+                
+            summary['codes'][code_type] = {
+                'is_valid': is_valid,
+                'normalized': validation.get('normalized_code', ''),
+                'description': validation.get('description', ''),
+                'confidence': validation.get('confidence', 0.0)
+            }
+        
+        return summary
+    
+    async def save_document_to_db(self, result: Dict[str, Any], user_id: Optional[str] = None) -> Document:
         """
         Salva os resultados do processamento no banco de dados.
         

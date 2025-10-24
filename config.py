@@ -68,6 +68,15 @@ GOOGLE_API_KEY = _get('GOOGLE_API_KEY')
 TESSERACT_PATH = _get('TESSERACT_PATH')
 LOG_LEVEL = _get('LOG_LEVEL', 'INFO')
 
+# FiscalValidatorAgent settings
+FISCAL_VALIDATOR_CONFIG = {
+    'api_key': GOOGLE_API_KEY,  # Usando a mesma chave da API do Google
+    'cache_enabled': _get('FISCAL_VALIDATOR.cache_enabled', 'true').lower() == 'true',
+    'cache_dir': _get('FISCAL_VALIDATOR.cache_dir', '.fiscal_cache'),
+    'cache_ttl_days': int(_get('FISCAL_VALIDATOR.cache_ttl_days', '30')),
+    'model_name': 'gemini-pro'  # Pode ser sobrescrito se necessário
+}
+
 # Database connection details for direct database access (migrations and direct queries)
 DATABASE_CONFIG = {
     'dbname': DATABASE,
