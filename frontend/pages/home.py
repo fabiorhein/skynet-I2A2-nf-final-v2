@@ -28,6 +28,11 @@ def render():
     Supabase (PostgreSQL). O backend atual está configurado para:
     """)
 
-    # Storage info from sidebar (already set in app.py)
-    storage_info = st.session_state.get('storage_info', 'Status do storage não disponível')
-    st.info(storage_info)
+    # Display storage configuration status
+    storage_info = st.session_state.get('storage_info')
+    if storage_info and "✓ Connected to Supabase" in storage_info:
+        st.success(storage_info)  # Show success message in green
+    elif storage_info and "local storage" in storage_info.lower():
+        st.info(storage_info)     # Show local storage message in blue
+    else:
+        st.warning("Status do storage não disponível")  # Fallback warning in yellow

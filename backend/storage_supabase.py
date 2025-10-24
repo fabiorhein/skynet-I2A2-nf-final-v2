@@ -7,9 +7,14 @@ import requests
 from .storage_interface import StorageInterface, PaginatedResponse, StorageError
 
 
-class SupabaseStorageError(StorageError):
+class SupabaseStorageError(Exception):
     """Supabase-specific storage errors."""
-    pass
+    def __init__(self, message, *args, **kwargs):
+        self.message = message
+        super().__init__(message, *args, **kwargs)
+        
+    def __str__(self):
+        return str(self.message)
 
 
 class SupabaseStorage(StorageInterface):
@@ -48,18 +53,60 @@ class SupabaseStorage(StorageInterface):
         # Copy the record to avoid modifying the original
         db_record = record.copy()
         
-        # Move raw_text to top level if it's in extracted_data 
-        if 'extracted_data' in db_record and isinstance(db_record['extracted_data'], dict):
-            if 'raw_text' in db_record['extracted_data']:
-                db_record['raw_text'] = db_record['extracted_data'].pop('raw_text')
+        try:
+            print(f"[DEBUG] Iniciando salvamento do documento. Campos recebidos: {list(record.keys())}")
+            
+            # Move raw_text to top level if it's in extracted_data 
+            if 'extracted_data' in db_record and isinstance(db_record['extracted_data'], dict):
+                if 'raw_text' in db_record['extracted_data']:
+                    db_record['raw_text'] = db_record['extracted_data'].pop('raw_text')
 
-        # Check if raw_text is directly in the record
-        if 'raw_text' not in db_record and 'raw_text' in record:
-            db_record['raw_text'] = record['raw_text']
-
-        url = self._table_url('fiscal_documents')
-        r = requests.post(url, json=db_record, headers=self._headers())
-        return self._handle_response(r)
+            # Check if raw_text is directly in the record
+            if 'raw_text' not in db_record and 'raw_text' in record:
+                db_record['raw_text'] = record['raw_text']
+                
+            # Garantir que campos obrigatórios existam
+            required_fields = ['file_name', 'document_type', 'extracted_data', 'raw_text']
+            for field in required_fields:
+                if field not in db_record:
+                    print(f"[ERRO] Campo obrigatório ausente: {field}")
+                    db_record[field] = "" if field != 'extracted_data' else {}
+            
+            # Garantir que extracted_data é um dicionário
+            if not isinstance(db_record.get('extracted_data'), dict):
+                print(f"[AVISO] extracted_data não é um dicionário: {type(db_record.get('extracted_data'))}")
+                db_record['extracted_data'] = {}
+            
+            # Log para depuração (sem expor dados sensíveis)
+            debug_record = db_record.copy()
+            if 'raw_text' in debug_record and len(debug_record['raw_text']) > 100:
+                debug_record['raw_text'] = debug_record['raw_text'][:100] + '... (truncado)'
+            print(f"[DEBUG] Dados a serem enviados para o Supabase: {debug_record}")
+            
+            url = self._table_url('fiscal_documents')
+            print(f"[DEBUG] Enviando requisição para: {url}")
+            
+            try:
+                r = requests.post(url, json=db_record, headers=self._headers(), timeout=30)
+                print(f"[DEBUG] Resposta do servidor - Status: {r.status_code}")
+                
+                if r.status_code >= 400:
+                    print(f"[ERRO] Erro na resposta do servidor: {r.status_code} - {r.text}")
+                
+                return self._handle_response(r)
+                
+            except requests.exceptions.RequestException as e:
+                error_msg = f"Erro na requisição HTTP: {str(e)}"
+                print(f"[ERRO] {error_msg}")
+                # Armazena o erro para ser recuperado pelo frontend se necessário
+                self._last_error = error_msg
+                raise SupabaseStorageError(error_msg)
+                
+        except Exception as e:
+            error_msg = f"Erro ao processar documento: {str(e)}"
+            print(f"[ERRO] {error_msg}")
+            self._last_error = error_msg
+            raise SupabaseStorageError(error_msg)
 
     def get_fiscal_documents(
         self,

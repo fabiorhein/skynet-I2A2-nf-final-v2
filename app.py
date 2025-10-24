@@ -12,17 +12,22 @@ from backend.storage import LocalJSONStorage
 from backend.storage_supabase import SupabaseStorage
 
 # Initialize storage backend
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
+storage_info = "Using local storage (JSON files)"
+try:
+    if SUPABASE_URL and SUPABASE_KEY:
         storage = SupabaseStorage(SUPABASE_URL, SUPABASE_KEY)
-        st.sidebar.success('✓ Connected to Supabase')
-    except Exception as e:
-        st.sidebar.error(f'❌ Failed to connect to Supabase: {e}')
+        # Test connection by making a simple query
+        storage.get_fiscal_documents(page=1, page_size=1)
+        storage_info = "✓ Connected to Supabase PostgreSQL"
+        st.sidebar.success(storage_info)
+    else:
         storage = LocalJSONStorage()
-        st.sidebar.info('⚠️ Using local storage fallback')
-else:
+        storage_info = "⚠️ Using local storage (JSON files) - Supabase not configured"
+        st.sidebar.info(storage_info)
+except Exception as e:
     storage = LocalJSONStorage()
-    st.sidebar.info('Using local storage (JSON files)')
+    storage_info = f"❌ Failed to connect to Supabase: {str(e)}. Using local storage fallback."
+    st.sidebar.error(storage_info)
 
 from frontend.components import document_renderer
 
@@ -30,8 +35,9 @@ st.title('SkyNET-I2A2 - Processamento Fiscal (MVP)')
 
 menu = st.sidebar.selectbox('Navegação', ['Home', 'Upload Documento', 'Upload CSV (EDA)', 'Histórico'])
 
-# Store storage info in session for pages
-st.session_state.storage_info = st.session_state.get('_sidebar_storage_text', 'Status do storage não disponível')
+# Store consistent storage info across all pages
+st.session_state.storage_info = storage_info
+st.session_state._sidebar_storage_text = storage_info  # Ensure sidebar is in sync
 
 if 'processed_documents' not in st.session_state:
     try:
@@ -41,9 +47,6 @@ if 'processed_documents' not in st.session_state:
     except StorageError as e:
         st.error(f'Erro ao carregar documentos: {e}')
         st.session_state.processed_documents = []
-
-# Store any sidebar message in session for pages to access
-st.session_state.storage_info = st.session_state.get('_sidebar_storage_text', 'Status do storage não disponível')
 
 # Import and render the selected page
 if menu == 'Home':

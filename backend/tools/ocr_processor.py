@@ -26,8 +26,40 @@ except ImportError:
     _llm_mapper = None
 
 
+def preprocess_image(image: Image.Image) -> Image.Image:
+    """Pré-processa a imagem para melhorar resultados do OCR"""
+    # Converte para escala de cinza
+    if image.mode != 'L':
+        image = image.convert('L')
+    
+    # Aumenta o contraste
+    from PIL import ImageEnhance
+    enhancer = ImageEnhance.Contrast(image)
+    image = enhancer.enhance(2.0)
+    
+    # Redimensiona se a imagem for muito pequena
+    if image.size[0] < 1000 or image.size[1] < 1000:
+        ratio = 1000.0 / min(image.size)
+        new_size = tuple(int(dim * ratio) for dim in image.size)
+        image = image.resize(new_size, Image.Resampling.LANCZOS)
+    
+    return image
+
 def image_to_text(image: Image.Image, lang: str = 'por') -> str:
-    return pytesseract.image_to_string(image, lang=lang)
+    # Aplica pré-processamento
+    processed_img = preprocess_image(image)
+    
+    # Configura o OCR para melhor precisão
+    custom_config = r'--oem 3 --psm 3 -c preserve_interword_spaces=1'
+    
+    # Executa OCR com configurações otimizadas
+    result = pytesseract.image_to_string(
+        processed_img,
+        lang=lang,
+        config=custom_config
+    )
+    
+    return result
 
 
 def pdf_to_images(pdf_path: str, dpi: int = 300) -> List[Image.Image]:
