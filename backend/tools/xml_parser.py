@@ -20,35 +20,61 @@ def _text(node):
 
 
 def parse_xml_string(xml_string: str) -> Dict[str, Any]:
+    error_response = {
+        'error': 'xml_parse_error',
+        'message': 'Invalid or malformed XML',
+        'raw_text': str(xml_string) if xml_string is not None else '',
+        'numero': None,
+        'emitente': {},
+        'destinatario': {},
+        'itens': [],
+        'impostos': {},
+        'total': None,
+        'data_emissao': None
+    }
+    
     if not isinstance(xml_string, str):
-        return {
-            'error': 'invalid_input',
-            'message': f'Expected string input, got {type(xml_string)}',
-            'raw_text': str(xml_string),
-            'numero': None,
-            'emitente': {},
-            'destinatario': {},
-            'itens': [],
-            'impostos': {},
-            'total': None,
-            'data_emissao': None
-        }
+        error_response['error'] = 'invalid_input'
+        error_response['message'] = f'Expected string input, got {type(xml_string)}'
+        return error_response
         
+    # Basic XML validation
+    if not xml_string.strip().startswith('<'):
+        error_response['error'] = 'invalid_xml'
+        error_response['message'] = 'Not a valid XML: does not start with <'
+        return error_response
+    
     try:
+        # Try to parse the XML
         root = etree.fromstring(xml_string.encode('utf-8'))
+        
+        # Check if this looks like a valid NFe/CTe XML by looking for required elements
+        nfe_proc = root.xpath('//*[local-name()="nfeProc"]')
+        inf_nfe = root.xpath('//*[local-name()="infNFe"]')
+        
+        if not nfe_proc and not inf_nfe:
+            # This doesn't look like a valid NFe/CTe XML
+            error_response.update({
+                'error': 'invalid_xml',
+                'message': 'Not a valid NFe/CTe XML: missing required elements',
+                'raw_text': xml_string[:1000]  # Include first 1000 chars for debugging
+            })
+            return error_response
+            
+    except etree.XMLSyntaxError as e:
+        error_response.update({
+            'error': 'xml_syntax_error',
+            'message': f'Invalid XML syntax: {str(e)}',
+            'raw_text': xml_string[:1000]  # Include first 1000 chars for debugging
+        })
+        return error_response
     except Exception as e:
-        return {
+        error_response.update({
             'error': 'xml_parse_error',
             'message': f'Failed to parse XML: {str(e)}',
-            'raw_text': xml_string,
-            'numero': None,
-            'emitente': {},
-            'destinatario': {},
-            'itens': [],
-            'impostos': {},
-            'total': None,
-            'data_emissao': None
-        }
+            'raw_text': xml_string[:1000]  # Include first 1000 chars for debugging
+        })
+        return error_response
 
     def findtext(xpath):
         try:

@@ -90,8 +90,20 @@ def test_parse_full_xml():
 def test_parse_invalid_xml():
     """Test parsing of invalid XML."""
     result = xml_parser.parse_xml_string("<not_xml>Invalid</not_xml>")
+    assert isinstance(result, dict)
     assert 'error' in result
-    assert result['error'] == 'xml_parse_error'
+    # The function now returns 'invalid_xml' for non-NFe/CTe XML
+    assert result['error'] == 'invalid_xml'
+    assert 'message' in result
+    assert 'raw_text' in result
+    # Verify required fields are present
+    assert 'numero' in result
+    assert 'emitente' in result
+    assert 'destinatario' in result
+    assert 'itens' in result
+    assert 'impostos' in result
+    assert 'total' in result
+    assert 'data_emissao' in result
 
 def test_parse_xml_file(tmp_path):
     """Test parsing XML from a file."""
