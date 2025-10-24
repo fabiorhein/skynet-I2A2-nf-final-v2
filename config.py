@@ -54,6 +54,28 @@ def _get(key: str, default=None):
 # Common config entries
 SUPABASE_URL = _get('SUPABASE_URL')
 SUPABASE_KEY = _get('SUPABASE_KEY')
+
+# Database connection settings
+DATABASE = _get('DATABASE', 'postgres')
+DB_USER = _get('USER')
+DB_PASSWORD = _get('PASSWORD')
+DB_HOST = _get('HOST')
+DB_PORT = _get('PORT', '5432')
+
+# Other settings
+GOOGLE_API_KEY = _get('GOOGLE_API_KEY')
+TESSERACT_PATH = _get('TESSERACT_PATH')
+LOG_LEVEL = _get('LOG_LEVEL', 'INFO')
+
+# Supabase connection details
+SUPABASE_CONFIG = {
+    'dbname': DATABASE,
+    'user': DB_USER,
+    'password': DB_PASSWORD,
+    'host': DB_HOST,
+    'port': DB_PORT,
+    'sslmode': 'require'
+}
 # Tesseract path - try common install locations if not set in env/secrets
 TESSERACT_PATH = _get('TESSERACT_PATH') or 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
 if not Path(TESSERACT_PATH).exists():

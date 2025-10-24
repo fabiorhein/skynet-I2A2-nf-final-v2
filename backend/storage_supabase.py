@@ -103,35 +103,55 @@ class SupabaseStorage(StorageInterface):
         try:
             print(f"[DEBUG] Iniciando salvamento do documento. Campos recebidos: {list(record.keys())}")
             
-            # Move raw_text para o nível superior se estiver em extracted_data
-            if 'extracted_data' in db_record and isinstance(db_record['extracted_data'], dict):
-                if 'raw_text' in db_record['extracted_data']:
-                    db_record['raw_text'] = db_record['extracted_data'].pop('raw_text')
-
-            # Verifica se raw_text está diretamente no registro
-            if 'raw_text' not in db_record and 'raw_text' in record:
-                db_record['raw_text'] = record['raw_text']
+            # Mapeamento de campos para extrair do registro
+            field_mapping = {
+                # Campos principais
+                'file_name': ('file_name', 'documento_sem_nome.pdf'),
+                'document_type': ('document_type', 'NFe'),
+                'document_number': ('document_number', None),
+                'issuer_cnpj': ('issuer_cnpj', None),
+                'issuer_name': ('issuer_name', None),
+                'issue_date': ('issue_date', None),
+                'total_value': ('total_value', 0.0),
+                'cfop': ('cfop', None),
+                'validation_status': ('validation_status', 'pending'),
+                'raw_text': ('raw_text', ''),
+                'uploaded_at': ('uploaded_at', None),
+                'processed_at': ('processed_at', None),
                 
-            # Garante que campos obrigatórios existam
-            required_fields = {
-                'file_name': "documento_sem_nome.pdf",
-                'document_type': 'NFe',
-                'extracted_data': {},
-                'raw_text': ''
+                # Campos aninhados
+                'extracted_data': ('extracted_data', {}),
+                'classification': ('classification', {}),
+                'validation_details': ('validation_details', {
+                    'issues': [],
+                    'warnings': [],
+                    'validations': {}
+                })
             }
             
-            for field, default in required_fields.items():
-                if field not in db_record:
-                    print(f"[AVISO] Campo obrigatório ausente: {field}, usando valor padrão")
-                    db_record[field] = default
+            # Prepara o registro para o banco de dados
+            prepared_record = {}
             
-            # Garante que extracted_data é um dicionário
-            if not isinstance(db_record.get('extracted_data'), dict):
-                print(f"[AVISO] extracted_data não é um dicionário: {type(db_record.get('extracted_data'))}")
-                db_record['extracted_data'] = {}
+            # Preenche os campos mapeados
+            for field, (source_field, default) in field_mapping.items():
+                if source_field in db_record:
+                    prepared_record[field] = db_record[source_field]
+                elif default is not None:
+                    prepared_record[field] = default
+            
+            # Move raw_text para o nível superior se estiver em extracted_data
+            if 'extracted_data' in prepared_record and isinstance(prepared_record['extracted_data'], dict):
+                if 'raw_text' in prepared_record['extracted_data'] and not prepared_record.get('raw_text'):
+                    prepared_record['raw_text'] = prepared_record['extracted_data'].pop('raw_text')
+            
+            # Garante que os campos de data estão no formato correto
+            for date_field in ['uploaded_at', 'processed_at']:
+                if date_field in prepared_record and not prepared_record[date_field]:
+                    from datetime import datetime, timezone
+                    prepared_record[date_field] = datetime.now(timezone.utc).isoformat()
             
             # Log para depuração (sem expor dados sensíveis)
-            debug_record = db_record.copy()
+            debug_record = prepared_record.copy()
             if 'raw_text' in debug_record and len(debug_record['raw_text']) > 100:
                 debug_record['raw_text'] = debug_record['raw_text'][:100] + '... (truncado)'
             print(f"[DEBUG] Dados a serem enviados para o Supabase: {debug_record}")
@@ -144,7 +164,7 @@ class SupabaseStorage(StorageInterface):
                 # Faz a requisição POST para o Supabase
                 response = requests.post(
                     url, 
-                    json=db_record, 
+                    json=prepared_record, 
                     headers=self._headers(), 
                     timeout=30
                 )
@@ -157,12 +177,20 @@ class SupabaseStorage(StorageInterface):
                 # Se chegou até aqui, o documento foi salvo com sucesso
                 print("[SUCESSO] Documento salvo com sucesso no Supabase")
                 
+                # Adiciona os dados de validação ao resultado
+                if 'validation_status' in prepared_record:
+                    result['validation_status'] = prepared_record['validation_status']
+                if 'validation_details' in prepared_record:
+                    result['validation_details'] = prepared_record['validation_details']
+                
                 # Retorna o resultado com os dados completos
                 return {
                     'id': result.get('id'),
                     'success': True,
                     'message': 'Documento salvo com sucesso',
-                    'data': result
+                    'data': result,
+                    'validation_status': prepared_record.get('validation_status', 'pending'),
+                    'validation_details': prepared_record.get('validation_details', {})
                 }
                 
             except requests.exceptions.RequestException as e:

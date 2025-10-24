@@ -29,22 +29,42 @@ def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
     """Prepara o registro do documento para ser salvo."""
     if not isinstance(parsed, dict):
         raise ValueError("Dados do documento devem ser um dicionário")
-        
-    validation_status = None
-    if classification and isinstance(classification, dict):
-        validation_status = classification.get('validacao', {}).get('status')
     
-    return {
+    # Extrair dados de validação da classificação, se disponível
+    validation = {}
+    if classification and isinstance(classification, dict):
+        validation = classification.get('validacao', {})
+    
+    # Obter o status de validação ou definir como 'pending' se não houver
+    validation_status = validation.get('status', 'pending')
+    
+    # Extrair dados do emitente
+    emitente = parsed.get('emitente', {})
+    
+    # Preparar dados do documento
+    doc_data = {
         'file_name': str(uploaded.name),
         'document_type': parsed.get('document_type', 'NFe'),
         'document_number': parsed.get('numero'),
-        'issuer_cnpj': (parsed.get('emitente') or {}).get('cnpj'),
+        'issuer_cnpj': emitente.get('cnpj'),
+        'issuer_name': emitente.get('razao_social') or emitente.get('nome', ''),
+        'issue_date': parsed.get('data_emissao'),
+        'total_value': parsed.get('total'),
+        'cfop': parsed.get('cfop'),
         'extracted_data': parsed,
-        'validation_status': validation_status or 'pending',
+        'validation_status': validation_status,
+        'validation_details': {
+            'issues': validation.get('issues', []),
+            'warnings': validation.get('warnings', []),
+            'validations': validation.get('validations', {})
+        },
         'classification': classification or {},
         'raw_text': parsed.get('raw_text', ''),
-        'uploaded_at': datetime.now(ZoneInfo('UTC')).isoformat()
+        'uploaded_at': datetime.now(ZoneInfo('UTC')).isoformat(),
+        'processed_at': datetime.now(ZoneInfo('UTC')).isoformat()
     }
+    
+    return doc_data
 
 def render(storage):
     """Render the upload document page."""
@@ -94,7 +114,72 @@ def render(storage):
                     st.subheader('🏷️ Classificação')
                     st.json(classification)
                 
-                # Prepare and save document record
+                # Exibir resultados da validação
+                validation = classification.get('validacao', {})
+                
+                # Mostrar status da validação
+                status = validation.get('status', 'unknown')
+                status_emoji = {
+                    'success': '✅',
+                    'warning': '⚠️',
+                    'error': '❌',
+                    'pending': '⏳'
+                }.get(status, '❓')
+                
+                st.subheader(f'{status_emoji} Status da Validação: {status.upper()}')
+                
+                # Mostrar problemas e avisos
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if validation.get('issues'):
+                        with st.expander(f'❌ {len(validation["issues"])} Problemas Encontrados', expanded=True):
+                            for issue in validation['issues']:
+                                st.error(issue)
+                    else:
+                        st.success('✅ Nenhum problema crítico encontrado')
+                
+                with col2:
+                    if validation.get('warnings'):
+                        with st.expander(f'⚠️ {len(validation["warnings"])} Avisos', expanded=False):
+                            for warning in validation['warnings']:
+                                st.warning(warning)
+                    else:
+                        st.info('ℹ️ Nenhum aviso')
+                
+                # Mostrar detalhes da validação
+                with st.expander('🔍 Detalhes da Validação', expanded=False):
+                    validations = validation.get('validations', {})
+                    
+                    # Validação do Emitente
+                    if 'emitente' in validations:
+                        st.subheader('Emitente')
+                        emit = validations['emitente']
+                        cols = st.columns(2)
+                        cols[0].metric("CNPJ Válido", "✅ Sim" if emit.get('cnpj') else "❌ Não")
+                        cols[1].metric("Razão Social", "✅ Informada" if emit.get('razao_social') else "⚠️ Ausente")
+                    
+                    # Validação de Itens
+                    if 'itens' in validations:
+                        st.subheader('Itens')
+                        itens = validations['itens']
+                        cols = st.columns(2)
+                        cols[0].metric("Itens Encontrados", 
+                                    f"✅ {len(parsed.get('itens', []))}" if itens.get('has_items') else "❌ Nenhum")
+                        cols[1].metric("Itens Válidos", 
+                                    "✅ Todos" if itens.get('all_valid') else "⚠️ Alguns itens inválidos")
+                    
+                    # Validação de Totais
+                    if 'totals' in validations:
+                        st.subheader('Totais')
+                        totais = validations['totals']
+                        if totais.get('valid') is not None:
+                            if totais['valid']:
+                                st.success("✅ Soma dos itens confere com o total do documento")
+                            else:
+                                st.error(f"❌ Diferença de R$ {abs(totais.get('document_total', 0) - totais.get('calculated_total', 0)):.2f} nos totais")
+                
+                # Preparar e salvar o documento
                 try:
                     record = _prepare_document_record(uploaded, parsed, classification)
                     saved = storage.save_document(record)

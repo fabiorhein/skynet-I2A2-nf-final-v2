@@ -81,73 +81,167 @@ def cfop_type(cfop: str) -> str:
 
 
 def validate_impostos(doc: Dict[str, Any]) -> List[str]:
+    """Valida os impostos do documento."""
     issues = []
-    impostos = doc.get('impostos') or {}
-    # Naive checks: ICMS/IPI present if expected
-    icms = impostos.get('icms')
-    ipi = impostos.get('ipi')
-    if icms is None:
+    
+    # Verificar se o campo de impostos existe
+    if 'impostos' not in doc:
+        return ['ICMS ausente', 'IPI ausente']
+        
+    impostos = doc['impostos']
+    
+    # Se não houver impostos definidos, retornar avisos
+    if not impostos:
+        return ['ICMS ausente', 'IPI ausente']
+    
+    # Verificar impostos obrigatórios
+    if not impostos.get('icms'):
         issues.append('ICMS ausente')
-    if ipi is None:
+    if not impostos.get('ipi'):
         issues.append('IPI ausente')
+        
     return issues
 
 
 def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate a fiscal document.
+    """Validate a fiscal document with comprehensive checks.
     
     Args:
         doc: Dictionary containing document data
         
     Returns:
-        Dict with validation status, list of issues, and calculated sum
+        Dict with validation status, list of issues, calculated sum, and detailed validations
     """
     issues = []
+    warnings = []
     status = 'success'
     calc_sum = 0.0
     
-    # 1. Validate emitter CNPJ
+    # 1. Basic document structure validation
+    if not isinstance(doc, dict):
+        return {
+            'status': 'error',
+            'issues': ['Documento inválido: formato incorreto'],
+            'warnings': [],
+            'calculated_sum': 0.0,
+            'validations': {}
+        }
+    
+    # 2. Validate emitter data
     emitente = doc.get('emitente') or {}
-    cnpj = emitente.get('cnpj')
-    cnpj_valid = validate_cnpj(cnpj)
-    if not cnpj_valid:
-        issues.append('CNPJ inválido do emitente')
+    cnpj = emitente.get('cnpj', '').strip()
+    razao_social = emitente.get('razao_social', '').strip()
     
-    # 2. Validate items and totals
+    # 2.1 Validate CNPJ
+    if not cnpj:
+        issues.append('CNPJ do emitente não informado')
+    elif not validate_cnpj(cnpj):
+        issues.append(f'CNPJ do emitente inválido: {cnpj}')
+    
+    # 2.2 Validate emitter name
+    if not razao_social:
+        warnings.append('Razão social do emitente não informada')
+    
+    # 3. Validate recipient data (if present)
+    destinatario = doc.get('destinatario') or {}
+    if destinatario:
+        dest_cnpj_cpf = (destinatario.get('cnpj', '') or destinatario.get('cpf', '')).strip()
+        if not dest_cnpj_cpf:
+            warnings.append('CNPJ/CPF do destinatário não informado')
+    
+    # 4. Validate items and totals
     items = doc.get('itens') or []
-    total = doc.get('total') or 0.0
+    total = float(doc.get('total') or 0)
     
-    # Only validate totals if we have items
-    if items:
-        ok_totals, calc_sum = validate_totals(items, total)
-        if not ok_totals:
-            issues.append(f'Soma dos itens {calc_sum:.2f} difere do total {total:.2f}')
-    else:
+    if not items:
         issues.append('Documento não contém itens')
-        calc_sum = 0.0
+    else:
+        # 4.1 Validate each item
+        for i, item in enumerate(items, 1):
+            if not item.get('descricao'):
+                warnings.append(f'Item {i}: Descrição não informada')
+            if not item.get('ncm'):
+                warnings.append(f'Item {i}: NCM não informado')
+            if not item.get('cfop'):
+                warnings.append(f'Item {i}: CFOP não informado')
+            if item.get('quantidade', 0) <= 0:
+                issues.append(f'Item {i}: Quantidade inválida')
+            if item.get('valor_unitario', 0) < 0:
+                issues.append(f'Item {i}: Valor unitário inválido')
+        
+        # 4.2 Validate totals
+        if items and total > 0:
+            ok_totals, calc_sum = validate_totals(items, total)
+            if not ok_totals:
+                diff = abs(calc_sum - total)
+                issues.append(
+                    f'Divergência nos totais: R$ {total:.2f} (nota) x R$ {calc_sum:.2f} ' +
+                    f'(calculado) - Diferença: R$ {diff:.2f}'
+                )
     
-    # 3. Check CFOP compatibility
-    cfop = doc.get('cfop')
-    if cfop:
+    # 5. Validate CFOP
+    cfop = str(doc.get('cfop', '')).strip()
+    if not cfop:
+        issues.append('CFOP não informado')
+    else:
         doc_type = cfop_type(cfop)
-        # Additional CFOP validation can be added here
+        if not doc_type:
+            warnings.append(f'CFOP {cfop} não reconhecido')
     
-    # 4. Tax validation (warning level)
+    # 6. Tax validation - sempre validar, mesmo se não houver campo de impostos
     tax_issues = validate_impostos(doc)
     
-    # Determine final status
-    if issues and any(not issue.startswith('ICMS') and not issue.startswith('IPI') for issue in issues):
-        # If there are any issues that are not just tax-related
+    # 7. Document type validation
+    doc_type = doc.get('document_type')
+    if not doc_type:
+        warnings.append('Tipo de documento não especificado')
+    
+    # 8. Document number and series
+    if not doc.get('numero'):
+        warnings.append('Número do documento não informado')
+    
+    # 9. Issue date
+    if not doc.get('data_emissao'):
+        warnings.append('Data de emissão não informada')
+    
+    # Combine all issues and determine final status
+    all_issues = issues + [i for i in tax_issues if i not in issues]
+    
+    if issues:
         status = 'error'
-    elif tax_issues:
-        # If only tax issues, it's a warning
+    elif warnings or tax_issues:
         status = 'warning'
     
-    # Combine all issues (tax issues are already included in the main issues list)
-    all_issues = issues + tax_issues
+    # Prepare validation details
+    validations = {
+        'emitente': {
+            'cnpj': not bool(issues and any('CNPJ' in i for i in issues)),
+            'razao_social': bool(razao_social)
+        },
+        'itens': {
+            'has_items': bool(items),
+            'all_valid': all(
+                item.get('descricao') and 
+                item.get('quantity', 0) > 0 and
+                item.get('valor_unitario', 0) > 0
+                for item in items
+            ) if items else False
+        },
+        'totals': {
+            'valid': abs(calc_sum - total) < 0.01 if items and total > 0 else False,
+            'document_total': total,
+            'calculated_total': calc_sum
+        },
+        'cfop': {
+            'exists': bool(cfop),
+            'type': cfop_type(cfop) if cfop else None
+        }
+    }
     
     return {
         'status': status,
         'issues': all_issues,
-        'calculated_sum': calc_sum
+        'warnings': [w for w in warnings if w not in all_issues],
+        'calculated_sum': calc_sum,
+        'validations': validations
     }

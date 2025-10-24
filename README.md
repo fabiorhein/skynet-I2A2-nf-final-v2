@@ -26,11 +26,111 @@ Projeto MVP para extração, validação e classificação de documentos fiscais
 - Refatoração da integração LLM (preparado para chamadas diretas a API; LangChain é opcional).
 - Melhorias no parser XML para retorno consistente (`raw_text`, `emitente`, `itens`, `impostos`, etc.).
 
+## Configuração
+
+### Arquivo de Configuração
+
+O projeto usa um arquivo `config.py` como fonte central de configuração. As configurações são carregadas na seguinte ordem de prioridade:
+
+1. Variáveis de ambiente
+2. Configurações do Streamlit (se disponível)
+3. Arquivo `.streamlit/secrets.toml`
+
+### Configuração do Banco de Dados
+
+1. Crie um arquivo `.streamlit/secrets.toml` com as seguintes configurações:
+
+```toml
+[connections.supabase]
+URL = "https://seu-projeto.supabase.co"
+KEY = "sua-chave-anon-ou-service-role"
+DATABASE = "postgres"
+USER = "postgres.[seu-project-ref]"
+PASSWORD = "sua-senha-do-banco"
+HOST = "aws-1-regiao.pooler.supabase.com"
+PORT = "5432"
+
+# Outras configurações
+GOOGLE_API_KEY = "sua-api-key-google"
+TESSERACT_PATH = "C:\\caminho\\para\\tesseract.exe"
+LOG_LEVEL = "INFO"
+```
+
+2. O arquivo `config.py` irá carregar essas configurações e exportá-las para uso em toda a aplicação.
+
+### Configuração do Supabase
+
+1. No painel do Supabase, vá para "Database" > "Settings" > "Connection Info"
+2. Use as credenciais fornecidas para configurar o `secrets.toml`
+3. Certifique-se de adicionar seu IP à lista de permissões em "Database" > "Settings" > "Allowed IPs"
+
+## Sistema de Migrações
+
+O projeto utiliza um sistema de migrações SQL para gerenciar alterações no esquema do banco de dados de forma controlada e reproduzível.
+
+### Estrutura de Arquivos
+
+As migrações ficam no diretório `migration/` e seguem o padrão de nomenclatura:
+```
+migration/
+  001-nome-da-migracao.sql
+  002-outra-migracao.sql
+  ...
+```
+
+### Como Funciona
+
+1. **Execução de Migrações**:
+   ```bash
+   python scripts/run_migration.py
+   ```
+   O script irá:
+   - Listar todas as migrações disponíveis
+   - Pedir confirmação antes de executar
+   - Executar cada migração em ordem numérica
+   - Manter um log detalhado de cada operação
+
+2. **Criando uma Nova Migração**:
+   - Crie um novo arquivo SQL no diretório `migration/`
+   - Use o próximo número sequencial (ex: `007-nova-tabela.sql`)
+   - Inclua comentários explicativos no início do arquivo
+   - Escreva instruções SQL atômicas e idempotentes
+
+3. **Boas Práticas**:
+   - Cada migração deve ser independente e auto-contida
+   - Sempre use `IF NOT EXISTS` ou `IF EXISTS` para evitar erros
+   - Inclua rollback quando possível (em comentários)
+   - Teste as migrações em um ambiente de desenvolvimento primeiro
+
+4. **Exemplo de Migração**:
+   ```sql
+   -- 007-add-user-roles.sql
+   -- Adiciona suporte a diferentes tipos de usuários
+   
+   -- Adiciona a coluna role à tabela users
+   ALTER TABLE users 
+   ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'user';
+   
+   -- Cria um índice para consultas por role
+   CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+   
+   -- Opcional: Rollback
+   -- ALTER TABLE users DROP COLUMN IF EXISTS role;
+   -- DROP INDEX IF EXISTS idx_users_role;
+   ```
+
+5. **Dicas de Desenvolvimento**:
+   - Sempre faça backup do banco antes de executar migrações em produção
+   - Use transações (`BEGIN;` ... `COMMIT;`) para operações críticas
+   - Documente alterações quebradoras de compatibilidade
+   - Considere o impacto em dados existentes ao modificar esquemas
+
 ## Requisitos (Windows)
 
-- Python 3.10+ (recomendado usar `venv`).
-- Tesseract OCR — instale o binário para Windows e verifique se `tesseract.exe` está no `PATH`.
-- Poppler (opcional) — necessário para converter PDFs escaneados em imagens via `pdf2image`.
+- Python 3.10+ (recomendado usar `venv`)
+- Tesseract OCR — instale o binário para Windows e verifique se `tesseract.exe` está no `PATH`
+- Poppler (opcional) — necessário para converter PDFs escaneados em imagens via `pdf2image`
+- Biblioteca `toml` para gerenciamento de configurações
 
 Instalação rápida (PowerShell):
 
