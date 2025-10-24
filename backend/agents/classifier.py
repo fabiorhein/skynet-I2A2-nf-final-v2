@@ -45,10 +45,17 @@ def classify_document(parsed: Dict[str, Any]) -> Dict[str, Any]:
 
     # Sector rules (very naive)
     setor = 'servicos'
-    total = parsed.get('total') or 0.0
-    if total and total > 10000:
+    total = parsed.get('total', 0.0)
+    
+    # Ensure total is a float for comparison
+    try:
+        total_float = float(total) if total is not None else 0.0
+    except (ValueError, TypeError):
+        total_float = 0.0
+    
+    if total_float > 10000.0:
         setor = 'industria'
-    else:
+    elif total_float > 0.0:
         setor = 'comercio'
 
     validation = fiscal_validator.validate_document(parsed)

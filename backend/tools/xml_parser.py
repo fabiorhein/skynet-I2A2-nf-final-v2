@@ -19,6 +19,100 @@ def _text(node):
         return None
 
 
+def _parse_cte(root, xml_string: str) -> Dict[str, Any]:
+    """Parse a CTe XML document."""
+    def findtext(xpath):
+        try:
+            res = root.xpath(xpath)
+            return _text(res[0]) if res else None
+        except Exception:
+            return None
+
+    def _find_under(parent_local_name: str, tag: str):
+        res = root.xpath(f'.//*[local-name()="{parent_local_name}"]//*[local-name()="{tag}"]')
+        return _text(res[0]) if res else None
+
+    # Extract CTe basic info
+    ide = root.xpath('.//*[local-name()="ide"]')
+    if ide:
+        ide = ide[0]
+    
+    # Extract emitente (remetente)
+    emitente = {
+        'razao_social': _find_under('emit', 'xNome') or findtext('.//*[local-name()="xNome"][1]'),
+        'cnpj': _find_under('emit', 'CNPJ') or findtext('.//*[local-name()="CNPJ"][1]'),
+        'inscricao_estadual': _find_under('emit', 'IE') or findtext('.//*[local-name()="IE"][1]'),
+        'endereco': {
+            'logradouro': _find_under('enderEmit', 'xLgr'),
+            'numero': _find_under('enderEmit', 'nro'),
+            'bairro': _find_under('enderEmit', 'xBairro'),
+            'municipio': _find_under('enderEmit', 'xMun'),
+            'uf': _find_under('enderEmit', 'UF'),
+            'cep': _find_under('enderEmit', 'CEP')
+        }
+    }
+
+    # Extract destinatario (toma03 or toma)
+    destinatario = {}
+    toma = root.xpath('.//*[local-name()="toma03"] | .//*[local-name()="toma"]')
+    if toma:
+        toma = toma[0]
+        destinatario = {
+            'razao_social': _text(toma.xpath('.//*[local-name()="xNome"]')[0]) if toma.xpath('.//*[local-name()="xNome"]') else None,
+            'nome_fantasia': _text(toma.xpath('.//*[local-name()="xFant"]')[0]) if toma.xpath('.//*[local-name()="xFant"]') else None,
+            'cnpj': _text(toma.xpath('.//*[local-name()="CNPJ"]')[0]) if toma.xpath('.//*[local-name()="CNPJ"]') else None,
+            'cpf': _text(toma.xpath('.//*[local-name()="CPF"]')[0]) if toma.xpath('.//*[local-name()="CPF"]') else None,
+            'inscricao_estadual': _text(toma.xpath('.//*[local-name()="IE"]')[0]) if toma.xpath('.//*[local-name()="IE"]') else None,
+            'endereco': {
+                'logradouro': _text(toma.xpath('.//*[local-name()="xLgr"]')[0]) if toma.xpath('.//*[local-name()="xLgr"]') else None,
+                'numero': _text(toma.xpath('.//*[local-name()="nro"]')[0]) if toma.xpath('.//*[local-name()="nro"]') else None,
+                'bairro': _text(toma.xpath('.//*[local-name()="xBairro"]')[0]) if toma.xpath('.//*[local-name()="xBairro"]') else None,
+                'municipio': _text(toma.xpath('.//*[local-name()="xMun"]')[0]) if toma.xpath('.//*[local-name()="xMun"]') else None,
+                'uf': _text(toma.xpath('.//*[local-name()="UF"]')[0]) if toma.xpath('.//*[local-name()="UF"]') else None,
+                'cep': _text(toma.xpath('.//*[local-name()="CEP"]')[0]) if toma.xpath('.//*[local-name()="CEP"]') else None,
+            }
+        }
+    
+    # Extract valor da prestação
+    valor_prestacao = findtext('.//*[local-name()="vTPrest"]')
+    
+    # Extract informações adicionais
+    info_adicional = findtext('.//*[local-name()="infCpl"]')
+    
+    # Extract chave de acesso
+    chave = findtext('.//*[local-name()="chCTe"]')
+    
+    # Extract protocolo de autorização
+    prot = root.xpath('.//*[local-name()="protCTe"]')
+    protocolo = None
+    if prot:
+        protocolo = _text(prot[0].xpath('.//*[local-name()="nProt"]')[0]) if prot[0].xpath('.//*[local-name()="nProt"]') else None
+    
+    return {
+        'tipo_documento': 'CTe',
+        'chave': chave,
+        'protocolo_autorizacao': protocolo,
+        'numero': findtext('.//*[local-name()="nCT"]'),
+        'serie': findtext('.//*[local-name()="serie"]'),
+        'data_emissao': findtext('.//*[local-name()="dhEmi"]') or findtext('.//*[local-name()="dEmi"]'),
+        'modal': findtext('.//*[local-name()="modal"]'),
+        'tipo_servico': findtext('.//*[local-name()="tpServ"]'),
+        'uf_inicio': findtext('.//*[local-name()="UFIni"]'),
+        'uf_fim': findtext('.//*[local-name()="UFFim"]'),
+        'municipio_inicio': findtext('.//*[local-name()="xMunIni"]'),
+        'municipio_fim': findtext('.//*[local-name()="xMunFim"]'),
+        'emitente': emitente,
+        'destinatario': destinatario or None,
+        'valor_servico': valor_prestacao,
+        'informacoes_complementares': info_adicional,
+        'itens': [],  # CTe doesn't have items like NFe
+        'impostos': {
+            'icms': findtext('.//*[local-name()="vICMS"]')
+        },
+        'total': valor_prestacao,
+        'raw_text': xml_string
+    }
+
 def parse_xml_string(xml_string: str) -> Dict[str, Any]:
     error_response = {
         'error': 'xml_parse_error',
@@ -48,11 +142,23 @@ def parse_xml_string(xml_string: str) -> Dict[str, Any]:
         # Try to parse the XML
         root = etree.fromstring(xml_string.encode('utf-8'))
         
-        # Check if this looks like a valid NFe/CTe XML by looking for required elements
+            # Check document type
+        is_cte = False
+        is_nfe = False
+        
+        # Check for CTe
+        cte_proc = root.xpath('//*[local-name()="cteProc"]')
+        inf_cte = root.xpath('//*[local-name()="infCte"]')
+        
+        # Check for NFe
         nfe_proc = root.xpath('//*[local-name()="nfeProc"]')
         inf_nfe = root.xpath('//*[local-name()="infNFe"]')
         
-        if not nfe_proc and not inf_nfe:
+        if cte_proc or inf_cte:
+            is_cte = True
+        elif nfe_proc or inf_nfe:
+            is_nfe = True
+        else:
             # This doesn't look like a valid NFe/CTe XML
             error_response.update({
                 'error': 'invalid_xml',
@@ -60,6 +166,10 @@ def parse_xml_string(xml_string: str) -> Dict[str, Any]:
                 'raw_text': xml_string[:1000]  # Include first 1000 chars for debugging
             })
             return error_response
+            
+        # If it's a CTe, use the CTe specific parser
+        if is_cte:
+            return _parse_cte(root, xml_string)
             
     except etree.XMLSyntaxError as e:
         error_response.update({
@@ -87,16 +197,34 @@ def parse_xml_string(xml_string: str) -> Dict[str, Any]:
     def _find_under(parent_local_name: str, tag: str):
         res = root.xpath(f'.//*[local-name()="{parent_local_name}"]//*[local-name()="{tag}"]')
         return _text(res[0]) if res else None
-
+        
+    # For NFe/NFCe
     emitente = {
         'razao_social': _find_under('emit', 'xNome') or findtext('.//*[local-name()="xNome"][1]'),
         'cnpj': _find_under('emit', 'CNPJ') or findtext('.//*[local-name()="CNPJ"][1]'),
-        'inscricao_estadual': _find_under('emit', 'IE') or findtext('.//*[local-name()="IE"][1]')
+        'inscricao_estadual': _find_under('emit', 'IE') or findtext('.//*[local-name()="IE"][1]'),
+        'endereco': {
+            'logradouro': _find_under('enderEmit', 'xLgr'),
+            'numero': _find_under('enderEmit', 'nro'),
+            'bairro': _find_under('enderEmit', 'xBairro'),
+            'municipio': _find_under('enderEmit', 'xMun'),
+            'uf': _find_under('enderEmit', 'UF'),
+            'cep': _find_under('enderEmit', 'CEP')
+        }
     }
 
     destinatario = {
         'razao_social': _find_under('dest', 'xNome') or findtext('.//*[local-name()="xNome"][2]'),
-        'cnpj_cpf': _find_under('dest', 'CNPJ') or _find_under('dest', 'CPF') or findtext('.//*[local-name()="CNPJ"][2]') or findtext('.//*[local-name()="CPF"][1]')
+        'cnpj_cpf': _find_under('dest', 'CNPJ') or _find_under('dest', 'CPF') or findtext('.//*[local-name()="CNPJ"][2]') or findtext('.//*[local-name()="CPF"][1]'),
+        'inscricao_estadual': _find_under('dest', 'IE') or findtext('.//*[local-name()="IE"][2]'),
+        'endereco': {
+            'logradouro': _find_under('enderDest', 'xLgr'),
+            'numero': _find_under('enderDest', 'nro'),
+            'bairro': _find_under('enderDest', 'xBairro'),
+            'municipio': _find_under('enderDest', 'xMun'),
+            'uf': _find_under('enderDest', 'UF'),
+            'cep': _find_under('enderDest', 'CEP')
+        }
     }
 
     # numero may be under ide/nNF
@@ -173,6 +301,7 @@ def parse_xml_string(xml_string: str) -> Dict[str, Any]:
     cfop = findtext('.//*[local-name()="CFOP"][1]')
 
     result = {
+        'tipo_documento': 'NFe',
         'emitente': emitente,
         'destinatario': destinatario,
         'numero': numero,
