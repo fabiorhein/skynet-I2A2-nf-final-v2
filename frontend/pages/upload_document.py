@@ -41,16 +41,27 @@ def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
     # Extrair dados do emitente
     emitente = parsed.get('emitente', {})
     
+    # Extrair dados do destinatário, se disponível
+    destinatario = parsed.get('destinatario', {})
+    
+    # Extrair dados de itens, se disponível
+    itens = parsed.get('itens', [])
+    
+    # Extrair totais, se disponível
+    totais = parsed.get('totals', {})
+    
     # Preparar dados do documento
     doc_data = {
-        'file_name': str(uploaded.name),
-        'document_type': parsed.get('document_type', 'NFe'),
-        'document_number': parsed.get('numero'),
-        'issuer_cnpj': emitente.get('cnpj'),
-        'issuer_name': emitente.get('razao_social') or emitente.get('nome', ''),
-        'issue_date': parsed.get('data_emissao'),
-        'total_value': parsed.get('total'),
-        'cfop': parsed.get('cfop'),
+        'file_name': str(uploaded.name if hasattr(uploaded, 'name') else 'documento_sem_nome.pdf'),
+        'document_type': parsed.get('document_type', 'CTe' if 'cte' in str(uploaded.name).lower() else 'NFe'),
+        'document_number': parsed.get('numero') or parsed.get('nNF') or parsed.get('nCT'),
+        'issuer_cnpj': emitente.get('cnpj') or emitente.get('CNPJ'),
+        'issuer_name': emitente.get('razao_social') or emitente.get('nome') or emitente.get('xNome', ''),
+        'recipient_cnpj': destinatario.get('cnpj') or destinatario.get('CNPJ'),
+        'recipient_name': destinatario.get('razao_social') or destinatario.get('nome') or destinatario.get('xNome', ''),
+        'issue_date': parsed.get('data_emissao') or parsed.get('dhEmi'),
+        'total_value': parsed.get('total') or totais.get('valorTotal') or 0.0,
+        'cfop': parsed.get('cfop') or (itens[0].get('cfop') if itens else None),
         'extracted_data': parsed,
         'validation_status': validation_status,
         'validation_details': {
@@ -61,8 +72,22 @@ def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
         'classification': classification or {},
         'raw_text': parsed.get('raw_text', ''),
         'uploaded_at': datetime.now(ZoneInfo('UTC')).isoformat(),
-        'processed_at': datetime.now(ZoneInfo('UTC')).isoformat()
+        'processed_at': datetime.now(ZoneInfo('UTC')).isoformat(),
+        # Adiciona metadados adicionais para facilitar buscas
+        'metadata': {
+            'has_issues': len(validation.get('issues', [])) > 0,
+            'has_warnings': len(validation.get('warnings', [])) > 0,
+            'item_count': len(itens),
+            'document_subtype': parsed.get('tipoDocumento') or 'Outros'
+        }
     }
+    
+    # Garante que todos os campos necessários tenham valores padrão
+    doc_data.setdefault('document_type', 'Outros')
+    doc_data.setdefault('document_number', 'SEM_NUMERO')
+    doc_data.setdefault('issuer_cnpj', '00000000000000')
+    doc_data.setdefault('issuer_name', 'Emitente não identificado')
+    doc_data.setdefault('total_value', 0.0)
     
     return doc_data
 
@@ -184,17 +209,28 @@ def render(storage):
                     record = _prepare_document_record(uploaded, parsed, classification)
                     saved = storage.save_document(record)
                     
-                    # Save history if supported
-                    if hasattr(storage, 'save_history'):
-                        storage.save_history({
-                            'fiscal_document_id': saved.get('id'),
-                            'event_type': 'created',
-                            'event_data': {
-                                'source': 'xml_upload',
-                                'file_type': file_type,
-                                'validation_status': record.get('validation_status')
-                            }
-                        })
+                    # Get the document ID from the saved record
+                    document_id = saved.get('id')
+                    
+                    # If we don't have an ID, try to get it from the response data
+                    if not document_id and hasattr(saved, 'data') and saved.data and isinstance(saved.data, list) and len(saved.data) > 0:
+                        document_id = saved.data[0].get('id')
+                    
+                    # Save history if we have a document ID and the storage supports it
+                    if document_id and hasattr(storage, 'save_history'):
+                        try:
+                            storage.save_history({
+                                'fiscal_document_id': document_id,
+                                'event_type': 'created',
+                                'event_data': {
+                                    'source': 'xml_upload',
+                                    'file_type': file_type,
+                                    'validation_status': record.get('validation_status', 'pending')
+                                }
+                            })
+                        except Exception as history_error:
+                            st.warning(f'Documento salvo, mas houve um erro ao registrar o histórico: {str(history_error)}')
+                            logger.error(f'Erro ao salvar histórico: {str(history_error)}')
                     
                     st.success('✅ Documento processado e salvo com sucesso!')
                     

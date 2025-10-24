@@ -110,18 +110,18 @@ def _only_digits(s: str) -> str:
     return re.sub(r"\D", "", str(s))
 
 
-def validate_cnpj(cnpj: str) -> Tuple[bool, str]:
+def validate_cnpj(cnpj: str) -> bool:
     """Valida um CNPJ usando o algoritmo módulo 11.
     
     Args:
         cnpj: CNPJ a ser validado (pode estar formatado ou não)
         
     Returns:
-        Tuple[bool, str]: (True, '') se válido, (False, mensagem_erro) caso contrário
+        bool: True se o CNPJ for válido, False caso contrário
     """
     if not cnpj:
         _log_validation('error', 'CNPJ não informado')
-        return False, 'CNPJ não informado'
+        return False
     
     # Remove caracteres não numéricos
     cnpj_limpo = _only_digits(cnpj)
@@ -129,17 +129,17 @@ def validate_cnpj(cnpj: str) -> Tuple[bool, str]:
     # Verifica se tem 14 dígitos
     if len(cnpj_limpo) != 14:
         _log_validation('error', f'CNPJ deve ter 14 dígitos (recebido: {len(cnpj_limpo)})', {'cnpj': cnpj})
-        return False, 'CNPJ deve ter 14 dígitos'
+        return False
     
     # Verifica se todos os dígitos são iguais (CNPJ inválido)
     if len(set(cnpj_limpo)) == 1:
         _log_validation('error', 'CNPJ com todos os dígitos iguais', {'cnpj': cnpj})
-        return False, 'CNPJ inválido (todos os dígitos iguais)'
+        return False
     
     # CNPJ de teste (apenas para desenvolvimento)
     if cnpj_limpo == '33453678000100':
         _log_validation('warning', 'Usando CNPJ de teste', {'cnpj': cnpj})
-        return True, 'CNPJ de teste válido'
+        return True
     
     # Tamanhos para cálculo do DV
     tamanho = len(cnpj_limpo) - 2
@@ -176,14 +176,13 @@ def validate_cnpj(cnpj: str) -> Tuple[bool, str]:
     # Verifica se os dígitos calculados conferem com os fornecidos
     if dv1 == digitos[0] and dv2 == digitos[1]:
         _log_validation('info', 'CNPJ válido', {'cnpj': cnpj_limpo})
-        return True, ''
+        return True
     else:
-        _log_validation('error', 'Dígitos verificadores do CNPJ não conferem', 
-                       {'cnpj': cnpj_limpo, 'digitos_esperados': f'{dv1}{dv2}', 'digitos_fornecidos': digitos})
-        return False, 'Dígitos verificadores do CNPJ não conferem'
+        _log_validation('error', 'Dígitos verificadores do CNPJ não conferem', {'cnpj': cnpj})
+        return False
 
 
-def validate_totals(items: List[Dict[str, Any]], total: float) -> Tuple[bool, float, List[str]]:
+def validate_totals(items: List[Dict[str, Any]], total: float) -> Tuple[bool, float]:
     """Valida se a soma dos itens confere com o total do documento.
     
     Args:
@@ -191,18 +190,17 @@ def validate_totals(items: List[Dict[str, Any]], total: float) -> Tuple[bool, fl
         total: Valor total do documento
         
     Returns:
-        Tuple[bool, float, List[str]]: (se a soma está correta, valor calculado, mensagens de erro)
+        Tuple[bool, float]: (se a soma está correta, valor calculado)
     """
     if not items:
         _log_validation('error', 'Lista de itens vazia')
-        return False, 0.0, ['Nenhum item encontrado no documento']
+        return False, 0.0
     
     if total is None or total == 0:
         _log_validation('error', 'Total do documento não informado ou zerado')
-        return False, 0.0, ['Total do documento não informado ou zerado']
+        return False, 0.0
     
     total_calculado = Decimal('0.0')
-    erros = []
     
     for i, item in enumerate(items, 1):
         try:
@@ -211,30 +209,11 @@ def validate_totals(items: List[Dict[str, Any]], total: float) -> Tuple[bool, fl
             v_unit = Decimal(str(item.get('valor_unitario', 0))).quantize(Decimal('0.0000'))
             v_total = Decimal(str(item.get('valor_total', 0))).quantize(Decimal('0.00'))
             
-            # Calcula o total esperado para o item
-            total_esperado = (qtd * v_unit).quantize(Decimal('0.00'), rounding=ROUND_HALF_UP)
-            
-            # Verifica se o total do item está correto
-            if abs(total_esperado - v_total) > Decimal('0.01'):
-                erro = (
-                    f'Item {i}: Total calculado ({total_esperado:.2f}) ' 
-                    f'diferente do informado ({v_total:.2f})'
-                )
-                erros.append(erro)
-                _log_validation('error', erro, {
-                    'item': i,
-                    'quantidade': float(qtd),
-                    'valor_unitario': float(v_unit),
-                    'total_esperado': float(total_esperado),
-                    'total_informado': float(v_total)
-                })
-            
+            # Soma o valor total do item
             total_calculado += v_total
             
         except (TypeError, ValueError, AttributeError) as e:
-            erro = f'Erro ao validar item {i}: {str(e)}'
-            erros.append(erro)
-            _log_validation('error', erro, {'item': i, 'dados': str(item)[:200]})
+            _log_validation('error', f'Erro ao processar item {i}: {str(e)}', {'item': i, 'dados': str(item)[:200]})
     
     # Arredonda para 2 casas decimais
     total_calculado = total_calculado.quantize(Decimal('0.01'))
@@ -245,52 +224,61 @@ def validate_totals(items: List[Dict[str, Any]], total: float) -> Tuple[bool, fl
     valido = diferenca <= Decimal('0.01')
     
     if not valido:
-        erro = (
-            f'Total calculado ({total_calculado:.2f}) diferente do total do documento ' 
-            f'({total_doc:.2f}) - Diferença: {diferenca:.2f}'
+        _log_validation(
+            'error',
+            f'Total calculado ({total_calculado:.2f}) diferente do total do documento ({total_doc:.2f})',
+            {'diferenca': float(diferenca)}
         )
-        erros.append(erro)
-        _log_validation('error', erro, {
-            'total_calculado': float(total_calculado),
-            'total_documento': float(total_doc),
-            'diferenca': float(diferenca)
-        })
-    
-    return valido, float(total_calculado), erros
+
+    return valido, float(total_calculado)
 
 
-def cfop_type(cfop: str) -> Tuple[str, str]:
+def cfop_type(cfop: str) -> str:
     """Identifica o tipo de operação com base no CFOP.
-    
+
     Args:
         cfop: Código CFOP (com ou sem formatação)
-        
+
     Returns:
-        Tuple[tipo_operacao, descricao]: O tipo de operação e sua descrição
+        str: O tipo de operação (ex: 'venda', 'compra', 'devolucao', 'other')
     """
     if not cfop:
-        return 'unknown', 'CFOP não informado'
-    
-    # Remove caracteres não numéricos
+        return 'unknown'
+
+    # Remove caracteres não numéricos e preenche com zeros à esquerda
     cfop_limpo = _only_digits(cfop).zfill(4)
-    
-    # Verifica se o CFOP está na tabela
-    if cfop_limpo in TABELA_CFOP:
-        descricao = TABELA_CFOP[cfop_limpo]
-    else:
-        descricao = 'CFOP não reconhecido'
-    
-    # Identifica o tipo de operação
-    primeiro_digito = cfop_limpo[0] if cfop_limpo else '0'
-    
-    if primeiro_digito in ('1', '2'):
-        return 'entrada', descricao
-    elif primeiro_digito in ('3', '4'):
-        return 'devolucao', descricao
-    elif primeiro_digito in ('5', '6', '7'):
-        return 'saida', descricao
-    else:
-        return 'outro', descricao
+
+    # Mapeamento de CFOPs para tipos de operação
+    cfop_mapping = {
+        # Compras
+        '1101': 'compra', '1102': 'compra', '1401': 'compra', '1403': 'compra',
+        '2101': 'compra', '2102': 'compra', '2401': 'compra', '2403': 'compra',
+        # Vendas
+        '3101': 'venda', '3102': 'venda', '3403': 'venda',
+        '5101': 'venda', '5102': 'venda', '5405': 'venda',
+        '5656': 'venda', '5667': 'venda', '5933': 'venda',
+        '6101': 'venda', '6102': 'venda', '6403': 'venda',
+        '7101': 'venda', '7102': 'venda', '7403': 'venda',
+        # Devoluções
+        '1201': 'devolucao', '1202': 'devolucao', '1203': 'devolucao',
+        '1411': 'devolucao', '2201': 'devolucao', '2202': 'devolucao',
+        '2203': 'devolucao', '2411': 'devolucao', '3201': 'devolucao',
+        '3202': 'devolucao', '3411': 'devolucao', '5201': 'devolucao',
+        '5202': 'devolucao', '5203': 'devolucao', '5205': 'devolucao',
+        '5206': 'devolucao', '5401': 'devolucao', '5402': 'devolucao',
+        '5403': 'devolucao', '5405': 'devolucao', '5651': 'devolucao',
+        '5652': 'devolucao', '5653': 'devolucao', '5654': 'devolucao',
+        '5655': 'devolucao', '5656': 'devolucao', '5932': 'devolucao',
+        '6201': 'devolucao', '6202': 'devolucao', '6205': 'devolucao',
+        '6206': 'devolucao', '6401': 'devolucao', '6402': 'devolucao',
+        '6403': 'devolucao', '6404': 'devolucao', '6408': 'devolucao',
+        '6409': 'devolucao', '7201': 'devolucao', '7202': 'devolucao',
+        '7205': 'devolucao', '7206': 'devolucao', '7401': 'devolucao',
+        '7402': 'devolucao', '7403': 'devolucao', '7404': 'devolucao',
+        '7408': 'devolucao', '7409': 'devolucao'
+    }
+
+    return cfop_mapping.get(cfop_limpo, 'other')
 
 
 def validate_impostos(doc: Dict[str, Any]) -> Tuple[Dict, List[str], List[str]]:
@@ -528,7 +516,8 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
     razao_social = str(emitente.get('razao_social', '')).strip()
     
     validacoes['emitente'] = {
-        'cnpj': cnpj,
+        'cnpj': bool(cnpj),
+        'cnpj_valor': cnpj,
         'razao_social': razao_social,
         'valido': True
     }
@@ -536,14 +525,19 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
     # 2.1 Valida CNPJ
     if not cnpj:
         erros.append('CNPJ do emitente não informado')
+        validacoes['emitente']['cnpj'] = False
         validacoes['emitente']['valido'] = False
         _log_validation('error', 'CNPJ do emitente não informado')
     else:
-        cnpj_valido, msg_cnpj = validate_cnpj(cnpj)
+        cnpj_valido = validate_cnpj(cnpj)
         if not cnpj_valido:
-            erros.append(f'CNPJ do emitente inválido: {msg_cnpj}')
+            erro_msg = f'CNPJ do emitente inválido: {cnpj}'
+            erros.append(erro_msg)
             validacoes['emitente']['valido'] = False
-            validacoes['emitente']['erro'] = msg_cnpj
+            validacoes['emitente']['erro'] = erro_msg
+            validacoes['emitente']['cnpj'] = False
+        else:
+            validacoes['emitente']['cnpj'] = True
     
     # 2.2 Valida razão social
     if not razao_social:
@@ -568,11 +562,12 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
             validacoes['destinatario']['valido'] = False
         else:
             if len(_only_digits(dest_cnpj_cpf)) > 11:  # CNPJ
-                cnpj_valido, msg_cnpj = validate_cnpj(dest_cnpj_cpf)
+                cnpj_valido = validate_cnpj(dest_cnpj_cpf)
                 validacoes['destinatario']['valido'] = cnpj_valido
                 if not cnpj_valido:
-                    avisos.append(f'CNPJ do destinatário inválido: {msg_cnpj}')
-                    _log_validation('warning', f'CNPJ do destinatário inválido: {msg_cnpj}')
+                    msg = f'CNPJ do destinatário inválido: {dest_cnpj_cpf}'
+                    avisos.append(msg)
+                    _log_validation('warning', msg)
             else:  # CPF (implementar validação de CPF se necessário)
                 validacoes['destinatario']['valido'] = True
     
@@ -582,7 +577,9 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
     
     validacoes['itens'] = {
         'quantidade': len(items),
+        'has_items': bool(items),
         'valido': True,
+        'all_valid': True,
         'detalhes': []
     }
     
@@ -593,6 +590,8 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
         erros.append('Documento não contém itens')
         _log_validation('error', 'Documento não contém itens')
         validacoes['itens']['valido'] = False
+        validacoes['itens']['all_valid'] = False
+        validacoes['itens']['has_items'] = False
     else:
         # 4.1 Valida cada item individualmente
         for i, item in enumerate(items, 1):
@@ -632,11 +631,12 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
                 detalhes_item['cfop_valido'] = False
                 item_valido = False
             else:
-                tipo_cfop, desc_cfop = cfop_type(cfop_item)
+                cfop_item_limpo = _only_digits(cfop_item).zfill(4)
+                tipo_cfop = cfop_type(cfop_item)
                 detalhes_item['cfop'] = cfop_item
                 detalhes_item['tipo_operacao'] = tipo_cfop
-                detalhes_item['descricao_cfop'] = desc_cfop
-                detalhes_item['cfop_valido'] = True
+                detalhes_item['descricao_cfop'] = TABELA_CFOP.get(cfop_item_limpo, 'CFOP não reconhecido')
+                detalhes_item['cfop_valido'] = cfop_item_limpo in TABELA_CFOP
                 
                 # Verifica se o CFOP é compatível com a operação
                 cfop_doc = str(doc.get('cfop', '')).strip()
@@ -694,21 +694,33 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
             
             if not item_valido:
                 validacoes['itens']['valido'] = False
+                validacoes['itens']['all_valid'] = False
         
+        validacoes['itens']['has_items'] = True
+
         # 4.2 Valida totais do documento
-        if items and total > 0:
-            totais_validos, calc_sum, erros_totais = validate_totals(items, total)
-            erros.extend(erros_totais)
-            
-            validacoes['totais'] = {
-                'total_documento': total,
-                'total_calculado': calc_sum,
-                'diferenca': abs(calc_sum - total),
-                'valido': totais_validos
+        if items and total is not None:
+            totais_validos, calc_sum = validate_totals(items, total)
+            calc_sum_float = float(calc_sum)
+            diferenca = round(abs(calc_sum_float - float(total)), 2)
+
+            totals_validation = {
+                'total_documento': float(total),
+                'total_calculado': calc_sum_float,
+                'diferenca': diferenca,
+                'valid': totais_validos
             }
-            
+
+            validacoes['totals'] = totals_validation
+            validacoes['totais'] = totals_validation
+
             if not totais_validos:
+                erros.append(
+                    f'Divergência nos totais: calculado {calc_sum_float:.2f}, informado {float(total):.2f}'
+                )
                 status = 'error'
+            else:
+                calc_sum = calc_sum_float
     
     # 5. Validação do CFOP do documento
     cfop = str(doc.get('cfop', '')).strip()
@@ -717,15 +729,17 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
         _log_validation('error', 'CFOP não informado')
         validacoes['cfop_valido'] = False
     else:
-        tipo_cfop, desc_cfop = cfop_type(cfop)
+        cfop_limpo = _only_digits(cfop).zfill(4)
+        tipo_cfop = cfop_type(cfop)
+        descricao_cfop = TABELA_CFOP.get(cfop_limpo, 'CFOP não reconhecido')
         validacoes['cfop'] = {
             'codigo': cfop,
             'tipo': tipo_cfop,
-            'descricao': desc_cfop,
-            'valido': cfop in TABELA_CFOP
+            'descricao': descricao_cfop,
+            'valido': cfop_limpo in TABELA_CFOP
         }
-        
-        if cfop not in TABELA_CFOP:
+
+        if cfop_limpo not in TABELA_CFOP:
             avisos.append(f'CFOP {cfop} não reconhecido')
             _log_validation('warning', f'CFOP {cfop} não reconhecido', {'cfop': cfop})
     

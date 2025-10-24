@@ -184,9 +184,14 @@ class StorageInterface(ABC):
     
     def save_history(self, event: Dict[str, Any]) -> Dict[str, Any]:
         """Save a history event (legacy method)."""
-        doc_id = event.get('document_id')
+        doc_id = event.get('fiscal_document_id')
         if not doc_id:
-            raise ValueError("document_id is required in the event data")
+            # Para compatibilidade com versões antigas
+            doc_id = event.get('document_id')
+            if doc_id:
+                event['fiscal_document_id'] = doc_id
+            else:
+                raise ValueError("fiscal_document_id is required in the event data")
         return self.add_document_analysis(doc_id, event)
 
 class LocalJSONStorage(StorageInterface):
@@ -783,6 +788,30 @@ class SupabaseStorage(StorageInterface):
 
     def save_history(self, event: Dict[str, Any]) -> Dict[str, Any]:
         """Save a history event."""
+        # Verifica se o fiscal_document_id está presente
+        fiscal_document_id = event.get('fiscal_document_id')
+        
+        # Para compatibilidade com versões antigas
+        if not fiscal_document_id:
+            fiscal_document_id = event.get('document_id')
+            if fiscal_document_id:
+                event['fiscal_document_id'] = fiscal_document_id
+            
+        if not fiscal_document_id:
+            raise ValueError("fiscal_document_id is required in the event data")
+            
+        # Verifica se o fiscal_document_id existe na tabela fiscal_documents
+        try:
+            doc_url = self._table_url(f'fiscal_documents?id=eq.{fiscal_document_id}')
+            r = requests.get(doc_url, headers=self._headers())
+            
+            if r.status_code == 200 and not r.json():
+                raise ValueError(f"fiscal_document_id {fiscal_document_id} not found in fiscal_documents table")
+                
+        except requests.exceptions.RequestException as e:
+            raise StorageError(f"Error verifying fiscal_document_id: {str(e)}")
+        
+        # Salva o histórico
         url = self._table_url('document_history')
         r = requests.post(url, json=event, headers=self._headers())
         return self._handle_response(r)
