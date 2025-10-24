@@ -28,6 +28,87 @@ Projeto MVP para extração, validação e classificação de documentos fiscais
 
 ## Configuração
 
+### Pré-requisitos
+
+- Python 3.11 ou superior
+- Tesseract OCR (para processamento de imagens/PDFs escaneados)
+- Poppler (opcional, para conversão de PDFs em imagens)
+
+### Instalação
+
+1. Clone o repositório:
+   ```bash
+   git clone [URL_DO_REPOSITÓRIO]
+   cd skynet-I2A2-nf-final-v2
+   ```
+
+2. Crie e ative um ambiente virtual (recomendado):
+   ```bash
+   # Windows
+   python -m venv venv
+   .\venv\Scripts\activate
+   
+   # Linux/MacOS
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+
+3. Atualize o pip e instale as dependências:
+   ```bash
+   pip install --upgrade pip
+   pip install numpy==2.3.4 --only-binary=:all:
+   pip install -r requirements.txt
+   ```
+
+   > **Nota**: Se encontrar erros de instalação, tente instalar as dependências principais primeiro:
+   > ```bash
+   > pip install python-dotenv pydantic click fastapi uvicorn python-multipart pandas numpy scipy supabase google-generativeai langchain PyPDF2 pytesseract pdf2image Pillow lxml loguru requests httpx python-jose
+   > ```
+
+4. Configure as variáveis de ambiente:
+   - Copie o arquivo `.env.example` para `.env`
+   - Preencha as credenciais do Supabase e outras configurações necessárias
+
+5. (Opcional) Instale o Tesseract OCR:
+   - Windows: Baixe o instalador em [UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki)
+   - Linux: `sudo apt install tesseract-ocr`
+   - MacOS: `brew install tesseract`
+
+### Gerenciamento de Dependências
+
+O projeto usa `pip-tools` para gerenciar as dependências de forma mais eficiente. Aqui está como usá-lo:
+
+1. Instale o `pip-tools` (se ainda não estiver instalado):
+   ```bash
+   pip install pip-tools
+   ```
+
+2. Para atualizar as dependências:
+   ```bash
+   # Atualiza o arquivo requirements.txt baseado no requirements.in
+   pip-compile --upgrade
+   
+   # Instala as dependências exatas especificadas no requirements.txt
+   pip-sync
+   ```
+
+3. Para adicionar uma nova dependência:
+   - Adicione o pacote ao arquivo `requirements.in`
+   - Execute `pip-compile --upgrade`
+   - Execute `pip-sync` para atualizar o ambiente
+
+4. Para garantir que todas as dependências estejam sincronizadas:
+   ```bash
+   pip-sync
+   ```
+
+### Executando o projeto
+
+```bash
+streamlit run app.py
+```
+
+
 ### Arquivo de Configuração
 
 O projeto usa um arquivo `config.py` como fonte central de configuração. As configurações são carregadas na seguinte ordem de prioridade:
