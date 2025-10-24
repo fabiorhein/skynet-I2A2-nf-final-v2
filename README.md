@@ -62,7 +62,7 @@ Projeto MVP para extração, validação e classificação de documentos fiscais
 
    > **Nota**: Se encontrar erros de instalação, tente instalar as dependências principais primeiro:
    > ```bash
-   > pip install python-dotenv pydantic click fastapi uvicorn python-multipart pandas numpy scipy supabase google-generativeai langchain PyPDF2 pytesseract pdf2image Pillow lxml loguru requests httpx python-jose
+   > pip install python-dotenv pydantic click fastapi uvicorn python-multipart pandas numpy scipy supabase google-generativeai langchain pypdf pytesseract pdf2image Pillow lxml loguru requests httpx python-jose
    > ```
 
 4. Configure as variáveis de ambiente:
@@ -226,7 +226,7 @@ Se não tiver `requirements.txt` atual, instale manualmente pacotes principais:
 
 ```pwsh
 .\venv\Scripts\Activate.ps1
-pip install streamlit pytesseract pillow PyPDF2 lxml pandas numpy
+pip install streamlit pytesseract pillow pypdf lxml pandas numpy
 ```
 
 > Nota: em Windows alguns pacotes (como `lxml`) podem exigir wheels binários. Use wheels pré-compiladas quando necessário.
@@ -249,11 +249,11 @@ streamlit run app.py
 
 ## Resolução de problemas comuns
 
-- `ModuleNotFoundError: No module named 'PyPDF2'` — instale no venv:
+- `ModuleNotFoundError: No module named 'pypdf'` — instale no venv:
 
 ```pwsh
 .\venv\Scripts\Activate.ps1
-pip install PyPDF2
+pip install pypdf
 ```
 
 - Erros ao instalar `lxml` — prefira instalar uma wheel binária compatível com sua versão do Python.
@@ -326,7 +326,7 @@ pip install -r requirements.txt
 
 - Baixe Poppler for Windows (ex.: https://github.com/oschwartz10612/poppler-windows/releases) e extraia.
 - Adicione a pasta `poppler-xx/bin` ao `PATH` do Windows ou coloque o caminho em `POPPLER_PATH` se desejar.
-- Se Poppler não estiver disponível, a aplicação tentará usar PyPDF2 para extrair texto de PDFs com texto selecionável; para PDFs escaneados Poppler+Tesseract são necessários.
+- Se Poppler não estiver disponível, a aplicação tentará usar pypdf para extrair texto de PDFs com texto selecionável; para PDFs escaneados Poppler+Tesseract são necessários.
 
 5) Rodar Streamlit
 

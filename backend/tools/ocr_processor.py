@@ -8,12 +8,14 @@ from typing import List, Dict, Any, Optional
 import pytesseract
 from pdf2image import convert_from_path
 from pdf2image.exceptions import PDFInfoNotInstalledError
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 from PIL import Image
 import os
 import re
-from config import TESSERACT_PATH
+import logging
+from typing import Optional, List, Union, Tuple
 from pathlib import Path
+from config import TESSERACT_PATH
 
 # Configure Tesseract path
 if TESSERACT_PATH and Path(TESSERACT_PATH).exists():
@@ -81,17 +83,14 @@ def pdf_to_text(pdf_path: str, lang: str = 'por') -> str:
         texts = [image_to_text(img, lang=lang) for img in imgs]
         return "\n".join(texts)
 
-    # Fallback: try to extract text using PyPDF2 (works if PDF contains selectable text)
+    # Fallback: try to extract text using pypdf (works if PDF contains selectable text)
     try:
         reader = PdfReader(pdf_path)
         pages_text = []
         for page in reader.pages:
-            try:
-                text = page.extract_text() or ''
-            except Exception:
-                text = ''
+            text = page.extract_text() or ""
             pages_text.append(text)
-        return "\n".join(pages_text)
+        return "\n\n".join(pages_text)
     except Exception:
         # final fallback: empty string
         return ''
