@@ -107,6 +107,14 @@ GOOGLE_API_KEY = _get('GOOGLE_API_KEY')
 LOG_LEVEL = _get('LOG_LEVEL', 'INFO')
 
 
+# Configurações para o DocumentAgent
+UPLOAD_DIR = os.getenv('UPLOAD_DIR', str(Path(__file__).parent / 'uploads'))
+PROCESSED_DIR = os.getenv('PROCESSED_DIR', str(Path(__file__).parent / 'processed'))
+
+# Cria os diretórios se não existirem
+Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
+Path(PROCESSED_DIR).mkdir(parents=True, exist_ok=True)
+
 # Expose a dict if callers prefer
 ALL = {
     'SUPABASE_URL': SUPABASE_URL,
@@ -114,4 +122,6 @@ ALL = {
     'TESSERACT_PATH': TESSERACT_PATH,
     'GOOGLE_API_KEY': GOOGLE_API_KEY,
     'LOG_LEVEL': LOG_LEVEL,
+    'UPLOAD_DIR': UPLOAD_DIR,
+    'PROCESSED_DIR': PROCESSED_DIR,
 }
