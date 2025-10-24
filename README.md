@@ -20,11 +20,18 @@ Projeto MVP para extração, validação e classificação de documentos fiscais
 - `backend/storage.py` — implementação local JSON; há uma interface em `backend/storage_interface.py` para adaptar outros backends.
 - `migration/` — scripts SQL de migração (ex.: `004-add_raw_text_column.sql`).
 
-## Alterações recentes
+## Melhorias Recentes
 
-- `raw_text`: coluna/migração adicionada (`migration/004-add_raw_text_column.sql`) para unificar texto bruto extraído de XML e OCR.
-- Refatoração da integração LLM (preparado para chamadas diretas a API; LangChain é opcional).
-- Melhorias no parser XML para retorno consistente (`raw_text`, `emitente`, `itens`, `impostos`, etc.).
+### Sistema de Armazenamento Aprimorado
+- **Histórico de Documentos**: Novo sistema para rastrear todas as alterações e eventos relacionados aos documentos fiscais
+- **Resiliência**: Melhor tratamento de erros e recuperação em falhas de conexão
+- **Desempenho**: Otimizações nas consultas ao banco de dados
+- **Logs Detalhados**: Mensagens de log mais informativas para facilitar a depuração
+
+### Outras Melhorias
+- `raw_text`: Coluna/migração adicionada (`migration/004-add_raw_text_column.sql`) para unificar texto bruto extraído de XML e OCR
+- Integração LLM: Refatoração para suportar chamadas diretas à API (LangChain é opcional)
+- Parser XML: Melhorias para retorno consistente de dados (`raw_text`, `emitente`, `itens`, `impostos`, etc.)
 
 ## Configuração
 
@@ -119,10 +126,23 @@ O projeto usa um arquivo `config.py` como fonte central de configuração. As co
 
 ### Configuração do Banco de Dados
 
-1. Crie um arquivo `.streamlit/secrets.toml` com as seguintes configurações:
+#### Tabelas Necessárias
+O sistema utiliza as seguintes tabelas no Supabase:
+- `fiscal_documents`: Armazena os documentos fiscais
+- `document_history`: Armazena o histórico de eventos dos documentos
+- `analyses`: Armazena as análises realizadas nos documentos
+
+#### Configuração do Supabase
+1. No painel do Supabase, acesse "SQL Editor" e execute os scripts de migração da pasta `migration/` na ordem numérica
+2. Certifique-se de que as políticas de RLS (Row Level Security) estão configuradas corretamente
+3. Configure as permissões adequadas para as tabelas
+
+#### Arquivo de Configuração
+Crie um arquivo `.streamlit/secrets.toml` com as seguintes configurações:
 
 ```toml
 [connections.supabase]
+# Configurações de conexão com o Supabase
 URL = "https://seu-projeto.supabase.co"
 KEY = "sua-chave-anon-ou-service-role"
 DATABASE = "postgres"
@@ -131,19 +151,63 @@ PASSWORD = "sua-senha-do-banco"
 HOST = "aws-1-regiao.pooler.supabase.com"
 PORT = "5432"
 
-# Outras configurações
-GOOGLE_API_KEY = "sua-api-key-google"
-TESSERACT_PATH = "C:\\caminho\\para\\tesseract.exe"
+# Níveis de log disponíveis: DEBUG, INFO, WARNING, ERROR, CRITICAL
 LOG_LEVEL = "INFO"
+
+# Configurações de armazenamento
+STORAGE_TYPE = "supabase"  # Pode ser 'local' ou 'supabase'
+
+# Configurações de API
+GOOGLE_API_KEY = "sua-api-key-google"
+
+# Caminho para o executável do Tesseract OCR (necessário para processamento de imagens/PDFs)
+TESSERACT_PATH = "C:\\caminho\\para\\tesseract.exe"
+
+# Configurações de paginação
+DEFAULT_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 1000
 ```
 
 2. O arquivo `config.py` irá carregar essas configurações e exportá-las para uso em toda a aplicação.
 
-### Configuração do Supabase
+### Gerenciamento de Histórico
 
-1. No painel do Supabase, vá para "Database" > "Settings" > "Connection Info"
-2. Use as credenciais fornecidas para configurar o `secrets.toml`
-3. Certifique-se de adicionar seu IP à lista de permissões em "Database" > "Settings" > "Allowed IPs"
+O sistema mantém um histórico detalhado de todas as operações realizadas nos documentos fiscais, incluindo:
+- Criação de novos documentos
+- Atualizações de status
+- Análises realizadas
+- Eventos do sistema
+
+#### Visualizando o Histórico
+O histórico pode ser acessado de duas formas:
+
+1. **Através da API**:
+   ```python
+   from backend.storage import storage_manager
+   
+   # Obter histórico de um documento específico
+   history = storage_manager.storage.get_document_history(document_id)
+   
+   # Salvar um novo evento no histórico
+   event = {
+       'fiscal_document_id': document_id,
+       'event_type': 'analysis_completed',
+       'event_data': {
+           'status': 'success',
+           'details': 'Análise concluída com sucesso'
+       }
+   }
+   storage_manager.storage.save_history(event)
+   ```
+
+2. **Através da interface web**:
+   - Acesse a página de detalhes de um documento
+   - A seção "Histórico" exibe todos os eventos relacionados ao documento
+
+#### Políticas de Retenção
+- O histórico é mantido indefinidamente por padrão
+- Para documentos com muitos eventos, considere implementar uma política de retenção personalizada
+- Use o método `cleanup_old_history()` para remover eventos antigos quando necessário
 
 ## Sistema de Migrações
 
