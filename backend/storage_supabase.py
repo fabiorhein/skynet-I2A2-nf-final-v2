@@ -34,45 +34,98 @@ class SupabaseStorage(StorageInterface):
     def _table_url(self, table: str) -> str:
         return f"{self.url}/rest/v1/{table}"
 
-    def _handle_response(self, r: requests.Response) -> Any:
+    def _handle_response(self, r: requests.Response) -> dict:
+        """Processa a resposta da API do Supabase.
+        
+        Args:
+            r: Resposta da requisição HTTP
+            
+        Returns:
+            dict: Dados da resposta como dicionário
+            
+        Raises:
+            SupabaseStorageError: Se houver erro na resposta
+        """
         try:
             r.raise_for_status()
-        except Exception as e:
+            
+            # Tenta fazer parse do JSON
             try:
-                body = r.json()
-            except Exception:
-                body = r.text
-            raise SupabaseStorageError(f"Request failed: {e}; body={body}")
-        try:
-            return r.json()
-        except Exception:
-            return r.text
+                response_data = r.json()
+                # Se for uma lista, retorna o primeiro item
+                if isinstance(response_data, list) and response_data:
+                    return response_data[0]
+                # Se for um dicionário, retorna ele mesmo
+                elif isinstance(response_data, dict):
+                    return response_data
+                # Se for outro tipo, tenta converter para string e depois para dict
+                else:
+                    return {"response": str(response_data)}
+                    
+            except ValueError as e:
+                # Se não for JSON, retorna o texto da resposta em um dicionário
+                if r.text:
+                    return {"message": r.text.strip()}
+                return {"message": "Resposta vazia do servidor"}
+                
+        except requests.exceptions.HTTPError as e:
+            # Tratamento de erros HTTP
+            try:
+                error_detail = r.json().get('message', r.text)
+            except ValueError:
+                error_detail = r.text or str(e)
+                
+            error_msg = f"Erro na requisição: {r.status_code} - {error_detail}"
+            print(f"[ERRO] {error_msg}")
+            raise SupabaseStorageError(error_msg)
+            
+        except Exception as e:
+            error_msg = f"Erro inesperado ao processar resposta: {str(e)}"
+            print(f"[ERRO] {error_msg}")
+            raise SupabaseStorageError(error_msg)
 
     def save_document(self, record: Dict[str, Any]) -> Dict[str, Any]:
-        """Save a fiscal document. Returns the saved record."""
-        # Copy the record to avoid modifying the original
+        """
+        Salva um documento fiscal no Supabase.
+        
+        Args:
+            record: Dicionário contendo os dados do documento a ser salvo
+            
+        Returns:
+            Dict[str, Any]: Dicionário com os dados do documento salvo, incluindo o ID gerado
+            
+        Raises:
+            SupabaseStorageError: Se ocorrer algum erro durante o salvamento
+        """
+        # Cria uma cópia do registro para não modificar o original
         db_record = record.copy()
         
         try:
             print(f"[DEBUG] Iniciando salvamento do documento. Campos recebidos: {list(record.keys())}")
             
-            # Move raw_text to top level if it's in extracted_data 
+            # Move raw_text para o nível superior se estiver em extracted_data
             if 'extracted_data' in db_record and isinstance(db_record['extracted_data'], dict):
                 if 'raw_text' in db_record['extracted_data']:
                     db_record['raw_text'] = db_record['extracted_data'].pop('raw_text')
 
-            # Check if raw_text is directly in the record
+            # Verifica se raw_text está diretamente no registro
             if 'raw_text' not in db_record and 'raw_text' in record:
                 db_record['raw_text'] = record['raw_text']
                 
-            # Garantir que campos obrigatórios existam
-            required_fields = ['file_name', 'document_type', 'extracted_data', 'raw_text']
-            for field in required_fields:
-                if field not in db_record:
-                    print(f"[ERRO] Campo obrigatório ausente: {field}")
-                    db_record[field] = "" if field != 'extracted_data' else {}
+            # Garante que campos obrigatórios existam
+            required_fields = {
+                'file_name': "documento_sem_nome.pdf",
+                'document_type': 'NFe',
+                'extracted_data': {},
+                'raw_text': ''
+            }
             
-            # Garantir que extracted_data é um dicionário
+            for field, default in required_fields.items():
+                if field not in db_record:
+                    print(f"[AVISO] Campo obrigatório ausente: {field}, usando valor padrão")
+                    db_record[field] = default
+            
+            # Garante que extracted_data é um dicionário
             if not isinstance(db_record.get('extracted_data'), dict):
                 print(f"[AVISO] extracted_data não é um dicionário: {type(db_record.get('extracted_data'))}")
                 db_record['extracted_data'] = {}
@@ -83,22 +136,44 @@ class SupabaseStorage(StorageInterface):
                 debug_record['raw_text'] = debug_record['raw_text'][:100] + '... (truncado)'
             print(f"[DEBUG] Dados a serem enviados para o Supabase: {debug_record}")
             
+            # Prepara a URL e os cabeçalhos
             url = self._table_url('fiscal_documents')
             print(f"[DEBUG] Enviando requisição para: {url}")
             
             try:
-                r = requests.post(url, json=db_record, headers=self._headers(), timeout=30)
-                print(f"[DEBUG] Resposta do servidor - Status: {r.status_code}")
+                # Faz a requisição POST para o Supabase
+                response = requests.post(
+                    url, 
+                    json=db_record, 
+                    headers=self._headers(), 
+                    timeout=30
+                )
                 
-                if r.status_code >= 400:
-                    print(f"[ERRO] Erro na resposta do servidor: {r.status_code} - {r.text}")
+                print(f"[DEBUG] Resposta do servidor - Status: {response.status_code}")
                 
-                return self._handle_response(r)
+                # Processa a resposta
+                result = self._handle_response(response)
+                
+                # Se chegou até aqui, o documento foi salvo com sucesso
+                print("[SUCESSO] Documento salvo com sucesso no Supabase")
+                
+                # Retorna o resultado com os dados completos
+                return {
+                    'id': result.get('id'),
+                    'success': True,
+                    'message': 'Documento salvo com sucesso',
+                    'data': result
+                }
                 
             except requests.exceptions.RequestException as e:
                 error_msg = f"Erro na requisição HTTP: {str(e)}"
                 print(f"[ERRO] {error_msg}")
-                # Armazena o erro para ser recuperado pelo frontend se necessário
+                self._last_error = error_msg
+                raise SupabaseStorageError(error_msg)
+                
+            except Exception as e:
+                error_msg = f"Erro inesperado ao processar resposta: {str(e)}"
+                print(f"[ERRO] {error_msg}")
                 self._last_error = error_msg
                 raise SupabaseStorageError(error_msg)
                 

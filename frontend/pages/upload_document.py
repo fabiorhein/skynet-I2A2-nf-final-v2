@@ -213,23 +213,38 @@ def render(storage):
                                 if hasattr(storage, '_last_error'):
                                     st.error(f'Detalhes do erro: {getattr(storage, "_last_error", "")}')
                                 st.stop()
-                                
+                            
+                            # Documento salvo com sucesso
+                            st.success('✅ Documento salvo com sucesso!')
+                            st.balloons()
+                            
                             # Salvar histórico se suportado
-                            if hasattr(storage, 'save_history'):
-                                history_data = {
-                                    'fiscal_document_id': saved.get('id'),
-                                    'event_type': 'created',
-                                    'event_data': {
-                                        'source': 'ocr_auto',
-                                        'file_type': file_type,
-                                        'validation_status': record.get('validation_status')
+                            try:
+                                if hasattr(storage, 'save_history'):
+                                    history_data = {
+                                        'fiscal_document_id': saved.get('id'),
+                                        'event_type': 'created',
+                                        'event_data': {
+                                            'source': 'ocr_auto',
+                                            'file_type': file_type,
+                                            'validation_status': record.get('validation_status')
+                                        }
                                     }
-                                }
-                                storage.save_history(history_data)
-                                
+                                    storage.save_history(history_data)
+                            except Exception as history_error:
+                                st.warning(f'Aviso: Não foi possível salvar o histórico: {str(history_error)}')
+                            
                             # Mostrar dados extraídos
                             st.subheader('📊 Dados extraídos automaticamente')
                             st.json(extracted_data)
+                            
+                            # Mostrar link para visualizar o documento salvo
+                            if 'id' in saved:
+                                st.markdown(f'''
+                                **Ações:**
+                                - [Visualizar documento](#)
+                                - [Editar informações](#)
+                                ''', unsafe_allow_html=True)
                             
                         except Exception as e:
                             st.error(f'Erro ao salvar documento: {str(e)}')
