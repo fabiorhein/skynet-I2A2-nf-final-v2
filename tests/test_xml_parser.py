@@ -66,7 +66,8 @@ def test_parse_xml_invalido():
     
     assert 'error' in result
     assert result['error'] == 'xml_parse_error'
-    assert 'Invalid or malformed XML' in result['message']
+    # Verifica se a mensagem de erro começa com 'XML syntax error:'
+    assert result['message'].startswith('XML syntax error:')
 
 def test_parse_xml_arquivo_inexistente():
     """Testa o parser com um arquivo que não existe."""

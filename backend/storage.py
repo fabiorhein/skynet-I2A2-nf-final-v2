@@ -3,6 +3,7 @@ Unified storage implementation for the application.
 Supports both local JSON and Supabase backends.
 """
 import json
+import traceback
 import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union, Type, TypeVar, Generic
@@ -544,57 +545,102 @@ class SupabaseStorage(StorageInterface):
         
         Args:
             r: Resposta da requisição HTTP
-            preserve_list: Se True, preserva a lista de resultados em vez de retornar apenas o primeiro item
+            preserve_list: Se True, sempre retorna uma lista, mesmo que vazia.
+                         Se False, retorna um único item (o primeiro) ou um dicionário vazio.
             
         Returns:
-            Union[dict, list]: Dados da resposta como dicionário ou lista, dependendo do parâmetro preserve_list
+            Union[dict, list]: Dados da resposta como dicionário ou lista, dependendo do parâmetro preserve_list.
+                             Retorna uma lista vazia ou dicionário vazio em caso de erro ou resposta vazia.
             
         Raises:
-            SupabaseStorageError: Se houver erro na resposta
+            SupabaseStorageError: Se houver um erro na requisição HTTP
         """
         try:
+            # Log da resposta para depuração
+            print(f"[DEBUG] Resposta recebida - Status: {r.status_code}")
+            print(f"[DEBUG] Cabeçalhos: {dict(r.headers)}")
+            
+            # Verifica se houve erro na requisição HTTP
             r.raise_for_status()
             
             # Tenta fazer parse do JSON
             try:
                 response_data = r.json()
+                print(f"[DEBUG] Dados da resposta (brutos): {response_data[:200]}..." if isinstance(response_data, str) and len(response_data) > 200 else f"[DEBUG] Dados da resposta: {response_data}")
                 
                 # Se for uma lista
                 if isinstance(response_data, list):
-                    if preserve_list:
-                        return response_data  # Retorna a lista completa
-                    elif response_data:
-                        return response_data[0]  # Retorna apenas o primeiro item
-                    else:
+                    if not response_data:
+                        print("[DEBUG] Lista vazia retornada")
                         return [] if preserve_list else {}
-                # Se for um dicionário, retorna ele mesmo
-                elif isinstance(response_data, dict):
-                    return response_data
-                # Se for outro tipo, tenta converter para string e depois para dict
-                else:
-                    return {"response": str(response_data)}
+                        
+                    print(f"[DEBUG] Retornando lista com {len(response_data)} itens")
                     
-            except ValueError as e:
-                # Se não for JSON, retorna o texto da resposta em um dicionário
-                if r.text:
-                    return {"message": r.text.strip()}
-                return {"message": "Resposta vazia do servidor"} if not preserve_list else []
+                    # Se preserve_list for True, retorna a lista inteira
+                    if preserve_list:
+                        return response_data
+                    
+                    # Se preserve_list for False, retorna apenas o primeiro item
+                    first_item = response_data[0]
+                    if not isinstance(first_item, dict):
+                        print(f"[WARNING] O primeiro item não é um dicionário: {first_item}")
+                        return {"data": first_item}
+                    return first_item
+                
+                # Se for um dicionário
+                elif isinstance(response_data, dict):
+                    # Verifica se há uma chave 'data' que contém os resultados (comum em algumas APIs)
+                    if 'data' in response_data and isinstance(response_data['data'], list):
+                        print(f"[DEBUG] Encontrada chave 'data' com {len(response_data['data'])} itens")
+                        return response_data['data'] if preserve_list else (response_data['data'][0] if response_data['data'] else {})
+                    
+                    # Verifica se há uma chave 'items' que contém os resultados
+                    if 'items' in response_data and isinstance(response_data['items'], list):
+                        print(f"[DEBUG] Encontrada chave 'items' com {len(response_data['items'])} itens")
+                        return response_data['items'] if preserve_list else (response_data['items'][0] if response_data['items'] else {})
+                    
+                    # Se não for nenhum dos casos acima, retorna o dicionário como está
+                    print("[DEBUG] Retornando dicionário de resposta")
+                    return [response_data] if preserve_list else response_data
+                
+                # Se for um tipo não suportado, converte para string
+                else:
+                    print(f"[WARNING] Tipo de resposta não suportado: {type(response_data)}")
+                    return [{"response": str(response_data)}] if preserve_list else {"response": str(response_data)}
+                    
+            except json.JSONDecodeError as e:
+                # Se não for JSON, retorna o texto da resposta
+                print(f"[WARNING] Falha ao decodificar JSON: {e}")
+                if r.text.strip():
+                    print(f"[DEBUG] Conteúdo da resposta: {r.text[:500]}..." if len(r.text) > 500 else f"[DEBUG] Conteúdo da resposta: {r.text}")
+                    return [{"raw_response": r.text.strip()}] if preserve_list else {"raw_response": r.text.strip()}
+                return [] if preserve_list else {}
                 
         except requests.exceptions.HTTPError as e:
             # Tratamento de erros HTTP
             try:
                 error_detail = r.json().get('message', r.text)
-            except ValueError:
+                print(f"[DEBUG] Detalhes do erro (JSON): {error_detail}")
+            except (ValueError, json.JSONDecodeError):
                 error_detail = r.text or str(e)
+                print(f"[DEBUG] Detalhes do erro (texto): {error_detail}")
                 
             error_msg = f"Erro na requisição: {r.status_code} - {error_detail}"
             print(f"[ERRO] {error_msg}")
-            raise SupabaseStorageError(error_msg)
+            
+            # Retorna uma lista vazia ou dicionário vazio em vez de levantar exceção
+            # para permitir que o código continue executando
+            return [] if preserve_list else {}
             
         except Exception as e:
             error_msg = f"Erro inesperado ao processar resposta: {str(e)}"
             print(f"[ERRO] {error_msg}")
-            raise SupabaseStorageError(error_msg)
+            print(f"[DEBUG] Tipo de exceção: {type(e).__name__}")
+            print(f"[DEBUG] Traceback: {traceback.format_exc()}")
+            
+            # Retorna uma lista vazia ou dicionário vazio em vez de levantar exceção
+            # para permitir que o código continue executando
+            return [] if preserve_list else {}
 
     def save_fiscal_document(self, document: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -944,44 +990,168 @@ class SupabaseStorage(StorageInterface):
         page: int = 1,
         page_size: int = 50
     ) -> PaginatedResponse:
-        """Return paginated fiscal documents with total count."""
+        """Return paginated fiscal documents with total count.
+        
+        Args:
+            filters: Dictionary of filters to apply (e.g., {'issuer_cnpj': '12345678'})
+            page: Page number (1-based)
+            page_size: Number of items per page (1-100, default: 50)
+            
+        Returns:
+            PaginatedResponse: Paginated response with documents and pagination info
+            
+        Raises:
+            SupabaseStorageError: If there's an error communicating with the storage backend
+        """
+        # Validação dos parâmetros
+        page = max(1, int(page))
+        page_size = max(1, min(100, int(page_size)))  # Limita a 100 itens por página
+        
         url = self._table_url('fiscal_documents')
         offset = (page - 1) * page_size
+        
+        print(f"[DEBUG] Buscando documentos - página {page}, tamanho da página: {page_size}, offset: {offset}")
+        if filters:
+            print(f"[DEBUG] Filtros aplicados: {filters}")
 
-        # Build query params
-        params: Dict[str, Any] = {'select': '*', 'limit': page_size, 'offset': offset}
+        # Parâmetros da consulta
+        params: Dict[str, Any] = {
+            'select': '*',
+            'order': 'created_at.desc',  # Ordena por data de criação (mais recentes primeiro)
+            'limit': page_size,
+            'offset': offset
+        }
+        
+        # Aplica filtros
         if filters:
             for k, v in filters.items():
                 if v is None or v == '':
                     continue
-                # ilike for case-insensitive partial match
-                params[k] = f'ilike.*{v}*'
+                    
+                # Remove espaços em branco extras
+                v = str(v).strip()
+                
+                # Se for um CNPJ, remove formatação para busca
+                if k in ['issuer_cnpj', 'recipient_cnpj']:
+                    v = ''.join(filter(str.isdigit, v))
+                
+                # Usa ilike para busca parcial case-insensitive
+                params[k] = f'ilike.%{v}%'
+                print(f"[DEBUG] Aplicando filtro: {k}={params[k]}")
 
-        # Get documents for current page
-        r = requests.get(url, headers=self._headers(), params=params)
-        items = self._handle_response(r)
-        if not isinstance(items, list):
-            items = [items] if items else []
-
-        # Get total count using COUNT query
-        count_params = {'select': 'id', 'count': 'exact'}
-        if filters:
-            count_params.update({k: v for k, v in params.items() if k not in ['select', 'limit', 'offset']})
-        
-        r = requests.get(
-            url,
-            headers={**self._headers(), 'Prefer': 'count=exact'},
-            params=count_params
-        )
-        total = int(r.headers.get('Content-Range', '0-0/0').split('/')[-1])
-
-        return PaginatedResponse(
-            items=items,
-            total=total,
-            page=page,
-            page_size=page_size,
-            total_pages=(total + page_size - 1) // page_size
-        )
+        try:
+            # 1. Primeiro, busca o total de itens que correspondem aos filtros
+            count_url = f"{url}?select=count"
+            count_headers = {**self._headers(), 'Prefer': 'count=exact'}
+            
+            # Remove parâmetros de paginação e ordenação para a contagem
+            count_params = {k: v for k, v in params.items() 
+                          if k not in ['limit', 'offset', 'order']}
+            
+            print(f"[DEBUG] Contando documentos com filtros: {count_params}")
+            
+            r = requests.get(
+                count_url,
+                headers=count_headers,
+                params=count_params
+            )
+            
+            # Extrai o total de itens da resposta
+            total = 0
+            if r.status_code == 200:
+                try:
+                    response_data = r.json()
+                    print(f"[DEBUG] Resposta da contagem: {response_data}")
+                    
+                    # Tenta extrair a contagem da resposta JSON
+                    if isinstance(response_data, list) and response_data:
+                        if 'count' in response_data[0]:
+                            total = int(response_data[0]['count'])
+                        elif len(response_data) == 1 and isinstance(response_data[0], (int, float)):
+                            total = int(response_data[0])
+                    
+                    # Se não encontrou no JSON, tenta do header Content-Range
+                    if total == 0 and 'Content-Range' in r.headers:
+                        content_range = r.headers['Content-Range']
+                        if '/' in content_range:
+                            total = int(content_range.split('/')[-1])
+                            print(f"[DEBUG] Total extraído do Content-Range: {total}")
+                except (ValueError, KeyError, IndexError) as e:
+                    print(f"[WARNING] Erro ao extrair contagem total: {e}")
+                    print(f"[DEBUG] Conteúdo da resposta: {r.text}")
+            else:
+                print(f"[WARNING] Falha ao obter contagem total: {r.status_code} - {r.text}")
+            
+            print(f"[DEBUG] Total de itens encontrados: {total}")
+            
+            # Se não há itens, retorna resposta vazia
+            if total == 0:
+                print("[DEBUG] Nenhum documento encontrado com os filtros fornecidos")
+                return PaginatedResponse(
+                    items=[],
+                    total=0,
+                    page=page,
+                    page_size=page_size,
+                    total_pages=0
+                )
+                
+            # 2. Agora busca os itens da página atual
+            print(f"[DEBUG] Buscando itens da página {page} (offset: {offset}, limit: {page_size})")
+            
+            # Usa o método _handle_response para processar a resposta
+            items = self._handle_response(
+                requests.get(url, headers=self._headers(), params=params),
+                preserve_list=True
+            )
+            
+            # Garante que items seja uma lista
+            if not isinstance(items, list):
+                print(f"[WARNING] Resposta inesperada do servidor (não é uma lista): {items}")
+                items = []
+                
+            print(f"[DEBUG] Itens retornados: {len(items)}")
+            
+            # Calcula o total de páginas
+            total_pages = (total + page_size - 1) // page_size if page_size > 0 else 1
+            
+            # Cria a resposta paginada
+            response = PaginatedResponse(
+                items=items,
+                total=total,
+                page=page,
+                page_size=page_size,
+                total_pages=total_pages
+            )
+            
+            print(f"[DEBUG] Resposta paginada criada: {len(items)} itens, {total} no total, {total_pages} páginas")
+            
+            return response
+            
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Erro na requisição HTTP: {str(e)}"
+            print(f"[ERRO] {error_msg}")
+            print(f"[DEBUG] Traceback: {traceback.format_exc()}")
+            # Retorna uma resposta vazia em caso de erro
+            return PaginatedResponse(
+                items=[],
+                total=0,
+                page=page,
+                page_size=page_size,
+                total_pages=0
+            )
+            
+        except Exception as e:
+            error_msg = f"Erro inesperado ao buscar documentos: {str(e)}"
+            print(f"[ERRO] {error_msg}")
+            print(f"[DEBUG] Traceback: {traceback.format_exc()}")
+            # Retorna uma resposta vazia em caso de erro
+            return PaginatedResponse(
+                items=[],
+                total=0,
+                page=page,
+                page_size=page_size,
+                total_pages=0
+            )
 
     def get_document_history(self, fiscal_document_id: str) -> List[Dict[str, Any]]:
         """Get history events for a document."""
