@@ -99,18 +99,38 @@ SUPABASE_CONFIG = {
 
 # SQLAlchemy engine URL for migrations
 SQLALCHEMY_DATABASE_URL = DATABASE_URL
-# Tesseract path - try common install locations if not set in env/secrets
-TESSERACT_PATH = _get('TESSERACT_PATH') or 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
-if not Path(TESSERACT_PATH).exists():
-    alt_paths = [
-        'C:\\Program Files\\Tesseract-OCR\\tesseract.exe',
-        'C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe',
-        'D:\\Program Files\\Tesseract-OCR\\tesseract.exe'
-    ]
+
+# Tesseract path - configuração para Windows e Linux
+TESSERACT_PATH = _get('TESSERACT_PATH')
+
+# Se não estiver definido ou o caminho não existir, tenta encontrar automaticamente
+if not TESSERACT_PATH or not Path(TESSERACT_PATH).exists():
+    import platform
+    
+    if platform.system() == 'Windows':
+        # Caminhos comuns no Windows
+        alt_paths = [
+            'C:\\Program Files\\Tesseract-OCR\\tesseract.exe',
+            'C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe',
+            'D:\\Program Files\\Tesseract-OCR\\tesseract.exe'
+        ]
+    else:
+        # Caminhos comuns no Linux/Streamlit Cloud
+        alt_paths = [
+            '/usr/bin/tesseract',
+            '/usr/local/bin/tesseract',
+            '/app/.apt/usr/bin/tesseract',
+            '/home/appuser/streamlit-app/tesseract/tesseract'
+        ]
+    
+    # Tenta encontrar um caminho válido
     for p in alt_paths:
         if Path(p).exists():
             TESSERACT_PATH = p
             break
+    else:
+        # Se não encontrar em nenhum dos caminhos padrão, usa o primeiro do sistema operacional atual
+        TESSERACT_PATH = alt_paths[0] if alt_paths else 'tesseract'
 
 GOOGLE_API_KEY = _get('GOOGLE_API_KEY')
 LOG_LEVEL = _get('LOG_LEVEL', 'INFO')

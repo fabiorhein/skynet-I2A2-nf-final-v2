@@ -305,11 +305,39 @@ class DocumentAgent:
         
         doc_type = doc_type_map.get(result.get('document_type', '').lower(), DocumentType.UNKNOWN)
         
+        # Formata a data de emissão se existir
+        issue_date = result.get('data_emissao')
+        if issue_date:
+            try:
+                # Tenta converter para datetime e depois para o formato desejado
+                if isinstance(issue_date, str):
+                    # Se já estiver no formato YYYY-MM-DD HH:MM:SS, mantém
+                    if not re.match(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', issue_date):
+                        # Tenta converter de DD/MM/YYYY HH:MM:SS para YYYY-MM-DD HH:MM:SS
+                        try:
+                            # Tenta com horas, minutos e segundos
+                            dt = datetime.strptime(issue_date, '%d/%m/%Y %H:%M:%S')
+                            issue_date = dt.strftime('%Y-%m-%d %H:%M:%S')
+                        except ValueError:
+                            # Se falhar, tenta apenas com a data
+                            try:
+                                dt = datetime.strptime(issue_date, '%d/%m/%Y')
+                                issue_date = dt.strftime('%Y-%m-%d 00:00:00')
+                            except ValueError:
+                                # Se não conseguir converter, mantém o valor original
+                                logger.warning(f"Formato de data não reconhecido: {issue_date}")
+                elif hasattr(issue_date, 'strftime'):
+                    # Se for um objeto datetime, converte para string
+                    issue_date = issue_date.strftime('%Y-%m-%d %H:%M:%S')
+            except Exception as e:
+                logger.warning(f"Erro ao formatar data de emissão: {e}")
+                # Em caso de erro, mantém o valor original
+        
         # Cria o documento no banco de dados
         document = Document.create(
             document_type=doc_type,
             document_number=result.get('numero'),
-            issue_date=result.get('data_emissao'),
+            issue_date=issue_date,
             total_amount=result.get('valor_total', 0.0),
             issuer_name=result.get('emitente', {}).get('razao_social'),
             issuer_document=result.get('emitente', {}).get('cnpj'),
