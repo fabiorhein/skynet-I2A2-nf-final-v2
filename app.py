@@ -1,5 +1,11 @@
 import streamlit as st
-st.set_page_config(page_title='SkyNET-I2A2 - Fiscal Processor', layout='wide')
+
+# Page configuration must be the first Streamlit command
+st.set_page_config(
+    page_title="SkyNET-I2A2 - Processamento Fiscal Inteligente",
+    page_icon="📊",
+    layout="wide"
+)
 
 from backend.agents import coordinator
 from pathlib import Path

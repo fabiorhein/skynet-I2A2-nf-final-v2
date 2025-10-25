@@ -3,53 +3,171 @@ MIT
 ++ END LICENSE
 # SkyNET-I2A2 — Processamento Fiscal (MVP)
 
-Projeto MVP para extração, validação e classificação de documentos fiscais eletrônicos (NFe/NFCe/CTe).
+Sistema avançado para processamento de documentos fiscais com suporte a extração via OCR, validação de regras fiscais e integração com Supabase.
 
-## Visão geral
+## 🚀 Visão Geral
 
-- Extrai dados de arquivos XML (parser pragmático usando `lxml`) ou via OCR (Tesseract + `pytesseract`) para PDFs/imagens.
-- Valida regras fiscais básicas (CNPJ, somas de itens vs total, impostos) e classifica documentos.
-- Armazenamento local via JSON ou integração com Supabase/Postgres (implementação compatível via `StorageInterface`).
+SkyNET-I2A2 é uma solução completa para processamento de documentos fiscais que oferece:
 
-## Estrutura do projeto
+- **Extração de Dados**:
+  - Parser XML avançado com `lxml`
+  - OCR integrado com Tesseract para PDFs e imagens
+  - Suporte a múltiplos formatos de documentos fiscais (NFe, NFCe, CTe)
 
-- `app.py` — ponto de entrada (Streamlit).
-- `frontend/pages/` — páginas da UI (upload, histórico, home, etc.).
-- `backend/agents/` — agentes: `extraction`, `classifier`, `analyst` e `coordinator`.
-- `backend/tools/` — utilitários (parser XML, OCR, validação fiscal, etc.).
-- `backend/storage.py` — implementação local JSON; há uma interface em `backend/storage_interface.py` para adaptar outros backends.
-- `migration/` — scripts SQL de migração (ex.: `004-add_raw_text_column.sql`).
+- **Validação Inteligente**:
+  - Verificação de CNPJ/CPF
+  - Validação de somas e totais
+  - Análise de impostos e cálculos fiscais
+  - Detecção de anomalias e possíveis fraudes
 
-## Melhorias Recentes
+- **Armazenamento Flexível**:
+  - Modo local com JSON para desenvolvimento
+  - Integração nativa com Supabase/PostgreSQL
+  - Interface unificada para fácil migração entre backends
 
-### Sistema de Armazenamento Aprimorado
-- **Histórico de Documentos**: Novo sistema para rastrear todas as alterações e eventos relacionados aos documentos fiscais
-- **Resiliência**: Melhor tratamento de erros e recuperação em falhas de conexão
-- **Desempenho**: Otimizações nas consultas ao banco de dados
-- **Logs Detalhados**: Mensagens de log mais informativas para facilitar a depuração
+- **Interface Moderna**:
+  - Dashboard interativo com Streamlit
+  - Visualização de documentos e histórico
+  - Painel de análise e relatórios
 
-### Outras Melhorias
-- `raw_text`: Coluna/migração adicionada (`migration/004-add_raw_text_column.sql`) para unificar texto bruto extraído de XML e OCR
-- Integração LLM: Refatoração para suportar chamadas diretas à API (LangChain é opcional)
-- Parser XML: Melhorias para retorno consistente de dados (`raw_text`, `emitente`, `itens`, `impostos`, etc.)
+## 🏗️ Estrutura do Projeto
 
-## Configuração
+```
+skynet-I2A2-nf-final-v2/
+├── app.py                 # Ponto de entrada da aplicação Streamlit
+├── config.py              # Configurações globais e ambiente
+├── requirements.in        # Dependências principais
+├── requirements.txt       # Dependências travadas
+│
+├── backend/
+│   ├── agents/            # Agentes de processamento
+│   │   ├── __init__.py
+│   │   ├── analyst.py     # Análise de documentos
+│   │   ├── classifier.py  # Classificação de documentos
+│   │   ├── coordinator.py # Orquestração do fluxo
+│   │   ├── extraction.py  # Extração de dados
+│   │   └── validator.py   # Validação fiscal
+│   │
+│   ├── models/            # Modelos de dados
+│   │   └── document.py    # Modelo de documento fiscal
+│   │
+│   ├── tools/             # Ferramentas e utilitários
+│   │   ├── ocr_processor.py # Processamento OCR
+│   │   ├── fiscal_validator.py # Validações fiscais
+│   │   └── ...
+│   │
+│   ├── storage.py         # Implementação de armazenamento
+│   └── storage_interface.py # Interface de armazenamento
+│
+├── frontend/
+│   ├── components/        # Componentes da UI reutilizáveis
+│   └── pages/             # Páginas da aplicação
+│       ├── home.py        # Página inicial
+│       ├── upload.py      # Upload de documentos
+│       └── history.py     # Histórico de documentos
+│
+├── migration/             # Scripts de migração do banco
+│   ├── 001-create_tables.sql
+│   ├── 002-add_columns.sql
+│   └── ...
+│
+├── .streamlit/
+│   ├── config.toml        # Configurações do Streamlit
+│   └── secrets.toml       # Chaves e segredos (não versionado)
+│
+├── tests/                 # Testes automatizados
+└── docs/                  # Documentação adicional
+```
 
-### Pré-requisitos
+## 🆕 Melhorias Recentes
 
-- Python 3.11 ou superior
-- Tesseract OCR (para processamento de imagens/PDFs escaneados)
-- Poppler (opcional, para conversão de PDFs em imagens)
+### ✨ Nova Interface do Usuário
+- **Dashboard Moderno**: Redesenho completo da interface com Streamlit
+- **Componentes Avançados**:
+  - `streamlit-extras` para UI/UX aprimorada
+  - Notificações em tempo real
+  - Upload de múltiplos arquivos
+  - Visualização de documentos integrada
 
-### Instalação
+### 🛠️ Melhorias Técnicas
+- **OCR Aprimorado**:
+  - Suporte a múltiplos idiomas (Português/Inglês)
+  - Fallback automático entre idiomas
+  - Tratamento de erros robusto
 
-1. Clone o repositório:
+- **Desempenho**:
+  - Cache de resultados de OCR
+  - Processamento em lote para múltiplos documentos
+  - Otimização de consultas ao banco de dados
+
+- **Segurança**:
+  - Validação de entrada aprimorada
+  - Tratamento seguro de dados sensíveis
+  - Logs detalhados para auditoria
+
+### 📦 Novas Funcionalidades
+- **Validação Fiscal**:
+  - Verificação de chaves de acesso
+  - Validação de assinaturas digitais
+  - Cálculo de impostos (ICMS, IPI, PIS, COFINS)
+
+- **Análise Inteligente**:
+  - Detecção de anomalias
+  - Classificação automática de documentos
+  - Extração estruturada de dados
+
+- **Integrações**:
+  - Supabase para armazenamento em nuvem
+  - Webhooks para notificações
+  - API RESTful para integração com outros sistemas
+
+## ⚙️ Configuração
+
+### 📋 Pré-requisitos
+
+- **Sistema Operacional**: Windows 10/11, macOS 10.15+, ou Linux
+- **Python**: 3.11 ou superior
+- **Banco de Dados**: 
+  - SQLite (embutido para desenvolvimento)
+  - PostgreSQL 12+ (produção)
+- **Serviços Externos**:
+  - Conta no [Supabase](https://supabase.com) (opcional)
+  - Chave da API do Google (para alguns recursos avançados)
+
+### 🔧 Dependências do Sistema
+
+#### Windows
+```powershell
+# Instalar Tesseract OCR (64-bit)
+choco install tesseract --version 5.3.3
+choco install poppler
+
+# Ou baixe manualmente:
+# Tesseract: https://github.com/UB-Mannheim/tesseract/wiki
+# Poppler: https://github.com/oschwartz10612/poppler-windows/releases/
+```
+
+#### Linux (Ubuntu/Debian)
+```bash
+sudo apt update
+sudo apt install -y tesseract-ocr tesseract-ocr-por poppler-utils
+```
+
+#### macOS
+```bash
+brew install tesseract tesseract-lang
+brew install poppler
+```
+
+## 🚀 Instalação Rápida
+
+1. **Clonar o repositório**:
    ```bash
-   git clone [URL_DO_REPOSITÓRIO]
+   git clone https://github.com/seu-usuario/skynet-I2A2-nf-final-v2.git
    cd skynet-I2A2-nf-final-v2
    ```
 
-2. Crie e ative um ambiente virtual (recomendado):
+2. **Configurar ambiente virtual**:
    ```bash
    # Windows
    python -m venv venv
@@ -60,82 +178,361 @@ Projeto MVP para extração, validação e classificação de documentos fiscais
    source venv/bin/activate
    ```
 
-3. Atualize o pip e instale as dependências:
+3. **Instalar dependências**:
    ```bash
-   pip install --upgrade pip
-   pip install numpy==2.3.4 --only-binary=:all:
-   pip install -r requirements.txt
-   ```
-
-   > **Nota**: Se encontrar erros de instalação, tente instalar as dependências principais primeiro:
-   > ```bash
-   > pip install python-dotenv pydantic click fastapi uvicorn python-multipart pandas numpy scipy supabase google-generativeai langchain pypdf pytesseract pdf2image Pillow lxml loguru requests httpx python-jose
-   > ```
-
-4. Configure as variáveis de ambiente:
-   - Copie o arquivo `.env.example` para `.env`
-   - Preencha as credenciais do Supabase e outras configurações necessárias
-
-5. (Opcional) Instale o Tesseract OCR:
-   - Windows: Baixe o instalador em [UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki)
-   - Linux: `sudo apt install tesseract-ocr`
-   - MacOS: `brew install tesseract`
-
-### Gerenciamento de Dependências
-
-O projeto usa `pip-tools` para gerenciar as dependências de forma mais eficiente. Aqui está como usá-lo:
-
-1. Instale o `pip-tools` (se ainda não estiver instalado):
-   ```bash
+   # Atualizar pip e instalar dependências básicas
+   python -m pip install --upgrade pip
    pip install pip-tools
-   ```
-
-2. Para atualizar as dependências:
-   ```bash
-   # Atualiza o arquivo requirements.txt baseado no requirements.in
-   pip-compile --upgrade
    
-   # Instala as dependências exatas especificadas no requirements.txt
-   pip-sync
+   # Instalar dependências do projeto
+   pip install -r requirements.txt
+   
+   # Se encontrar erros com numpy, instale separadamente:
+   pip install numpy==2.3.4 --only-binary=:all:
    ```
 
-3. Para adicionar uma nova dependência:
-   - Adicione o pacote ao arquivo `requirements.in`
-   - Execute `pip-compile --upgrade`
-   - Execute `pip-sync` para atualizar o ambiente
-
-4. Para garantir que todas as dependências estejam sincronizadas:
+4. **Configurar variáveis de ambiente**:
    ```bash
+   # Copiar arquivo de exemplo
+   cp .env.example .env
+   
+   # Editar o arquivo .env com suas credenciais
+   # Windows: notepad .env
+   # Linux: nano .env
+   ```
+
+5. **Configurar Tesseract OCR**:
+   - Verifique se o Tesseract está no PATH
+   - Configure o caminho no arquivo `.env`:
+     ```
+     TESSERACT_PATH=C:\\Program Files\\Tesseract-OCR\\tesseract.exe
+     TESSDATA_PREFIX=C:\\Program Files\\Tesseract-OCR\\tessdata
+     ```
+
+6. **Iniciar a aplicação**:
+   ```bash
+   streamlit run app.py
+   ```
+
+   A aplicação estará disponível em: http://localhost:8501
+
+## 📦 Gerenciamento de Dependências
+
+O projeto utiliza `pip-tools` para gerenciar dependências de forma eficiente e reproduzível.
+
+### Comandos Úteis
+
+| Comando | Descrição |
+|---------|-----------|
+| `pip-compile --upgrade` | Atualiza `requirements.txt` baseado em `requirements.in` |
+| `pip-sync` | Sincroniza o ambiente com `requirements.txt` |
+| `pip-compile --upgrade-package <pkg>` | Atualiza um pacote específico |
+
+### Adicionando Novas Dependências
+
+1. Edite `requirements.in`
+2. Execute:
+   ```bash
+   pip-compile --upgrade
    pip-sync
    ```
 
-### Executando o projeto
+### Dependências Principais
+
+- **Processamento de Dados**: pandas, numpy, scipy
+- **OCR e PDF**: pytesseract, pdf2image, pypdf
+- **IA/ML**: langchain, google-generativeai
+- **Web**: fastapi, uvicorn, httpx
+- **Banco de Dados**: supabase, sqlalchemy
+- **Interface**: streamlit, streamlit-extras
+
+### Solução de Problemas
+
+- **Erro de instalação**: Tente instalar as dependências principais primeiro:
+  ```bash
+  pip install python-dotenv pydantic fastapi uvicorn python-multipart
+  pip install pandas numpy scipy
+  pip install -r requirements.txt
+  ```
+
+- **Problemas com Tesseract**:
+  - Verifique se o Tesseract está instalado e no PATH
+  - Confirme o caminho em `TESSERACT_PATH` e `TESSDATA_PREFIX`
+
+## 🚀 Executando o Projeto
+
+### Modo Desenvolvimento
 
 ```bash
+# Ativar ambiente virtual
+.\venv\Scripts\activate  # Windows
+source venv/bin/activate  # Linux/MacOS
+
+# Iniciar o Streamlit
 streamlit run app.py
 ```
 
+### Variáveis de Ambiente
 
-### Arquivo de Configuração
+Crie um arquivo `.env` na raiz do projeto com as seguintes variáveis:
 
-O projeto usa um arquivo `config.py` como fonte central de configuração. As configurações são carregadas na seguinte ordem de prioridade:
+```ini
+# Configurações do Supabase
+SUPABASE_URL=seu-projeto.supabase.co
+SUPABASE_KEY=sua-chave-supabase
 
-1. Variáveis de ambiente
-2. Configurações do Streamlit (se disponível)
-3. Arquivo `.streamlit/secrets.toml`
+# Configurações de Log
+LOG_LEVEL=INFO
+LOG_FILE=app.log
 
-### Configuração do Banco de Dados
+# Configurações do Tesseract OCR
+TESSERACT_PATH=C:\\Program Files\\Tesseract-OCR\\tesseract.exe
+TESSDATA_PREFIX=C:\\Program Files\\Tesseract-OCR\\tessdata
 
-#### Tabelas Necessárias
-O sistema utiliza as seguintes tabelas no Supabase:
-- `fiscal_documents`: Armazena os documentos fiscais
-- `document_history`: Armazena o histórico de eventos dos documentos
-- `analyses`: Armazena as análises realizadas nos documentos
+# Configurações de API
+GOOGLE_API_KEY=sua-chave-google-api
+
+# Configurações de Armazenamento
+STORAGE_TYPE=supabase  # ou 'local' para desenvolvimento
+```
+
+### Iniciando com Docker (Opcional)
+
+```bash
+# Construir a imagem
+docker build -t skynet-i2a2 .
+
+# Executar o contêiner
+docker run -p 8501:8501 -v $(pwd)/data:/app/data skynet-i2a2
+```
+
+Acesse: http://localhost:8501
+
+
+## ⚙️ Configuração Avançada
+
+### Ordem de Carregamento das Configurações
+
+1. **Variáveis de Ambiente** (`.env` ou variáveis do sistema)
+2. **Arquivo de Segredos** (`.streamlit/secrets.toml`)
+3. **Configurações Padrão** (`config.py`)
+
+### Exemplo de `secrets.toml`
+
+Crie o arquivo `.streamlit/secrets.toml` com:
+
+```toml
+[connections.supabase]
+url = "https://seu-projeto.supabase.co"
+key = "sua-chave-supabase"
+
+[google]
+api_key = "sua-chave-google"
+
+[app]
+debug = false
+log_level = "INFO"
+
+[ocr]
+tesseract_path = "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+tessdata_prefix = "C:\\Program Files\\Tesseract-OCR\\tessdata"
+
+[storage]
+type = "supabase"  # ou 'local'
+max_file_size = 10485760  # 10MB
+allowed_extensions = ["pdf", "jpg", "jpeg", "png", "xml"]
+```
+
+### Configurações de Log
+
+Níveis de log disponíveis:
+- `DEBUG`: Informações detalhadas para depuração
+- `INFO`: Informações gerais de operação
+- `WARNING`: Avisos sobre problemas não críticos
+- `ERROR`: Erros que não interrompem a execução
+- `CRITICAL`: Erros fatais que encerram a aplicação
+
+Configure o nível de log no arquivo `.env`:
+```
+LOG_LEVEL=INFO
+LOG_FILE=app.log
+```
+
+CREATE TABLE document_history (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    document_id UUID REFERENCES fiscal_documents(id) ON DELETE CASCADE,
+    event_type VARCHAR(50) NOT NULL,
+    event_data JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID
+);
+
+-- Análises realizadas
+CREATE TABLE analyses (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    document_id UUID REFERENCES fiscal_documents(id) ON DELETE CASCADE,
+    analysis_type VARCHAR(50) NOT NULL,
+    result JSONB,
+    status VARCHAR(20) DEFAULT 'pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    completed_at TIMESTAMP WITH TIME ZONE
+);
+```
 
 #### Configuração do Supabase
-1. No painel do Supabase, acesse "SQL Editor" e execute os scripts de migração da pasta `migration/` na ordem numérica
-2. Certifique-se de que as políticas de RLS (Row Level Security) estão configuradas corretamente
-3. Configure as permissões adequadas para as tabelas
+
+1. **Criar um novo projeto** em [Supabase](https://supabase.com)
+2. **Executar migrações**:
+   ```bash
+   # Instalar a CLI do Supabase
+   npm install -g supabase
+   
+   # Fazer login
+   supabase login
+   
+   # Aplicar migrações
+   supabase db push
+   ```
+
+3. **Configurar políticas RLS**:
+   ```sql
+   -- Habilitar RLS nas tabelas
+   ALTER TABLE fiscal_documents ENABLE ROW LEVEL SECURITY;
+   ALTER TABLE document_history ENABLE ROW LEVEL SECURITY;
+   ALTER TABLE analyses ENABLE ROW LEVEL SECURITY;
+   
+   -- Criar políticas de acesso
+   CREATE POLICY "Permitir leitura pública" ON fiscal_documents
+   FOR SELECT USING (true);
+   
+   CREATE POLICY "Permitir inserção autenticada" ON fiscal_documents
+   FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+   ```
+
+4. **Configurar armazenamento**:
+   - Criar um bucket chamado `documents`
+   - Configurar políticas de acesso apropriadas
+
+## 🔍 Uso Avançado
+
+### Processamento em Lote
+
+```python
+from backend.storage import storage_manager
+from backend.agents.coordinator import process_document
+
+# Processar múltiplos documentos
+documents = ["doc1.pdf", "doc2.xml", "doc3.jpg"]
+for doc_path in documents:
+    try:
+        result = process_document(doc_path)
+        print(f"Processado {doc_path}: {result['status']}")
+    except Exception as e:
+        print(f"Erro ao processar {doc_path}: {str(e)}")
+```
+
+### API REST
+
+O sistema expõe endpoints REST para integração:
+
+```http
+# Enviar documento para processamento
+POST /api/documents
+Content-Type: multipart/form-data
+
+# Obter status de um documento
+GET /api/documents/{document_id}
+
+# Listar documentos
+GET /api/documents?status=processed&limit=10
+```
+
+### Webhooks
+
+Configure webhooks para receber notificações de eventos:
+
+```python
+# Exemplo de configuração de webhook
+WEBHOOKS = {
+    'document_processed': 'https://seu-servidor.com/webhook/processed',
+    'validation_failed': 'https://seu-servidor.com/webhook/error'
+}
+```
+
+## 🐛 Solução de Problemas
+
+### Problemas Comuns
+
+1. **Erro ao processar PDFs**
+   - Verifique se o Poppler está instalado
+   - Confira as permissões de leitura/escrita
+
+2. **Falha na conexão com o Supabase**
+   - Verifique as credenciais no arquivo `.env`
+   - Confira se o serviço está online
+
+3. **Problemas com OCR**
+   - Verifique se o Tesseract está instalado corretamente
+   - Confira o caminho do Tesseract no arquivo de configuração
+
+### Logs
+
+Os logs são armazenados em `logs/app.log` por padrão. Níveis de log:
+
+- `DEBUG`: Informações detalhadas para depuração
+- `INFO`: Ações importantes do sistema
+- `WARNING`: Eventos que podem indicar problemas
+- `ERROR`: Erros que não interrompem a execução
+- `CRITICAL`: Erros fatais
+
+## 📈 Monitoramento
+
+### Métricas
+
+O sistema expõe métricas no formato Prometheus em `/metrics`:
+
+```
+# HELP documents_processed_total Total de documentos processados
+# TYPE documents_processed_total counter
+documents_processed_total{status="success"} 42
+documents_processed_total{status="error"} 3
+
+# HELP processing_duration_seconds Tempo de processamento
+# TYPE processing_duration_seconds histogram
+processing_duration_seconds_bucket{le="0.5"} 12
+processing_duration_seconds_bucket{le="1.0"} 35
+processing_duration_seconds_bucket{le="+Inf"} 45
+```
+
+### Alertas
+
+Configure alertas para:
+- Alta taxa de erros
+- Tempo de processamento elevado
+- Espaço em disco baixo
+
+## 📚 Documentação Adicional
+
+- [Guia de Estilo de Código](docs/CODING_STANDARDS.md)
+- [Guia de Contribuição](docs/CONTRIBUTING.md)
+- [Documentação da API](docs/API.md)
+- [Perguntas Frequentes](docs/FAQ.md)
+
+## 🤝 Suporte
+
+Para obter suporte, entre em contato:
+
+- E-mail: suporte@empresa.com
+- Issues do GitHub: [https://github.com/seu-usuario/skynet-I2A2-nf-final-v2/issues](https://github.com/seu-usuario/skynet-I2A2-nf-final-v2/issues)
+- Documentação: [https://docs.empresa.com/skynet-i2a2](https://docs.empresa.com/skynet-i2a2)
+
+## 📄 Licença
+
+Este projeto está licenciado sob a licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
+
+---
+
+Feito com ❤️ pela Equipe SkyNET-I2A2
 
 #### Arquivo de Configuração
 Crie um arquivo `.streamlit/secrets.toml` com as seguintes configurações:

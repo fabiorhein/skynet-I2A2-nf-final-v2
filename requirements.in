@@ -1,6 +1,7 @@
 # Core
 toml>=0.10.2
 streamlit>=1.39.0
+streamlit-extras>=0.7.0
 python-dotenv>=1.0.1
 
 # Data processing
@@ -28,6 +29,7 @@ supabase>=2.3.1
 # API and validation
 pydantic>=2.0.0
 requests>=2.31.0
+httpx[http2]>=0.26.0,<0.28.0  # Pinned for supafunc compatibility
 
 # Utils
 loguru>=0.7.0
