@@ -103,6 +103,7 @@ SQLALCHEMY_DATABASE_URL = DATABASE_URL
 
 # Tesseract path - configuração para Windows e Linux
 TESSERACT_PATH = _get('TESSERACT_PATH')
+TESSDATA_PREFIX = _get('TESSDATA_PREFIX')
 
 # Se não estiver definido, tenta encontrar automaticamente
 if not TESSERACT_PATH:
@@ -115,6 +116,7 @@ if not TESSERACT_PATH:
             'C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe',
             'D:\\Program Files\\Tesseract-OCR\\tesseract.exe'
         ]
+        TESSDATA_PREFIX = TESSDATA_PREFIX or 'C:\\Program Files\\Tesseract-OCR'
     else:
         # Caminhos comuns no Linux/Streamlit Cloud
         alt_paths = [
@@ -125,9 +127,14 @@ if not TESSERACT_PATH:
             '/usr/bin/tesseract-ocr',
             '/usr/local/bin/tesseract-ocr'
         ]
+        TESSDATA_PREFIX = TESSDATA_PREFIX or '/usr/share/tesseract-ocr/4.00/tessdata/'
     
     # Tenta usar o primeiro caminho disponível sem verificar a existência
     TESSERACT_PATH = alt_paths[0] if alt_paths else 'tesseract'
+
+# Configura o TESSDATA_PREFIX como variável de ambiente se não estiver definido
+if TESSDATA_PREFIX and 'TESSDATA_PREFIX' not in os.environ:
+    os.environ['TESSDATA_PREFIX'] = TESSDATA_PREFIX
 
 GOOGLE_API_KEY = _get('GOOGLE_API_KEY')
 LOG_LEVEL = _get('LOG_LEVEL', 'INFO')

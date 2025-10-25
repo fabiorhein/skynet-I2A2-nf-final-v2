@@ -18,15 +18,25 @@ from typing import Optional, List, Union, Tuple
 from pathlib import Path
 from config import TESSERACT_PATH
 
-# Configure Tesseract path
+# Configure Tesseract path and TESSDATA_PREFIX
 try:
-    # Try to use the configured path, but don't check if it exists to avoid permission issues
+    # Get TESSDATA_PREFIX from environment or use default
+    TESSDATA_PREFIX = os.getenv('TESSDATA_PREFIX', '')
+    
+    # Set TESSDATA_PREFIX as environment variable if not already set
+    if TESSDATA_PREFIX and 'TESSDATA_PREFIX' not in os.environ:
+        os.environ['TESSDATA_PREFIX'] = TESSDATA_PREFIX
+    
+    # Try to use the configured path
     if TESSERACT_PATH:
         pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+        
     # If Tesseract is in the system PATH, we don't need to set the path
     elif not shutil.which('tesseract'):
         # Last resort: try common paths
         common_paths = [
+            'C:\\Program Files\\Tesseract-OCR\\tesseract.exe',
+            'C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe',
             '/usr/bin/tesseract',
             '/usr/local/bin/tesseract',
             '/app/.apt/usr/bin/tesseract',
@@ -76,14 +86,33 @@ def image_to_text(image: Image.Image, lang: str = 'por') -> str:
     # Configura o OCR para melhor precisão
     custom_config = r'--oem 3 --psm 3 -c preserve_interword_spaces=1'
     
-    # Executa OCR com configurações otimizadas
-    result = pytesseract.image_to_string(
-        processed_img,
-        lang=lang,
-        config=custom_config
-    )
-    
-    return result
+    try:
+        # Executa OCR com configurações otimizadas
+        result = pytesseract.image_to_string(
+            processed_img,
+            lang=lang,
+            config=custom_config
+        )
+        return result
+    except pytesseract.TesseractNotFoundError as e:
+        # Tesseract não está instalado
+        raise Exception(f"Tesseract OCR não está instalado ou não foi encontrado no PATH: {str(e)}")
+    except Exception as e:
+        # Se falhar com português, tenta com inglês
+        error_str = str(e).lower()
+        if 'por' in error_str or 'language' in error_str or 'tessdata' in error_str:
+            logging.warning(f"Falha ao usar language pack português: {str(e)}. Tentando com inglês...")
+            try:
+                result = pytesseract.image_to_string(
+                    processed_img,
+                    lang='eng',
+                    config=custom_config
+                )
+                return result
+            except Exception as e2:
+                raise Exception(f"Erro ao executar OCR (português e inglês falharam): {str(e2)}")
+        else:
+            raise Exception(f"Erro ao executar OCR: {str(e)}")
 
 
 def pdf_to_images(pdf_path: str, dpi: int = 300) -> List[Image.Image]:
