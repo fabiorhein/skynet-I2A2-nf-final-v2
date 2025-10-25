@@ -7,7 +7,6 @@ python-dotenv>=1.0.1
 # Data processing
 pandas>=2.2.0
 numpy>=2.0.0
-scipy>=1.10.0
 
 # Document processing
 pypdf>=6.0.0
@@ -16,7 +15,7 @@ pdf2image>=1.17.0
 lxml>=5.1.0
 Pillow>=10.0.0
 
-# AI/ML
+# AI/ML - Simplified (only Gemini)
 google-generativeai>=0.3.0
 langchain>=0.1.0
 langchain-google-genai>=0.0.5
@@ -25,7 +24,6 @@ langchain-google-genai>=0.0.5
 psycopg2-binary>=2.9.9
 SQLAlchemy>=2.0.0
 supabase>=2.3.1
-pgvector>=0.2.0
 
 # API and validation
 pydantic>=2.0.0

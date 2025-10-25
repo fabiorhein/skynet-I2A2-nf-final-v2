@@ -10,16 +10,18 @@ This module provides intelligent chat capabilities that can:
 import json
 import hashlib
 import asyncio
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 import uuid
 import logging
+import re
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from config import GOOGLE_API_KEY, SUPABASE_URL, SUPABASE_KEY
+from backend.services.document_analyzer import DocumentAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +194,7 @@ class ChatAgent:
         self.supabase = supabase_client
         self.search_engine = DocumentSearchEngine(supabase_client)
         self.cache = AnalysisCache(supabase_client)
+        self.document_analyzer = DocumentAnalyzer(supabase_client)
 
         # Initialize Gemini
         if not GOOGLE_API_KEY:
@@ -333,6 +336,14 @@ class ChatAgent:
             logger.error(f"Error getting conversation context: {e}")
             return "Erro ao carregar histórico da conversa."
 
+    async def _get_document_summary(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
+        """Obtém um resumo dos documentos com base nos filtros fornecidos."""
+        return await self.document_analyzer.get_documents_summary(filters)
+
+    async def _search_documents(self, query: str, limit: int = 5) -> List[Dict]:
+        """Busca documentos relevantes usando busca semântica."""
+        return await self.document_analyzer.search_documents(query, limit)
+
     async def generate_response(
         self,
         session_id: str,
@@ -365,12 +376,49 @@ class ChatAgent:
 
         # Get relevant document context
         document_context = DocumentContext(documents=[], summaries=[], insights=[])
-        if context and 'document_types' in context:
-            document_context = await self.search_engine.search_documents(
-                query=query,
-                limit=context.get('limit', 5),
-                document_types=context.get('document_types')
-            )
+        
+        try:
+            # Primeiro tenta buscar documentos relevantes
+            if context and 'document_types' in context:
+                # Busca semântica para documentos relevantes
+                relevant_docs = await self._search_documents(query, limit=context.get('limit', 5))
+                
+                # Se não encontrou documentos relevantes, tenta uma busca mais ampla
+                if not relevant_docs:
+                    document_context = await self.search_engine.search_documents(
+                        query=query,
+                        limit=context.get('limit', 5),
+                        document_types=context.get('document_types')
+                    )
+                else:
+                    # Formata os documentos para o formato esperado pelo DocumentContext
+                    documents = []
+                    for doc in relevant_docs:
+                        if isinstance(doc, tuple) and len(doc) > 0:
+                            doc = doc[0]  # Pega o primeiro item da tupla (o documento)
+                        documents.append(doc)
+                    
+                    document_context = DocumentContext(
+                        documents=documents,
+                        summaries=[],
+                        insights=[]
+                    )
+                    
+                    # Tenta extrair insights dos documentos
+                    try:
+                        summary = await self._get_document_summary({
+                            'document_ids': [str(d.get('id')) for d in documents if d.get('id')]
+                        })
+                        
+                        if summary and 'insights' in summary:
+                            document_context.insights = summary['insights']
+                            
+                    except Exception as e:
+                        logger.warning(f"Erro ao extrair insights dos documentos: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Erro ao buscar contexto de documentos: {e}")
+            document_context = DocumentContext(documents=[], summaries=[], insights=[])
 
         # Get conversation history for context
         history_context = await self.get_conversation_context(session_id)
@@ -532,6 +580,17 @@ class ChatAgent:
             context: Optional[Dict[str, Any]],
             history_context: str = ""
     ) -> str:
+        """Prepara o contexto para o prompt do LLM.
+        
+        Args:
+            query: A consulta do usuário
+            document_context: Contexto dos documentos relevantes
+            context: Contexto adicional (filtros, preferências, etc.)
+            history_context: Histórico da conversa
+            
+        Returns:
+            str: Contexto formatado para o prompt
+        """
         """Prepare context information for the LLM prompt."""
         context_parts = []
         has_documents = bool(document_context and document_context.documents)
@@ -539,13 +598,66 @@ class ChatAgent:
         # Add document context if available
         if has_documents:
             context_parts.append("📄 Documentos disponíveis para análise:")
-            for doc in document_context.documents[:3]:  # Limit to top 3 documents
-                doc_info = [
-                    f"- {k}: {v}" for k, v in doc.items()
-                    if k not in ['content', 'embedding'] and v is not None
-                ]
-                if doc_info:
-                    context_parts.append("\n".join(doc_info))
+            
+            # Tenta formatar como tabela se for uma lista de documentos
+            if len(document_context.documents) > 1:
+                # Extrai os campos mais importantes para a tabela
+                table_header = "| Tipo | Número | Emissor | Data | Valor |\n"
+                table_header += "|------|--------|---------|------|-------|\n"
+                
+                table_rows = []
+                for doc in document_context.documents[:5]:  # Limita a 5 documentos na tabela
+                    doc_type = doc.get('document_type', 'N/A')
+                    doc_number = doc.get('document_number', 'N/A')
+                    issuer = doc.get('issuer_name') or doc.get('issuer_cnpj', 'N/A')
+                    date = doc.get('emission_date') or doc.get('created_at', 'N/A')
+                    
+                    # Tenta extrair o valor total dos dados extraídos
+                    total_value = 'N/A'
+                    if 'extracted_data' in doc and doc['extracted_data']:
+                        try:
+                            if isinstance(doc['extracted_data'], str):
+                                data = json.loads(doc['extracted_data'])
+                            else:
+                                data = doc['extracted_data']
+                                
+                            if isinstance(data, dict):
+                                total_value = data.get('total', data.get('valor_total', 'N/A'))
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                    
+                    table_rows.append(f"| {doc_type} | {doc_number} | {issuer} | {date} | {total_value} |")
+                
+                if table_rows:
+                    context_parts.append(table_header + "\n".join(table_rows))
+            
+            # Se não for uma tabela ou além da tabela, mostra detalhes adicionais
+            if len(document_context.documents) == 1 or len(document_context.documents) > 5:
+                for doc in document_context.documents[:3]:  # Limita a 3 documentos detalhados
+                    doc_info = [
+                        f"- {k}: {v}" for k, v in doc.items()
+                        if k not in ['content', 'embedding', 'extracted_data'] and v is not None
+                    ]
+                    if doc_info:
+                        context_parts.append("\n".join(doc_info))
+                        
+                    # Adiciona dados extraídos formatados, se disponíveis
+                    if 'extracted_data' in doc and doc['extracted_data']:
+                        try:
+                            if isinstance(doc['extracted_data'], str):
+                                data = json.loads(doc['extracted_data'])
+                            else:
+                                data = doc['extracted_data']
+                                
+                            if isinstance(data, dict):
+                                extracted_info = [
+                                    f"- {k}: {v}" for k, v in data.items()
+                                    if v is not None and k not in ['content', 'embedding']
+                                ]
+                                if extracted_info:
+                                    context_parts.append("\nDados extraídos:" + "\n" + "\n".join(extracted_info[:5]))  # Limita a 5 itens
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
         
         # Add conversation history if available
         if history_context:
