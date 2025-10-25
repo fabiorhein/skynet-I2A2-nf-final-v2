@@ -18,15 +18,25 @@ from typing import Optional, List, Union, Tuple
 from pathlib import Path
 from config import TESSERACT_PATH
 
-# Configure Tesseract path
+# Configure Tesseract path and TESSDATA_PREFIX
 try:
-    # Try to use the configured path, but don't check if it exists to avoid permission issues
+    # Get TESSDATA_PREFIX from environment or use default
+    TESSDATA_PREFIX = os.getenv('TESSDATA_PREFIX', '')
+    
+    # Set TESSDATA_PREFIX as environment variable if not already set
+    if TESSDATA_PREFIX and 'TESSDATA_PREFIX' not in os.environ:
+        os.environ['TESSDATA_PREFIX'] = TESSDATA_PREFIX
+    
+    # Try to use the configured path
     if TESSERACT_PATH:
         pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+        
     # If Tesseract is in the system PATH, we don't need to set the path
     elif not shutil.which('tesseract'):
         # Last resort: try common paths
         common_paths = [
+            'C:\\Program Files\\Tesseract-OCR\\tesseract.exe',
+            'C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe',
             '/usr/bin/tesseract',
             '/usr/local/bin/tesseract',
             '/app/.apt/usr/bin/tesseract',
