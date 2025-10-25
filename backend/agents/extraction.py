@@ -30,6 +30,30 @@ def extract_from_file(path: str) -> Dict[str, Any]:
             from PIL import Image
             img = Image.open(path)
             text = ocr_processor.image_to_text(img)
+            if not text or not text.strip():
+                return {'error': 'empty_ocr', 'message': 'Nenhum texto foi extraído da imagem. Verifique se a imagem contém texto legível.'}
             return {'raw_text': text, 'document_type': 'unknown'}
-        except Exception:
-            return {'error': 'unsupported file type'}
+        except FileNotFoundError:
+            return {'error': 'file_not_found', 'message': f'Arquivo não encontrado: {path}'}
+        except Exception as e:
+            error_str = str(e).lower()
+            
+            # Detecta erros específicos do Tesseract
+            if 'tesseract' in error_str and ('not installed' in error_str or 'not in your path' in error_str):
+                return {
+                    'error': 'tesseract_not_installed',
+                    'message': 'Tesseract OCR não está instalado ou não foi encontrado no PATH. Por favor, instale o Tesseract-OCR para processar imagens.'
+                }
+            
+            # Detecta erros de tipo de arquivo
+            if 'cannot identify image file' in error_str or 'unrecognized image format' in error_str:
+                return {
+                    'error': 'invalid_image_format',
+                    'message': f'Formato de imagem não reconhecido. Suportados: JPG, PNG, BMP, TIFF.'
+                }
+            
+            # Erro genérico
+            return {
+                'error': 'unsupported_file_type',
+                'message': f'Tipo de arquivo não suportado ou erro ao processar: {str(e)}'
+            }
