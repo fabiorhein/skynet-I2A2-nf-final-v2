@@ -16,7 +16,8 @@ from dataclasses import dataclass
 import uuid
 import logging
 
-import google.generativeai as genai
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from config import GOOGLE_API_KEY, SUPABASE_URL, SUPABASE_KEY
 
@@ -197,27 +198,63 @@ class ChatAgent:
             logger.error("GOOGLE_API_KEY not configured")
             self.model = None
         else:
-            genai.configure(api_key=GOOGLE_API_KEY)
-            self.model = genai.GenerativeModel('gemini-pro')
+            # Configuração do modelo Gemini 2.0 Flash com LangChain
+            try:
+                self.model = ChatGoogleGenerativeAI(
+                    model="gemini-2.0-flash",
+                    google_api_key=GOOGLE_API_KEY,
+                    temperature=0.0,
+                    request_timeout=30
+                )
+                self.model_name = 'gemini-2.0-flash'
+                logger.info("✅ Successfully initialized Gemini model: gemini-2.0-flash")
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"❌ Failed to initialize Gemini model: {error_msg}")
+                if "quota" in error_msg.lower() or "429" in error_msg:
+                    friendly_msg = (
+                        "Parece que excedemos o limite de requisições gratuitas da API do Gemini para hoje.\n\n"
+                        "- Limite diário atingido: 200 requisições\n"
+                        "- Tempo estimado para liberação: aproximadamente 1 minuto\n"
+                        "- Modelo afetado: Gemini 2.0 Flash\n\n"
+                        "O que você pode fazer:\n"
+                        "1. Aguarde cerca de 1 minuto antes de tentar novamente\n"
+                        "2. Se precisar de mais requisições, considere:\n"
+                        "   - Verificar seu plano e limites de cota\n"
+                        "   - Acessar: https://ai.google.dev/gemini-api/docs/rate-limits"
+                    )
+                    raise Exception(friendly_msg) from e
+                raise
 
         # Simple conversation history (replaces deprecated LangChain memory)
         self.conversation_history = {}
 
         # System prompt
         self.system_prompt = """
-        Você é um assistente especializado em análise de documentos fiscais e dados empresariais.
+        Você é um assistente especialista em documentos fiscais brasileiros. Siga estas diretrizes:
 
-        Suas capacidades incluem:
-        - Analisar documentos fiscais (NFe, NFCe, CTe)
-        - Fornecer insights sobre dados financeiros e tributários
-        - Identificar padrões e tendências nos dados
-        - Responder perguntas sobre compliance fiscal
-        - Analisar planilhas CSV com dados de vendas/compras
+        1. Seja conciso e vá direto ao ponto.
+        2. Use formatação Markdown para melhorar a legibilidade.
+        3. Quando listar documentos fiscais, use tabelas para melhor organização.
+        4. Destaque termos técnicos em **negrito**.
+        5. Use tópicos e subtópicos para organizar informações complexas.
 
-        Sempre responda de forma clara, precisa e baseada nos dados fornecidos.
-        Se não tiver informações suficientes, seja honesto sobre as limitações.
+        **Formatos preferenciais:**
+        - Para listas de documentos: use tabelas Markdown
+        - Para comparações: use listas com marcadores
+        - Para processos passo a passo: use listas numeradas
+        - Para destaques: use **negrito** ou *itálico*
 
-        Responda em português brasileiro.
+        **Exemplo de tabela para documentos fiscais:**
+        | Documento | Nome Completo | Finalidade |
+        |-----------|---------------|------------|
+        | NF-e | Nota Fiscal Eletrônica | Operações com mercadorias |
+
+        **Exemplo de lista para dicas:**
+        - Dica 1: Verifique sempre a validade
+        - Dica 2: Mantenha os dados atualizados
+
+        Responda sempre em português claro e objetivo.
         """
 
     async def create_session(self, session_name: str = None) -> str:
@@ -341,18 +378,33 @@ class ChatAgent:
         # Prepare context for LLM
         context_prompt = self._prepare_context_prompt(query, document_context, context, history_context)
 
-        # Generate response
-        full_prompt = f"{self.system_prompt}\n\n{context_prompt}\n\nQuery: {query}"
+        # Prepare messages for the chat model
+        messages = [
+            SystemMessage(content=self.system_prompt),
+            HumanMessage(content=f"{context_prompt}\n\nPergunta: {query}")
+        ]
 
         try:
-            response = self.model.generate_content(full_prompt)
-
-            # Extract response content and metadata
-            content = response.text
+            # Generate response using the chat model with more specific parameters
+            response = self.model.invoke(messages, config={
+                'temperature': 0.3,  # Reduz a criatividade para respostas mais focadas
+                'max_tokens': 1000,  # Limita o tamanho da resposta
+                'top_p': 0.9,        # Controla a diversidade das respostas
+                'frequency_penalty': 0.5,  # Penaliza repetições
+                'presence_penalty': 0.5    # Penaliza tópicos já mencionados
+            })
+            
+            # Extract and clean response content
+            content = response.content if hasattr(response, 'content') else str(response)
+            
+            # Clean up any repeated phrases or words
+            content = self._clean_response_content(content)
+            
+            # Create metadata
             metadata = {
-                'model': 'gemini-pro',
+                'model': self.model_name or 'unknown',
                 'timestamp': datetime.now().isoformat(),
-                'tokens_used': getattr(response, 'usage_metadata', {}).get('total_token_count', 0)
+                'tokens_used': len(content.split())  # Estimativa simples de tokens
             }
 
             # Cache the response
@@ -384,57 +436,152 @@ class ChatAgent:
                 cached=False
             )
 
+    def _format_as_table(self, content: str) -> str:
+        """Format lists and document information as Markdown tables."""
+        try:
+            # Check for document types
+            doc_keywords = ['nfe', 'nf-e', 'cte', 'ct-e', 'mdfe', 'md-fe', 'nfse', 'nfs-e', 'nfce', 'nfc-e']
+            
+            # Check for bullet point lists
+            lines = content.split('\n')
+            bullet_points = [line.strip('-*• ') for line in lines if line.strip().startswith(('- ', '* ', '• '))]
+            
+            # If we found a list with more than 2 items, format as table
+            if len(bullet_points) > 2:
+                # Try to split each bullet into columns
+                table_rows = []
+                for point in bullet_points:
+                    # Try to split on common separators
+                    parts = re.split(r'[:\-]\s*', point, maxsplit=1)
+                    if len(parts) == 2:
+                        table_rows.append([parts[0].strip(), parts[1].strip()])
+                    else:
+                        table_rows.append([point.strip(), ''])
+                
+                # If we have at least 2 columns, format as table
+                if table_rows and len(table_rows[0]) > 1:
+                    table = ['| ' + ' | '.join(['Item', 'Descrição']) + ' |',
+                             '|' + '|'.join(['---'] * len(table_rows[0])) + '|']
+                    for row in table_rows:
+                        table.append('| ' + ' | '.join(row) + ' |')
+                    return '\n'.join(table)
+            
+            # Document types table (special case)
+            if any(keyword in content.lower() for keyword in doc_keywords):
+                return """
+| Documento | Nome Completo | Finalidade Principal |
+|-----------|---------------|----------------------|
+| **NF-e** | Nota Fiscal Eletrônica | Documentação de operações com mercadorias |
+| **NFC-e** | Nota Fiscal de Consumidor Eletrônica | Vendas a consumidores finais |
+| **CT-e** | Conhecimento de Transporte Eletrônico | Documentação de serviços de transporte |
+| **MDF-e** | Manifesto de Documentos Fiscais | Agrupamento de documentos de transporte |
+| **NFSe** | Nota Fiscal de Serviço Eletrônica | Documentação de prestação de serviços |
+| **CF-e** | Cupom Fiscal Eletrônico | Documentação de vendas no varejo (alguns estados) |
+
+**Legenda**:
+- **NF-e/NFC-e**: Documentos de venda
+- **CT-e/MDF-e**: Documentos de transporte
+- **NFSe/CF-e**: Documentos de serviço/varejo
+"""
+            
+            # If no special formatting applied, return original content
+            return content
+            
+        except Exception as e:
+            logger.warning(f"Error formatting as table: {e}")
+            return content
+
+    def _clean_response_content(self, content: str) -> str:
+        """Clean up response content to remove repetitions and improve quality."""
+        # First, try to format as table if appropriate
+        if any(keyword in content.lower() for keyword in ['tabela', 'lista de', 'documentos fiscais', 'exemplo:', 'tipos de']):
+            formatted = self._format_as_table(content)
+            if formatted != content:  # Only return if formatting was applied
+                return formatted
+            
+        # Split into sentences for better processing
+        import re
+        sentences = re.split(r'(?<=[.!?])\s+', content)
+        
+        # Remove duplicate sentences while preserving order
+        seen = set()
+        clean_sentences = []
+        for sentence in sentences:
+            # Normalize and check for duplicates
+            norm_sent = ' '.join(sentence.lower().split())
+            if norm_sent not in seen and len(norm_sent) > 10:  # Ignore very short sentences
+                seen.add(norm_sent)
+                clean_sentences.append(sentence)
+        
+        # Join back with proper spacing
+        cleaned_content = ' '.join(clean_sentences)
+        
+        # Remove any remaining repeated phrases (simple heuristic)
+        words = cleaned_content.split()
+        unique_words = []
+        for word in words:
+            if len(unique_words) < 2 or word.lower() not in [w.lower() for w in unique_words[-3:]]:
+                unique_words.append(word)
+        
+        return ' '.join(unique_words)
+
     def _prepare_context_prompt(
-        self,
-        query: str,
-        document_context: DocumentContext,
-        context: Optional[Dict[str, Any]],
-        history_context: str = ""
+            self,
+            query: str,
+            document_context: DocumentContext,
+            context: Optional[Dict[str, Any]],
+            history_context: str = ""
     ) -> str:
         """Prepare context information for the LLM prompt."""
-
         context_parts = []
+        has_documents = bool(document_context and document_context.documents)
 
-        # Add conversation history
-        if history_context and history_context != "Esta é uma nova conversa.":
-            context_parts.append(f"Contexto da conversa anterior:\n{history_context}")
+        # Add document context if available
+        if has_documents:
+            context_parts.append("📄 Documentos disponíveis para análise:")
+            for doc in document_context.documents[:3]:  # Limit to top 3 documents
+                doc_info = [
+                    f"- {k}: {v}" for k, v in doc.items()
+                    if k not in ['content', 'embedding'] and v is not None
+                ]
+                if doc_info:
+                    context_parts.append("\n".join(doc_info))
+        
+        # Add conversation history if available
+        if history_context:
+            context_parts.append(f"\n💬 Histórico da Conversa:\n{history_context}")
 
-        # Add document context
-        if document_context.documents:
-            context_parts.append("Documentos relevantes encontrados:")
-            for doc in document_context.documents[:3]:  # Limit to 3 documents
-                context_parts.append(f"- {doc['file_name']} (Tipo: {doc.get('document_type', 'N/A')})")
-                if doc.get('extracted_data'):
-                    # Extract key information
-                    data = doc['extracted_data']
-                    if data.get('emitente'):
-                        context_parts.append(f"  Emitente: {data['emitente'].get('razao_social', 'N/A')}")
-                    if data.get('total'):
-                        context_parts.append(f"  Valor: R$ {data['total']:.2f}")
+        # Add instructions for response
+        if has_documents:
+            context_parts.append(
+                "\n📝 Instruções para a resposta:\n"
+                "1. Analise a pergunta e verifique se ela se refere aos documentos carregados.\n"
+                "2. Se a pergunta for sobre os documentos, responda com base neles.\n"
+                "3. Se a pergunta for mais geral ou não houver documentos relevantes, use seu conhecimento geral.\n"
+                "4. Estruture a resposta de forma clara e objetiva."
+            )
+        else:
+            context_parts.append(
+                "\nℹ️ Não há documentos específicos carregados. "
+                "Você deve responder com base no seu conhecimento geral sobre documentos fiscais brasileiros.\n"
+                "\n📝 Instruções para a resposta:\n"
+                "1. Responda de forma clara e completa, mesmo sem documentos específicos.\n"
+                "2. Use seu conhecimento sobre legislação fiscal brasileira.\n"
+                "3. Se a pergunta for muito específica e exigir documentos, explique isso ao usuário.\n"
+                "4. Formate a resposta de forma organizada e fácil de entender."
+            )
 
-        # Add summaries
-        if document_context.summaries:
-            context_parts.append("\nResumos dos documentos:")
-            for summary in document_context.summaries[:2]:  # Limit to 2 summaries
-                context_parts.append(f"- {summary}")
-
-        # Add insights
-        if document_context.insights:
-            insights_by_type = {}
-            for insight in document_context.insights:
-                insight_type = insight.get('insight_type', 'general')
-                if insight_type not in insights_by_type:
-                    insights_by_type[insight_type] = []
-                insights_by_type[insight_type].append(insight['insight_text'])
-
-            context_parts.append("\nInsights identificados:")
-            for insight_type, insights in insights_by_type.items():
-                context_parts.append(f"{insight_type.title()}:")
-                for insight in insights[:3]:  # Limit to 3 insights per type
+        # Add insights if available (after instructions to keep them prominent)
+        if has_documents and hasattr(document_context, 'insights') and document_context.insights:
+            context_parts.append("\n🔍 Insights identificados nos documentos:")
+            for insight in document_context.insights[:3]:  # Limit to top 3 insights
+                if isinstance(insight, dict):
+                    if 'insight_type' in insight and 'insight_text' in insight:
+                        context_parts.append(f"📌 {insight['insight_type'].title()}:")
+                        context_parts.append(f"   {insight['insight_text']}")
+                    elif 'insight_text' in insight:
+                        context_parts.append(f"- {insight['insight_text']}")
+                elif isinstance(insight, str):
                     context_parts.append(f"- {insight}")
-
-        # Add CSV context if provided
-        if context and context.get('csv_data'):
-            context_parts.append(f"\nDados do CSV fornecido: {context['csv_data']}")
 
         return "\n".join(context_parts) if context_parts else "Nenhum contexto específico disponível."

@@ -154,32 +154,14 @@ def render():
     # Chat input
     st.markdown("---")
 
-    # Context selection
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        # Query type selection
-        query_type = st.selectbox(
-            "Tipo de Análise",
-            ["Geral", "Documentos Fiscais", "Análise CSV", "Financeira", "Validação"],
-            help="Selecione o tipo de análise para contextualizar sua pergunta"
-        )
-
-    with col2:
-        # Document type filter for fiscal analysis
-        document_types = []
-        if query_type in ["Documentos Fiscais", "Financeira", "Validação"]:
-            doc_types = st.multiselect(
-                "Tipos de Documento",
-                ["NFe", "NFCe", "CTe", "Todos"],
-                default=["Todos"],
-                help="Filtre por tipo de documento fiscal"
-            )
-            document_types = [dt for dt in doc_types if dt != "Todos"]
+    # Default context for all queries
+    context = {
+        'query_type': 'geral',
+        'limit': 10
+    }
 
     # Chat input
     if prompt := st.chat_input("Digite sua pergunta..."):
-
         # Add user message to display
         with st.chat_message("user"):
             st.write(prompt)
@@ -190,15 +172,6 @@ def render():
             'content': prompt,
             'timestamp': datetime.now().isoformat()
         })
-
-        # Prepare context based on query type
-        context = {
-            'query_type': query_type.lower().replace(' ', '_'),
-            'limit': 10
-        }
-
-        if document_types:
-            context['document_types'] = document_types
 
         # Show loading
         with st.chat_message("assistant"):
@@ -215,18 +188,11 @@ def render():
                         # Display response
                         st.write(response['response'])
 
-                        # Show metadata
-                        metadata = response.get('metadata', {})
-                        if metadata.get('cached'):
-                            st.success("✅ Resposta obtida do cache (tokens economizados!)")
-                        else:
-                            st.info(f"📊 Tokens utilizados: {response.get('tokens_used', 'N/A')}")
-
                         # Add assistant response to session state
                         st.session_state.chat_messages.append({
                             'message_type': 'assistant',
                             'content': response['response'],
-                            'metadata': metadata,
+                            'metadata': response.get('metadata', {}),
                             'timestamp': datetime.now().isoformat()
                         })
 
@@ -237,43 +203,6 @@ def render():
                     st.error(f"Erro ao processar pergunta: {e}")
                     logger.error(f"Chat error: {e}")
 
-    # Additional features section
-    st.markdown("---")
-    st.subheader("🔍 Análises Especiais")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        if st.button("📄 Análise de Documentos", use_container_width=True):
-            st.info("Selecione documentos específicos no histórico para análise detalhada")
-
-    with col2:
-        if st.button("📊 Análise de CSV", use_container_width=True):
-            st.info("Faça upload de um CSV para análise estatística detalhada")
-
-    with col3:
-        if st.button("🔍 Busca Inteligente", use_container_width=True):
-            st.info("Digite termos de busca para encontrar documentos relevantes")
-
-    # Quick actions
-    st.markdown("### ⚡ Ações Rápidas")
-
-    quick_questions = [
-        "Quais são os documentos processados hoje?",
-        "Mostre um resumo financeiro dos últimos 30 dias",
-        "Quais documentos têm problemas de validação?",
-        "Qual é o valor total das notas fiscais?",
-        "Mostre os principais fornecedores por volume"
-    ]
-
-    cols = st.columns(2)
-    for i, question in enumerate(quick_questions):
-        col_idx = i % 2
-        if cols[col_idx].button(question, key=f"quick_{i}", use_container_width=True):
-            # Simulate clicking the question
-            st.session_state.chat_input_value = question
-            st.rerun()
-
     # Footer
     st.markdown("---")
-    st.caption("💡 Dicas: O sistema usa cache para economizar tokens e acelerar respostas. Perguntas sobre dados específicos são mais eficientes!")
+    st.caption("💡 Dica: Faça perguntas sobre documentos fiscais para obter informações detalhadas.")
