@@ -71,8 +71,18 @@ def test_parse_xml_invalido():
 
 def test_parse_xml_arquivo_inexistente():
     """Testa o parser com um arquivo que não existe."""
-    with pytest.raises(FileNotFoundError):
-        xml_parser.parse_xml_file('arquivo_que_nao_existe.xml')
+    # Garante que o arquivo realmente não existe
+    import os
+    file_path = 'arquivo_que_nao_existe.xml'
+    if os.path.exists(file_path):
+        os.remove(file_path)
+    
+    # Verifica se a exceção é lançada
+    with pytest.raises(FileNotFoundError) as excinfo:
+        xml_parser.parse_xml_file(file_path)
+    
+    # Verifica a mensagem de erro
+    assert 'Arquivo não encontrado' in str(excinfo.value)
 
 @patch('os.path.exists', return_value=True)
 @patch('builtins.open', new_callable=mock_open, read_data='<?xml version="1.0"?><root><test>123</test></root>')

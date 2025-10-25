@@ -219,7 +219,52 @@ class FiscalDocumentProcessor:
         Returns:
             Dicionário com os dados estruturados do documento
         """
-        # Extrai o texto do documento
+        file_path = Path(file_path)
+        
+        # Se for um PDF, extrai o texto primeiro
+        if file_path.suffix.lower() == '.pdf':
+            try:
+                # Extrai o texto do PDF
+                extraction_result = self.extract_text(file_path)
+                
+                if not extraction_result['success']:
+                    return {
+                        'success': False,
+                        'error': extraction_result.get('error', 'Erro desconhecido ao extrair texto do PDF'),
+                        'raw_text': '',
+                        'document_type': 'unknown'
+                    }
+                
+                # Tenta identificar o tipo de documento a partir do texto extraído
+                document_type = self.identify_document_type(extraction_result['text'])
+                
+                # Se o texto extraído contiver um XML, tenta processar como XML
+                if any(tag in extraction_result['text'].lower() for tag in ['<nfe', '<nfce', '<cte', '<mdfe']):
+                    try:
+                        from .xml_parser import parse_xml_string
+                        parsed_data = parse_xml_string(extraction_result['text'])
+                        if 'error' in parsed_data:
+                            raise Exception(parsed_data.get('message', 'Erro ao processar XML'))
+                            
+                        parsed_data['document_type'] = document_type if document_type != 'unknown' else 'xml'
+                        parsed_data['success'] = True
+                        return parsed_data
+                    except Exception as e:
+                        # Se falhar ao processar como XML, continua com a extração estruturada
+                        logger.warning(f"Falha ao processar como XML, tentando extração estruturada: {str(e)}")
+                
+                # Se não for um XML válido ou falhar o processamento, usa a extração estruturada
+                return self._extract_structured_data(extraction_result['text'], document_type)
+                
+            except Exception as e:
+                return {
+                    'success': False,
+                    'error': f"Erro ao processar PDF: {str(e)}",
+                    'raw_text': '',
+                    'document_type': 'unknown'
+                }
+        
+        # Para outros tipos de arquivo (como imagens), extrai o texto primeiro
         extraction_result = self.extract_text(file_path)
         
         if not extraction_result['success']:
@@ -233,25 +278,24 @@ class FiscalDocumentProcessor:
         # Tenta identificar o tipo de documento
         document_type = self.identify_document_type(extraction_result['text'])
         
-        # Extrai os campos estruturados
-        if document_type == 'xml':
-            # Se for XML, usa o parser de XML existente
-            from .xml_parser import parse_xml_file
+        # Para XMLs diretos (não PDF)
+        if document_type in ['nfe', 'nfce', 'cte', 'mdfe']:
             try:
+                from .xml_parser import parse_xml_file
                 parsed_data = parse_xml_file(str(file_path))
-                parsed_data['document_type'] = 'xml'
+                parsed_data['document_type'] = document_type
                 parsed_data['success'] = True
                 return parsed_data
             except Exception as e:
                 return {
                     'success': False,
-                    'error': f"Erro ao processar XML: {str(e)}",
+                    'error': f"Erro ao processar {document_type.upper()}: {str(e)}",
                     'raw_text': extraction_result['text'],
-                    'document_type': 'xml'
+                    'document_type': document_type
                 }
-        else:
-            # Para documentos baseados em imagem/PDF, usa o LLM para extrair os campos
-            return self._extract_structured_data(extraction_result['text'], document_type)
+        
+        # Para outros tipos de documentos, usa a extração estruturada
+        return self._extract_structured_data(extraction_result['text'], document_type)
     
     def identify_document_type(self, text: str) -> str:
         """
@@ -314,6 +358,37 @@ class FiscalDocumentProcessor:
         # Se o LLM não estiver disponível, usa heurísticas
         return self._extract_with_heuristics(text, document_type)
     
+    def _format_date(self, date_str: str) -> str:
+        """Formata a data para o formato ISO 8601 (YYYY-MM-DDTHH:MM:SS)."""
+        from datetime import datetime
+        import re
+        
+        if not date_str:
+            return None
+            
+        try:
+            # Tenta converter de DD/MM/AAAA HH:MM:SS
+            if '/' in date_str:
+                # Separa data e hora se existir
+                parts = date_str.split()
+                if len(parts) == 2:  # Tem data e hora
+                    date_part = parts[0]
+                    time_part = parts[1]
+                    day, month, year = date_part.split('/')
+                    # Garante que a hora tenha segundos se não tiver
+                    if ':' in time_part and time_part.count(':') == 1:
+                        time_part += ':00'  # Adiciona segundos se não existir
+                    return f"{year}-{month.zfill(2)}-{day.zfill(2)} {time_part}"
+                else:  # Apenas data
+                    day, month, year = date_str.split('/')
+                    return f"{year}-{month.zfill(2)}-{day.zfill(2)} 00:00:00"
+            
+            # Se já estiver em um formato diferente, tenta converter para datetime e depois para string
+            return datetime.fromisoformat(date_str).strftime('%Y-%m-%d %H:%M:%S')
+        except Exception as e:
+            print(f"[AVISO] Erro ao formatar data '{date_str}': {e}")
+            return None
+
     def _extract_with_heuristics(self, text: str, document_type: str) -> Dict[str, Any]:
         """
         Extrai dados estruturados usando heurísticas baseadas em expressões regulares.
@@ -348,7 +423,7 @@ class FiscalDocumentProcessor:
             'cnpj': re.compile(r'CNPJ[\s:]*([\d./-]+)', re.IGNORECASE),
             'cpf': re.compile(r'CPF[\s:]*([\d.-]+)', re.IGNORECASE),
             'ie': re.compile(r'(?:I[.\s]*E\.?|Inscri[çc][aã]o\s*Estadual)[\s:]*([^\s]+)', re.IGNORECASE),
-            'data_emissao': re.compile(r'(?:Data\s*de\s*Emiss[ãa]o|Emiss[ãa]o)[\s:]*([\d/]+)', re.IGNORECASE),
+            'data_emissao': re.compile(r'(?:Data\s*de\s*Emiss[ãa]o|Emiss[ãa]o)[\s:]*([\d/]+(?:\s+[\d:]+)?)', re.IGNORECASE),
             'valor_total': re.compile(r'(?:Valor\s*Total\s*R?\$|Total\s*da\s*Nota)[\s:]*([\d.,]+)', re.IGNORECASE),
             'numero': re.compile(r'(?:N[º°]+\s*da\s*Nota|Nota\s*Fiscal\s*N?[º°\s]*)(\d+)', re.IGNORECASE),
             'chave_acesso': re.compile(r'([0-9]{44})'),
@@ -368,7 +443,8 @@ class FiscalDocumentProcessor:
                 elif field == 'ie' and not doc['emitente'].get('inscricao_estadual'):
                     doc['emitente']['inscricao_estadual'] = match.group(1).strip()
                 elif field == 'data_emissao' and not doc.get('data_emissao'):
-                    doc['data_emissao'] = match.group(1).strip()
+                    date_str = match.group(1).strip()
+                    doc['data_emissao'] = self._format_date(date_str)
                 elif field == 'valor_total' and not doc.get('valor_total'):
                     try:
                         doc['valor_total'] = float(match.group(1).replace('.', '').replace(',', '.'))
