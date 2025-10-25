@@ -103,8 +103,8 @@ SQLALCHEMY_DATABASE_URL = DATABASE_URL
 # Tesseract path - configuração para Windows e Linux
 TESSERACT_PATH = _get('TESSERACT_PATH')
 
-# Se não estiver definido ou o caminho não existir, tenta encontrar automaticamente
-if not TESSERACT_PATH or not Path(TESSERACT_PATH).exists():
+# Se não estiver definido, tenta encontrar automaticamente
+if not TESSERACT_PATH:
     import platform
     
     if platform.system() == 'Windows':
@@ -120,17 +120,13 @@ if not TESSERACT_PATH or not Path(TESSERACT_PATH).exists():
             '/usr/bin/tesseract',
             '/usr/local/bin/tesseract',
             '/app/.apt/usr/bin/tesseract',
-            '/home/appuser/streamlit-app/tesseract/tesseract'
+            '/home/appuser/streamlit-app/tesseract/tesseract',
+            '/usr/bin/tesseract-ocr',
+            '/usr/local/bin/tesseract-ocr'
         ]
     
-    # Tenta encontrar um caminho válido
-    for p in alt_paths:
-        if Path(p).exists():
-            TESSERACT_PATH = p
-            break
-    else:
-        # Se não encontrar em nenhum dos caminhos padrão, usa o primeiro do sistema operacional atual
-        TESSERACT_PATH = alt_paths[0] if alt_paths else 'tesseract'
+    # Tenta usar o primeiro caminho disponível sem verificar a existência
+    TESSERACT_PATH = alt_paths[0] if alt_paths else 'tesseract'
 
 GOOGLE_API_KEY = _get('GOOGLE_API_KEY')
 LOG_LEVEL = _get('LOG_LEVEL', 'INFO')

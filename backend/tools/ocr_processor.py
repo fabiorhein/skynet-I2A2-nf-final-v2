@@ -13,13 +13,35 @@ from PIL import Image
 import os
 import re
 import logging
+import shutil
 from typing import Optional, List, Union, Tuple
 from pathlib import Path
 from config import TESSERACT_PATH
 
 # Configure Tesseract path
-if TESSERACT_PATH and Path(TESSERACT_PATH).exists():
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+try:
+    # Try to use the configured path, but don't check if it exists to avoid permission issues
+    if TESSERACT_PATH:
+        pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+    # If Tesseract is in the system PATH, we don't need to set the path
+    elif not shutil.which('tesseract'):
+        # Last resort: try common paths
+        common_paths = [
+            '/usr/bin/tesseract',
+            '/usr/local/bin/tesseract',
+            '/app/.apt/usr/bin/tesseract',
+            '/home/appuser/streamlit-app/tesseract/tesseract',
+            '/usr/bin/tesseract-ocr',
+            '/usr/local/bin/tesseract-ocr'
+        ]
+        for path in common_paths:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                pytesseract.pytesseract.tesseract_cmd = path
+                break
+except Exception as e:
+    logging.warning(f"Could not configure Tesseract path: {e}. Will try to use 'tesseract' from PATH.")
+    # Fall back to 'tesseract' command in PATH
+    pytesseract.pytesseract.tesseract_cmd = 'tesseract'
 
 try:
     from .llm_ocr_mapper import LLMOCRMapper
