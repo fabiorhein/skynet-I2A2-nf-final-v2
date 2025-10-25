@@ -1752,6 +1752,36 @@ class StorageManager:
         else:
             display.info(self._status)
 
+    @property
+    def supabase_client(self):
+        """Get a Supabase client instance for chat system compatibility."""
+        try:
+            from supabase import create_client
+
+            if not SUPABASE_URL or not SUPABASE_KEY:
+                # If no Supabase credentials, return a mock client that raises errors
+                class MockClient:
+                    def table(self, table_name):
+                        raise AttributeError("Supabase not configured - check your credentials")
+                return MockClient()
+
+            # Create a real Supabase client
+            client = create_client(SUPABASE_URL, SUPABASE_KEY)
+            return client
+
+        except ImportError:
+            # If supabase package not available, return a mock client
+            class MockClient:
+                def table(self, table_name):
+                    raise AttributeError("Supabase client not available - install supabase-py")
+            return MockClient()
+        except Exception as e:
+            # If any other error, return a mock client
+            class MockClient:
+                def table(self, table_name):
+                    raise AttributeError(f"Failed to create Supabase client: {e}")
+            return MockClient()
+
 
 # Global instance
 storage_manager = StorageManager()

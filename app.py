@@ -21,7 +21,7 @@ from frontend.components import document_renderer
 
 st.title('SkyNET-I2A2 - Processamento Fiscal (MVP)')
 
-menu = st.sidebar.selectbox('Navegação', ['Home', 'Upload Documento', 'Upload CSV (EDA)', 'Histórico'])
+menu = st.sidebar.selectbox('Navegação', ['Home', 'Upload Documento', 'Upload CSV (EDA)', 'Chat IA', 'Histórico'])
 
 # Initialize session state for storage info and documents
 if 'processed_documents' not in st.session_state:
@@ -49,6 +49,9 @@ elif menu == 'Upload Documento':
 elif menu == 'Upload CSV (EDA)':
     from frontend.pages import upload_csv
     upload_csv.render(storage)
+elif menu == 'Chat IA':
+    from frontend.pages import chat
+    chat.render()
 elif menu == 'Histórico':
     from frontend.pages import history
     history.render(storage)
