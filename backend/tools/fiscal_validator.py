@@ -570,7 +570,21 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
     
     # 4. Validação de itens e totais
     items = doc.get('itens', [])
-    total = float(doc.get('total') or 0)
+    
+    # Safe conversion of total to float with proper error handling
+    total_value = doc.get('total')
+    try:
+        if total_value is None:
+            total = 0.0
+            avisos.append('Total do documento não informado, utilizando 0.0 para validação')
+            _log_validation('warning', 'Total do documento não informado')
+        else:
+            total = float(total_value)
+    except (ValueError, TypeError) as e:
+        error_msg = f'Valor total do documento inválido: {total_value} - {str(e)}'
+        erros.append(error_msg)
+        _log_validation('error', error_msg)
+        total = 0.0
     
     validacoes['itens'] = {
         'quantidade': len(items),

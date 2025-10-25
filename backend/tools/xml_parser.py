@@ -6,6 +6,7 @@ from lxml import etree
 from typing import Dict, Any, List, Optional
 import re
 import os
+import math
 
 
 def _text(node):
@@ -18,6 +19,380 @@ def _text(node):
         return str(node).strip()
     except Exception:
         return None
+
+
+def _parse_nfe(root, xml_string: str) -> Dict[str, Any]:
+    """Parse a NFe XML document."""
+    def findtext(xpath, node=None):
+        try:
+            target = node if node is not None else root
+            if hasattr(target, 'xpath'):
+                res = target.xpath(xpath)
+                return _text(res[0]) if res else None
+            return None
+        except Exception:
+            return None
+
+    def _find_under(parent_local_name: str, tag: str, node=None):
+        target = node if node is not None else root
+        res = target.xpath(f'.//*[local-name()="{parent_local_name}"]//*[local-name()="{tag}"]')
+        return _text(res[0]) if res else None
+        
+    def _to_float(value):
+        try:
+            # Se for None ou string vazia, retorna 0.0
+            if value is None or (isinstance(value, str) and not value.strip()):
+                return 0.0
+                
+            # Se já for numérico, retorna como float
+            if isinstance(value, (int, float)):
+                return float(value)
+                
+            # Se for string, tenta converter para float
+            if isinstance(value, str):
+                # Remove caracteres não numéricos, exceto ponto, vírgula, sinal e notação científica
+                cleaned = ''.join(c for c in value.strip() if c.isdigit() or c in '.,-+eE ')
+                
+                # Se não tem nenhum dígito, retorna 0.0
+                if not any(c.isdigit() for c in cleaned):
+                    return 0.0
+                    
+                # Remove espaços
+                cleaned = cleaned.replace(' ', '')
+                
+                # Verifica se tem notação científica
+                if 'e' in cleaned.lower():
+                    try:
+                        return float(cleaned.lower().replace(',', '.'))
+                    except (ValueError, TypeError):
+                        pass
+                
+                # Trata números com vírgula e/ou ponto
+                if ',' in cleaned and '.' in cleaned:
+                    # Se a vírgula está depois do ponto, remove a vírgula
+                    if cleaned.find(',') > cleaned.find('.'):
+                        cleaned = cleaned.replace(',', '')
+                    # Senão, troca vírgula por ponto e remove outros pontos
+                    else:
+                        cleaned = cleaned.replace('.', '').replace(',', '.')
+                elif ',' in cleaned:
+                    # Se só tem vírgula, substitui por ponto
+                    cleaned = cleaned.replace(',', '.')
+                
+                # Remove múltiplos pontos
+                parts = cleaned.split('.')
+                if len(parts) > 2:
+                    cleaned = f"{parts[0]}.{''.join(parts[1:])}"
+                
+                # Tenta converter para float
+                return float(cleaned) if cleaned else 0.0
+                
+            # Se for outro tipo, tenta converter para string e depois para float
+            return float(str(value).strip())
+            
+        except (ValueError, TypeError) as e:
+            print(f"Aviso: Erro ao converter valor para float: {value} - {str(e)}")
+            return 0.0
+
+    # Extrai informações básicas
+    ide = root.xpath('.//*[local-name()="ide"]')
+    ide = ide[0] if ide else None
+    
+    # Emitente
+    emit = root.xpath('.//*[local-name()="emit"]')
+    emit = emit[0] if emit else None
+    
+    # Destinatário
+    dest = root.xpath('.//*[local-name()="dest"]')
+    dest = dest[0] if dest else None
+    
+    # Itens
+    itens = []
+    for det in root.xpath('.//*[local-name()="det"]'):
+        prod = det.xpath('.//*[local-name()="prod"]')
+        if not prod:
+            continue
+            
+        prod = prod[0]
+        
+        # Garante que todos os campos numéricos tenham valores padrão
+        quantidade = _find_under('prod', 'qCom', prod)
+        valor_unitario = _find_under('prod', 'vUnCom', prod)
+        valor_total = _find_under('prod', 'vProd', prod)
+        
+        item = {
+            'codigo': _find_under('prod', 'cProd', prod) or '',
+            'descricao': _find_under('prod', 'xProd', prod) or 'Produto não especificado',
+            'ncm': _find_under('prod', 'NCM', prod) or '',
+            'cfop': _find_under('prod', 'CFOP', prod) or '',
+            'unidade': _find_under('prod', 'uCom', prod) or 'UN',
+            'quantidade': _to_float(quantidade) if quantidade is not None else 0.0,
+            'valor_unitario': _to_float(valor_unitario) if valor_unitario is not None else 0.0,
+            'valor_total': _to_float(valor_total) if valor_total is not None else 0.0
+        }
+        itens.append(item)
+    
+    # Totais
+    total = root.xpath('.//*[local-name()="total"]//*[local-name()="ICMSTot"]')
+    total = total[0] if total else {}
+    
+    # Extrai o valor total do documento
+    valor_total = _to_float(_find_under('ICMSTot', 'vNF', total)) or 0.0
+    
+    # Cria o dicionário com os dados da NFe
+    result = {
+        'tipo_documento': 'NFe',
+        'chave': _find_under('infNFe', 'chNFe') or _find_under('infNFe', 'Id'),
+        'numero': _find_under('ide', 'nNF', ide),
+        'serie': _find_under('ide', 'serie', ide),
+        'data_emissao': _find_under('ide', 'dhEmi', ide) or _find_under('ide', 'dEmi', ide),
+        'modelo': _find_under('ide', 'mod', ide),
+        'tipo_operacao': _find_under('ide', 'tpNF', ide),
+        'emitente': {
+            'razao_social': _find_under('emit', 'xNome', emit),
+            'nome_fantasia': _find_under('emit', 'xFant', emit),
+            'cnpj': _find_under('emit', 'CNPJ', emit),
+            'ie': _find_under('emit', 'IE', emit),
+            'endereco': {
+                'logradouro': _find_under('enderEmit', 'xLgr', emit),
+                'numero': _find_under('enderEmit', 'nro', emit),
+                'complemento': _find_under('enderEmit', 'xCpl', emit),
+                'bairro': _find_under('enderEmit', 'xBairro', emit),
+                'codigo_municipio': _find_under('enderEmit', 'cMun', emit),
+                'municipio': _find_under('enderEmit', 'xMun', emit),
+                'uf': _find_under('enderEmit', 'UF', emit),
+                'cep': _find_under('enderEmit', 'CEP', emit),
+                'pais': _find_under('enderEmit', 'xPais', emit),
+                'telefone': _find_under('enderEmit', 'fone', emit)
+            }
+        },
+        'destinatario': {
+            'razao_social': _find_under('dest', 'xNome', dest),
+            'cnpj': _find_under('dest', 'CNPJ', dest) or _find_under('dest', 'CPF', dest),
+            'ie': _find_under('dest', 'IE', dest),
+            'endereco': {
+                'logradouro': _find_under('enderDest', 'xLgr', dest),
+                'numero': _find_under('enderDest', 'nro', dest),
+                'complemento': _find_under('enderDest', 'xCpl', dest),
+                'bairro': _find_under('enderDest', 'xBairro', dest),
+                'municipio': _find_under('enderDest', 'xMun', dest),
+                'uf': _find_under('enderDest', 'UF', dest),
+                'cep': _find_under('enderDest', 'CEP', dest)
+            }
+        } if dest else {},
+        'itens': itens,
+        'total': valor_total,  # Agora é um valor numérico
+        'total_detalhado': {  # Mantém a estrutura detalhada para referência
+            'valor_produtos': _to_float(_find_under('ICMSTot', 'vProd', total)),
+            'valor_frete': _to_float(_find_under('ICMSTot', 'vFrete', total)),
+            'valor_seguro': _to_float(_find_under('ICMSTot', 'vSeg', total)),
+            'desconto': _to_float(_find_under('ICMSTot', 'vDesc', total)),
+            'valor_ipi': _to_float(_find_under('ICMSTot', 'vIPI', total)),
+            'valor_total': valor_total
+        },
+        'informacoes_adicionais': _find_under('infAdic', 'infCpl'),
+        'raw_text': xml_string
+    }
+    
+    return result
+
+
+def _parse_nfce(root, xml_string: str) -> Dict[str, Any]:
+    """Parse a NFCe XML document."""
+    def _find_under(parent_local_name: str, tag: str, node=None):
+        target = node if node is not None else root
+        res = target.xpath(f'.//*[local-name()="{parent_local_name}"]//*[local-name()="{tag}"]')
+        return _text(res[0]) if res else None
+        
+    def _to_float(value):
+        try:
+            # Se for None ou string vazia, retorna 0.0
+            if value is None or (isinstance(value, str) and not value.strip()):
+                return 0.0
+                
+            # Se já for numérico, retorna como float
+            if isinstance(value, (int, float)):
+                return float(value)
+                
+            # Se for string, tenta converter para float
+            if isinstance(value, str):
+                # Remove caracteres não numéricos, exceto ponto, vírgula, sinal e notação científica
+                cleaned = ''.join(c for c in value.strip() if c.isdigit() or c in '.,-+eE ')
+                
+                # Se não tem nenhum dígito, retorna 0.0
+                if not any(c.isdigit() for c in cleaned):
+                    return 0.0
+                    
+                # Remove espaços
+                cleaned = cleaned.replace(' ', '')
+                
+                # Verifica se tem notação científica
+                if 'e' in cleaned.lower():
+                    try:
+                        return float(cleaned.lower().replace(',', '.'))
+                    except (ValueError, TypeError):
+                        pass
+                
+                # Trata números com vírgula e/ou ponto
+                if ',' in cleaned and '.' in cleaned:
+                    # Se a vírgula está depois do ponto, remove a vírgula
+                    if cleaned.find(',') > cleaned.find('.'):
+                        cleaned = cleaned.replace(',', '')
+                    # Senão, troca vírgula por ponto e remove outros pontos
+                    else:
+                        cleaned = cleaned.replace('.', '').replace(',', '.')
+                elif ',' in cleaned:
+                    # Se só tem vírgula, substitui por ponto
+                    cleaned = cleaned.replace(',', '.')
+                
+                # Remove múltiplos pontos
+                parts = cleaned.split('.')
+                if len(parts) > 2:
+                    cleaned = f"{parts[0]}.{''.join(parts[1:])}"
+                
+                # Tenta converter para float
+                return float(cleaned) if cleaned else 0.0
+                
+            # Se for outro tipo, tenta converter para string e depois para float
+            return float(str(value).strip())
+            
+        except (ValueError, TypeError) as e:
+            print(f"Aviso: Erro ao converter valor para float: {value} - {str(e)}")
+            return 0.0
+    
+    # Extrai informações básicas
+    ide = root.xpath('.//*[local-name()="ide"]')
+    ide = ide[0] if ide else None
+    
+    # Emitente
+    emit = root.xpath('.//*[local-name()="emit"]')
+    emit = emit[0] if emit else None
+    
+    # Destinatário
+    dest = root.xpath('.//*[local-name()="dest"]')
+    dest = dest[0] if dest else None
+    
+    # Itens
+    itens = []
+    for det in root.xpath('.//*[local-name()="det"]'):
+        prod = det.xpath('.//*[local-name()="prod"]')
+        if not prod:
+            continue
+            
+        prod = prod[0]
+        
+        # Garante que todos os campos tenham valores padrão
+        item = {
+            'codigo': _find_under('prod', 'cProd', prod) or '',
+            'descricao': _find_under('prod', 'xProd', prod) or 'Produto não especificado',
+            'ncm': _find_under('prod', 'NCM', prod) or '',
+            'cfop': _find_under('prod', 'CFOP', prod) or '',
+            'unidade': _find_under('prod', 'uCom', prod) or 'UN',
+            'quantidade': _to_float(_find_under('prod', 'qCom', prod)),
+            'valor_unitario': _to_float(_find_under('prod', 'vUnCom', prod)),
+            'valor_total': _to_float(_find_under('prod', 'vProd', prod))
+        }
+        itens.append(item)
+    
+    # Totais
+    total = root.xpath('.//*[local-name()="total"]//*[local-name()="ICMSTot"]')
+    total = total[0] if total else {}
+    
+    # Extrai o valor total do documento
+    valor_total = _to_float(_find_under('ICMSTot', 'vNF', total))
+    
+    # Cria o dicionário com os dados da NFCe
+    result = {
+        'tipo_documento': 'NFCe',
+        'chave': _find_under('infNFe', 'chNFe') or _find_under('infNFe', 'Id'),
+        'numero': _find_under('ide', 'nNF', ide),
+        'serie': _find_under('ide', 'serie', ide),
+        'data_emissao': _find_under('ide', 'dhEmi', ide) or _find_under('ide', 'dEmi', ide),
+        'modelo': _find_under('ide', 'mod', ide),
+        'tipo_operacao': _find_under('ide', 'tpNF', ide),
+        'emitente': {
+            'razao_social': _find_under('emit', 'xNome', emit),
+            'nome_fantasia': _find_under('emit', 'xFant', emit),
+            'cnpj': _find_under('emit', 'CNPJ', emit),
+            'ie': _find_under('emit', 'IE', emit),
+            'endereco': {
+                'logradouro': _find_under('enderEmit', 'xLgr', emit),
+                'numero': _find_under('enderEmit', 'nro', emit),
+                'complemento': _find_under('enderEmit', 'xCpl', emit) or '',
+                'bairro': _find_under('enderEmit', 'xBairro', emit),
+                'codigo_municipio': _find_under('enderEmit', 'cMun', emit),
+                'municipio': _find_under('enderEmit', 'xMun', emit),
+                'uf': _find_under('enderEmit', 'UF', emit),
+                'cep': _find_under('enderEmit', 'CEP', emit),
+                'pais': _find_under('enderEmit', 'xPais', emit) or 'Brasil',
+                'telefone': _find_under('enderEmit', 'fone', emit) or ''
+            }
+        },
+        'destinatario': {
+            'razao_social': _find_under('dest', 'xNome', dest),
+            'cnpj': _find_under('dest', 'CNPJ', dest) or _find_under('dest', 'CPF', dest),
+            'ie': _find_under('dest', 'IE', dest) or '',
+            'cpf': _find_under('dest', 'CPF', dest) or '',
+            'email': _find_under('dest', 'email', dest) or '',
+            'endereco': {
+                'logradouro': _find_under('enderDest', 'xLgr', dest) or '',
+                'numero': _find_under('enderDest', 'nro', dest) or '',
+                'complemento': _find_under('enderDest', 'xCpl', dest) or '',
+                'bairro': _find_under('enderDest', 'xBairro', dest) or '',
+                'municipio': _find_under('enderDest', 'xMun', dest) or '',
+                'uf': _find_under('enderDest', 'UF', dest) or '',
+                'cep': _find_under('enderDest', 'CEP', dest) or ''
+            }
+        } if dest else {},
+        'itens': itens,
+        'total': valor_total,
+        'total_detalhado': {
+            'valor_produtos': _to_float(_find_under('ICMSTot', 'vProd', total)),
+            'valor_frete': _to_float(_find_under('ICMSTot', 'vFrete', total)),
+            'valor_seguro': _to_float(_find_under('ICMSTot', 'vSeg', total)),
+            'desconto': _to_float(_find_under('ICMSTot', 'vDesc', total)),
+            'valor_ipi': _to_float(_find_under('ICMSTot', 'vIPI', total)),
+            'valor_total': valor_total
+        },
+        'informacoes_adicionais': _find_under('infAdic', 'infCpl') or '',
+        'raw_text': xml_string
+    }
+    
+    # Informações adicionais específicas da NFCe
+    pag = root.xpath('.//*[local-name()="pag"]')
+    if pag:
+        pag = pag[0]
+        result['pagamento'] = {
+            'tipo_integração': _find_under('pag', 'tIntegra', pag) or '',
+            'meio_pagamento': _find_under('pag', 'tPag', pag) or '',
+            'valor': _to_float(_find_under('pag', 'vPag', pag)),
+            'troco': _to_float(_find_under('pag', 'vTroco', pag))
+        }
+    
+    # Garante que o total seja um valor numérico
+    if 'total' not in result or result['total'] is None:
+        # Se não houver total, tenta extrair do XML
+        total = root.xpath('.//*[local-name()="total"]//*[local-name()="vNF"]')
+        if total:
+            result['total'] = _to_float(_text(total[0]))
+        else:
+            # Se não encontrar, tenta calcular a partir dos itens
+            total_itens = sum(_to_float(item.get('valor_total', 0)) for item in result.get('itens', []))
+            result['total'] = total_itens
+    elif isinstance(result['total'], dict):
+        # Se for um dicionário, extrai o valor total
+        total_value = result['total'].get('valor_total')
+        result['total_detalhado'] = result['total']  # Mantém os detalhes
+        result['total'] = _to_float(total_value) if total_value is not None else 0.0
+    elif not isinstance(result['total'], (int, float)):
+        # Se não for um número, converte para float
+        result['total'] = _to_float(result['total'])
+    
+    # Garante que o total é um número válido
+    if not isinstance(result['total'], (int, float)) or math.isnan(result['total']) or math.isinf(result['total']):
+        result['total'] = 0.0
+    
+    return result
 
 
 def _parse_cte(root, xml_string: str) -> Dict[str, Any]:
@@ -117,6 +492,153 @@ def _parse_cte(root, xml_string: str) -> Dict[str, Any]:
         'raw_text': xml_string
     }
 
+def _parse_mdfe(root, xml_string: str) -> Dict[str, Any]:
+    """Parse a MDFe XML document."""
+    def findtext(xpath, node=None):
+        try:
+            target = node if node is not None else root
+            if hasattr(target, 'xpath'):
+                res = target.xpath(xpath)
+                return _text(res[0]) if res else None
+            return None
+        except Exception:
+            return None
+
+    def _find_under(parent_local_name: str, tag: str, node=None):
+        target = node if node is not None else root
+        res = target.xpath(f'.//*[local-name()="{parent_local_name}"]//*[local-name()="{tag}"]')
+        return _text(res[0]) if res else None
+        
+    def _to_float(value):
+        try:
+            # Se for None ou string vazia, retorna 0.0
+            if value is None or (isinstance(value, str) and not value.strip()):
+                return 0.0
+                
+            # Se já for numérico, retorna como float
+            if isinstance(value, (int, float)):
+                return float(value)
+                
+            # Se for string, tenta converter para float
+            if isinstance(value, str):
+                # Remove caracteres não numéricos, exceto ponto, vírgula, sinal e notação científica
+                cleaned = ''.join(c for c in value.strip() if c.isdigit() or c in '.,-+eE ')
+                
+                # Se não tem nenhum dígito, retorna 0.0
+                if not any(c.isdigit() for c in cleaned):
+                    return 0.0
+                    
+                # Remove espaços
+                cleaned = cleaned.replace(' ', '')
+                
+                # Verifica se tem notação científica
+                if 'e' in cleaned.lower():
+                    try:
+                        return float(cleaned.lower().replace(',', '.'))
+                    except (ValueError, TypeError):
+                        pass
+                
+                # Trata números com vírgula e/ou ponto
+                if ',' in cleaned and '.' in cleaned:
+                    # Se a vírgula está depois do ponto, remove a vírgula
+                    if cleaned.find(',') > cleaned.find('.'):
+                        cleaned = cleaned.replace(',', '')
+                    # Senão, troca vírgula por ponto e remove outros pontos
+                    else:
+                        cleaned = cleaned.replace('.', '').replace(',', '.')
+                elif ',' in cleaned:
+                    # Se só tem vírgula, substitui por ponto
+                    cleaned = cleaned.replace(',', '.')
+                
+                # Remove múltiplos pontos
+                parts = cleaned.split('.')
+                if len(parts) > 2:
+                    cleaned = f"{parts[0]}.{''.join(parts[1:])}"
+                
+                # Tenta converter para float
+                return float(cleaned) if cleaned else 0.0
+                
+            # Se for outro tipo, tenta converter para string e depois para float
+            return float(str(value).strip())
+            
+        except (ValueError, TypeError) as e:
+            print(f"Aviso: Erro ao converter valor para float: {value} - {str(e)}")
+            return 0.0
+
+    # Informações básicas
+    ide = root.xpath('.//*[local-name()="ide"]')
+    ide = ide[0] if ide else {}
+    
+    # Emitente
+    emit = root.xpath('.//*[local-name()="emit"]')
+    emit = emit[0] if emit else {}
+    
+    # Destinatário (se existir)
+    dest = root.xpath('.//*[local-name()="dest"]')
+    dest = dest[0] if dest else {}
+    
+    # Modal
+    modal = root.xpath('.//*[local-name()="modal"]')
+    modal = modal[0] if modal else {}
+    
+    # Documentos fiscais vinculados
+    documentos = []
+    for doc in root.xpath('.//*[local-name()="infDoc"]//*[local-name()="infNFe"]'):
+        documentos.append({
+            'chave': _text(doc.xpath('.//*[local-name()="chNFe"]')[0]) if doc.xpath('.//*[local-name()="chNFe"]') else None,
+            'valor': _text(doc.xpath('.//*[local-name()="vBC"]')[0]) if doc.xpath('.//*[local-name()="vBC"]') else None
+        })
+    
+    # Totais
+    total = root.xpath('.//*[local-name()="tot"]')
+    total = total[0] if total else {}
+    
+    # Valores numéricos
+    valor_carga = _to_float(_find_under('tot', 'vCarga', total))
+    
+    return {
+        'tipo_documento': 'MDFe',
+        'chave': _find_under('infMDFe', 'chMDFe') or _find_under('infMDFe', 'Id'),
+        'numero': _find_under('ide', 'nMDF', ide),
+        'serie': _find_under('ide', 'serie', ide),
+        'data_emissao': _find_under('ide', 'dhEmi', ide) or _find_under('ide', 'dEmi', ide),
+        'modelo': _find_under('ide', 'mod', ide) or '58',  # 58 é o modelo padrão para MDFe
+        'tipo_emissao': _find_under('ide', 'tpEmis', ide),
+        'modal': _find_under('modal', 'CNPJ', modal) and 'Rodoviário' or 'Não informado',
+        'uf_inicio': _find_under('ide', 'UFIni', ide),
+        'uf_fim': _find_under('ide', 'UFFim', ide),
+        'emitente': {
+            'razao_social': _find_under('emit', 'xNome', emit),
+            'cnpj': _find_under('emit', 'CNPJ', emit),
+            'ie': _find_under('emit', 'IE', emit),
+            'endereco': {
+                'logradouro': _find_under('enderEmit', 'xLgr', emit),
+                'numero': _find_under('enderEmit', 'nro', emit),
+                'bairro': _find_under('enderEmit', 'xBairro', emit),
+                'municipio': _find_under('enderEmit', 'xMun', emit),
+                'uf': _find_under('enderEmit', 'UF', emit),
+                'cep': _find_under('enderEmit', 'CEP', emit)
+            }
+        },
+        'destinatario': {
+            'cnpj': _find_under('dest', 'CNPJ', dest),
+            'cpf': _find_under('dest', 'CPF', dest),
+            'ie': _find_under('dest', 'IE', dest),
+            'razao_social': _find_under('dest', 'xNome', dest)
+        } if any(_find_under('dest', field, dest) for field in ['CNPJ', 'CPF', 'IE', 'xNome']) else None,
+        'documentos_vinculados': documentos,
+        'total': valor_carga,  # Retorna apenas o valor numérico
+        'total_detalhado': {   # Mantém a estrutura detalhada para referência
+            'quantidade_cte': _find_under('tot', 'qCTe', total),
+            'quantidade_nfe': _find_under('tot', 'qNFe', total),
+            'valor_carga': _find_under('tot', 'vCarga', total),
+            'peso_bruto': _find_under('tot', 'qCarga', total)  # Em kg
+        },
+        'informacoes_complementares': _find_under('infAdic', 'infCpl'),
+        'raw_text': xml_string
+    }
+
+
 def parse_xml_string(xml_string: str) -> Dict[str, Any]:
     """Parse an XML string and return a dictionary with extracted data.
     
@@ -135,7 +657,8 @@ def parse_xml_string(xml_string: str) -> Dict[str, Any]:
         'itens': [],
         'impostos': {},
         'total': None,
-        'data_emissao': None
+        'data_emissao': None,
+        'tipo_documento': 'unknown'
     }
     
     if not isinstance(xml_string, str):
@@ -154,33 +677,31 @@ def parse_xml_string(xml_string: str) -> Dict[str, Any]:
         parser = etree.XMLParser(remove_blank_text=True, remove_comments=True)
         root = etree.fromstring(xml_string.strip().encode('utf-8'), parser=parser)
         
-        # Helper function to safely get element text
-        def _text(node):
-            if node is None:
-                return None
-            if isinstance(node, list):
-                if not node:
-                    return None
-                node = node[0]
-            if hasattr(node, 'text') and node.text and node.text.strip():
-                return node.text.strip()
-            return None
+        # Identifica o tipo de documento
+        if root.xpath('//*[contains(local-name(), "NFe")]'):
+            if 'mod="65"' in xml_string or 'mod=65' in xml_string:
+                return _parse_nfce(root, xml_string)
+            return _parse_nfe(root, xml_string)
+        elif root.xpath('//*[contains(local-name(), "CTe")]'):
+            return _parse_cte(root, xml_string)
+        elif root.xpath('//*[contains(local-name(), "MDFe")]'):
+            return _parse_mdfe(root, xml_string)
             
-        # Helper function to find text by XPath
-        def findtext(xpath, node=None):
-            try:
-                target = node if node is not None else root
-                if hasattr(target, 'xpath'):
-                    res = target.xpath(xpath)
-                    return _text(res[0]) if res else None
-                return None
-            except Exception:
-                return None
-                
-        # Emitente/destinatario: try to find under 'emit' and 'dest' parents first
-        def _find_under(parent_local_name: str, tag: str):
-            res = root.xpath(f'.//*[local-name()="{parent_local_name}"]//*[local-name()="{tag}"]')
-            return _text(res[0]) if res else None
+        # Se não for nenhum dos tipos conhecidos, tenta identificar pelo root tag
+        root_tag = etree.QName(root).localname.lower()
+        if 'nfe' in root_tag or 'nfe' in xml_string.lower():
+            return _parse_nfe(root, xml_string)
+        elif 'nfce' in root_tag or 'nfce' in xml_string.lower():
+            return _parse_nfce(root, xml_string)
+        elif 'cte' in root_tag or 'cte' in xml_string.lower():
+            return _parse_cte(root, xml_string)
+        elif 'mdfe' in root_tag or 'mdfe' in xml_string.lower():
+            return _parse_mdfe(root, xml_string)
+            
+        # Se não identificou, retorna erro
+        error_response['error'] = 'unknown_document_type'
+        error_response['message'] = 'Tipo de documento não identificado'
+        return error_response
             
         # Handle XML without namespace (for test_parse_xml_sem_namespace and test_parse_xml_arquivo_valido)
         try:
