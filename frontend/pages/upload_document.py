@@ -224,53 +224,45 @@ def render(storage):
                     # Debug: Exibir a estrutura da resposta salva
                     logger.info(f"Resposta do save_document: {saved}")
                     
-                    # Tentar obter o ID do documento de várias maneiras diferentes
-                    document_id = None
+                    # Função auxiliar para extrair ID de forma robusta
+                    def extract_document_id(response):
+                        """Extrai o ID do documento da resposta de forma robusta."""
+                        if not response:
+                            return None
+                        
+                        # Se for um dicionário
+                        if isinstance(response, dict):
+                            # Tenta chaves comuns
+                            for key in ['id', 'ID', 'document_id', 'doc_id', 'fiscal_document_id']:
+                                if key in response and response[key]:
+                                    return str(response[key]).strip()
+                            
+                            # Tenta em estruturas aninhadas
+                            if 'data' in response and isinstance(response['data'], dict):
+                                for key in ['id', 'ID', 'document_id', 'doc_id', 'fiscal_document_id']:
+                                    if key in response['data'] and response['data'][key]:
+                                        return str(response['data'][key]).strip()
+                            
+                            # Se data for uma lista
+                            if 'data' in response and isinstance(response['data'], list) and response['data']:
+                                first_item = response['data'][0]
+                                if isinstance(first_item, dict):
+                                    for key in ['id', 'ID', 'document_id', 'doc_id', 'fiscal_document_id']:
+                                        if key in first_item and first_item[key]:
+                                            return str(first_item[key]).strip()
+                        
+                        # Se for uma lista
+                        elif isinstance(response, list) and response:
+                            first_item = response[0]
+                            if isinstance(first_item, dict):
+                                for key in ['id', 'ID', 'document_id', 'doc_id', 'fiscal_document_id']:
+                                    if key in first_item and first_item[key]:
+                                        return str(first_item[key]).strip()
+                        
+                        return None
                     
-                    # 1. Tenta obter diretamente do dicionário retornado
-                    if isinstance(saved, dict):
-                        # Se tiver 'data' e dentro dele 'id'
-                        if 'data' in saved and isinstance(saved['data'], dict):
-                            # Tenta obter o ID de várias maneiras dentro de data
-                            if 'id' in saved['data']:
-                                document_id = saved['data']['id']
-                            # Se data for uma lista não vazia
-                            elif isinstance(saved['data'].get('data'), list) and saved['data']['data']:
-                                document_id = saved['data']['data'][0].get('id')
-                        # Se tiver 'id' no nível raiz
-                        if not document_id and 'id' in saved:
-                            document_id = saved['id']
-                        # Se 'data' for uma lista não vazia
-                        elif not document_id and 'data' in saved and isinstance(saved['data'], list) and saved['data']:
-                            document_id = saved['data'][0].get('id')
-                    
-                    # 2. Se ainda não tem ID, tenta acessar como atributo
-                    if not document_id and hasattr(saved, 'data'):
-                        if hasattr(saved.data, 'get') and callable(saved.data.get):
-                            document_id = saved.data.get('id')
-                        elif hasattr(saved.data, 'data'):
-                            # Tenta acessar saved.data.data
-                            if hasattr(saved.data.data, 'get') and callable(saved.data.data.get):
-                                document_id = saved.data.data.get('id')
-                            # Se for uma lista
-                            elif hasattr(saved.data.data, '__iter__') and not isinstance(saved.data.data, (str, bytes)):
-                                first_item = next(iter(saved.data.data), None)
-                                if first_item and hasattr(first_item, 'get') and callable(first_item.get):
-                                    document_id = first_item.get('id')
-                        elif hasattr(saved.data, '__iter__') and not isinstance(saved.data, (str, bytes)):
-                            # Se for iterável (como uma lista), pega o primeiro item
-                            first_item = next(iter(saved.data), None)
-                            if first_item and hasattr(first_item, 'get') and callable(first_item.get):
-                                document_id = first_item.get('id')
-                    
-                    # 3. Se ainda não tem ID, tenta obter da resposta bruta
-                    if not document_id and hasattr(saved, 'data') and isinstance(saved.data, dict):
-                        document_id = saved.data.get('id')
-                    
-                    # 4. Última tentativa: verifica se o próprio saved tem um ID
-                    if not document_id and hasattr(saved, 'id'):
-                        document_id = saved.id
-                    
+                    # Extrai o ID usando a função auxiliar
+                    document_id = extract_document_id(saved)
                     logger.info(f"ID do documento obtido: {document_id}")
                     
                     # Se encontrou o ID, salva o histórico
@@ -317,17 +309,52 @@ def render(storage):
                 st.info('Processando documento não-XML via OCR...')
                 parsed = coordinator.run_task('extract', {'path': str(dest)})
                 
-                if parsed.get('error') == 'empty_ocr':
-                    st.error('''
-                        ❌ Não foi possível extrair texto do documento. Verifique se:
-                        - O documento está legível
-                        - O PDF contém texto selecionável
-                        - O Poppler está instalado (para PDFs escaneados)
-                    ''')
-                    return
+                # Tratamento de erros com mensagens claras
+                if isinstance(parsed, dict) and parsed.get('error'):
+                    error_code = parsed.get('error', 'unknown')
+                    error_message = parsed.get('message', 'Erro desconhecido na extração')
                     
-                if parsed.get('error'):
-                    st.error(f"Erro na extração: {parsed.get('message')}")
+                    if error_code == 'empty_ocr':
+                        st.error(f'''
+                            ❌ Não foi possível extrair texto do documento.
+                            
+                            Motivo: {error_message}
+                            
+                            Verifique se:
+                            - O documento está legível e em boa qualidade
+                            - O PDF contém texto selecionável (não é apenas imagem)
+                            - O Poppler está instalado (para PDFs escaneados)
+                            - A imagem tem resolução suficiente
+                        ''')
+                    elif error_code == 'tesseract_not_installed':
+                        st.error(f'''
+                            ❌ Tesseract OCR não está disponível
+                            
+                            {error_message}
+                            
+                            **Instruções de instalação:**
+                            - **Windows:** Baixe em https://github.com/UB-Mannheim/tesseract/wiki
+                            - **Linux:** `sudo apt-get install tesseract-ocr`
+                            - **macOS:** `brew install tesseract`
+                            
+                            Após instalar, reinicie a aplicação.
+                        ''')
+                    elif error_code == 'invalid_image_format':
+                        st.error(f"❌ Formato de imagem inválido: {error_message}")
+                    elif error_code == 'file_not_found':
+                        st.error(f"❌ Arquivo não encontrado: {error_message}")
+                    elif error_code == 'unsupported_file_type':
+                        st.error(f"❌ Tipo de arquivo não suportado: {error_message}")
+                    else:
+                        st.error(f"❌ Erro na extração ({error_code}): {error_message}")
+                    
+                    logger.error(f"Erro de extração: {error_code} - {error_message}")
+                    return
+                
+                # Validação adicional
+                if not isinstance(parsed, dict):
+                    st.error(f"❌ Resposta inválida da extração: {type(parsed).__name__}")
+                    logger.error(f"Resposta inválida: {parsed}")
                     return
                 
                 # Show raw OCR text with better formatting

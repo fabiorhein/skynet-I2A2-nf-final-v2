@@ -48,16 +48,38 @@ def get_validation_errors(doc):
     validation_details = doc.get('validation_details', {}) or {}
     
     # Extract errors from validation field
-    errors = validation.get('errors', [])
+    errors = validation.get('errors', []) if isinstance(validation.get('errors'), list) else []
     
-    # Extract errors from validation_details field if available
+    # Extract errors and issues from validation_details field if available
     if validation_details and isinstance(validation_details, dict):
+        # Extract issues (erros)
+        issues = validation_details.get('issues', [])
+        if isinstance(issues, list):
+            for issue in issues:
+                errors.append({
+                    'message': issue if isinstance(issue, str) else str(issue),
+                    'category': 'Erro'
+                })
+        
+        # Extract warnings (avisos)
+        warnings = validation_details.get('warnings', [])
+        if isinstance(warnings, list):
+            for warning in warnings:
+                errors.append({
+                    'message': warning if isinstance(warning, str) else str(warning),
+                    'category': 'Aviso'
+                })
+        
+        # Extract status-based errors
         if validation_details.get('status') == 'error':
             errors.append({
                 'message': validation_details.get('message', 'Erro na validação'),
-                'details': str(validation_details)
+                'details': str(validation_details),
+                'category': 'Status'
             })
-        elif validation_details.get('validations'):
+        
+        # Extract field-level validation errors
+        if validation_details.get('validations'):
             for field, result in validation_details['validations'].items():
                 # Handle case where result is a boolean
                 if isinstance(result, bool):
@@ -69,7 +91,7 @@ def get_validation_errors(doc):
                         })
                 # Handle case where result is a dictionary
                 elif isinstance(result, dict):
-                    if not result.get('is_valid', True):
+                    if not result.get('valido', result.get('is_valid', True)):
                         errors.append({
                             'message': result.get('message', f'Erro na validação de {field}'),
                             'details': result.get('details', ''),
@@ -219,99 +241,81 @@ def render_document_details(doc):
         st.markdown("### Validação do Documento")
         
         # Get validation data from both possible locations
-        validation = doc.get('validation', {}) or {}
+        validation_status = doc.get('validation_status', 'pending')
         validation_details = doc.get('validation_details', {}) or {}
         
-        # Verifica se há erros de validação
-        has_validation_errors = False
+        # Extrai informações de validação
+        issues = validation_details.get('issues', []) if isinstance(validation_details, dict) else []
+        warnings = validation_details.get('warnings', []) if isinstance(validation_details, dict) else []
+        validations = validation_details.get('validations', {}) if isinstance(validation_details, dict) else {}
         
-        # Verifica se há erros nas validações detalhadas
-        if validation_details and isinstance(validation_details, dict):
-            if 'validations' in validation_details and isinstance(validation_details['validations'], dict):
-                # Verifica se há alguma validação com falha
-                for result in validation_details['validations'].values():
-                    if isinstance(result, dict) and not result.get('is_valid', True):
-                        has_validation_errors = True
-                        break
-                    elif isinstance(result, bool) and not result:
-                        has_validation_errors = True
-                        break
+        # Mostra status geral de validação
+        st.markdown("#### Status Geral")
+        col1, col2, col3 = st.columns(3)
         
-        # Verifica erros adicionais usando a função get_validation_errors
-        num_errors, errors = get_validation_errors(doc)
+        with col1:
+            if validation_status == 'error':
+                st.error(f"❌ Status: Erros Encontrados")
+            elif validation_status == 'warning':
+                st.warning(f"⚠️ Status: Avisos")
+            else:
+                st.success(f"✅ Status: Válido")
         
-        # Mostra mensagem de status com base nos erros encontrados
-        if has_validation_errors or num_errors > 0:
-            total_errors = num_errors + (1 if has_validation_errors and num_errors == 0 else 0)
-            st.error(f"❌ Foram encontrados {total_errors} erro(s) na validação:")
+        with col2:
+            st.metric("Erros", len(issues))
+        
+        with col3:
+            st.metric("Avisos", len(warnings))
+        
+        # Mostra erros encontrados
+        if issues:
+            st.markdown("#### ❌ Erros Encontrados")
+            for i, issue in enumerate(issues, 1):
+                st.error(f"{i}. {issue}")
+        
+        # Mostra avisos encontrados
+        if warnings:
+            st.markdown("#### ⚠️ Avisos")
+            for i, warning in enumerate(warnings, 1):
+                st.warning(f"{i}. {warning}")
+        
+        # Mostra detalhes de validação por campo
+        if validations and isinstance(validations, dict):
+            st.markdown("#### 📋 Detalhes de Validação por Campo")
             
-            # Se houver erros da função get_validation_errors, exibe-os
-            if num_errors > 0:
-                # Agrupa erros por categoria
-                error_categories = {}
-                for error in errors:
-                    if not isinstance(error, dict):
-                        category = 'Outros'
-                        error = {'message': str(error)}
-                    else:
-                        category = error.get('category', 'Outros')
-                    
-                    if category not in error_categories:
-                        error_categories[category] = []
-                    error_categories[category].append(error)
+            # Prepara dados para tabela
+            validation_data = []
+            for field, result in validations.items():
+                if not isinstance(result, dict):
+                    continue
                 
-                # Exibe erros por categoria
-                for category, category_errors in error_categories.items():
-                    with st.expander(f"{category} ({len(category_errors)} erro(s))"):
-                        for error in category_errors:
-                            msg = error.get('message', 'Erro desconhecido')
-                            details = error.get('details', '')
-                            
-                            # Se não houver detalhes, tenta obter do validation_details
-                            if not details and validation_details:
-                                if validation_details.get('status') == 'error':
-                                    details = validation_details.get('message', '')
-                                elif 'validations' in validation_details:
-                                    details = json.dumps(validation_details['validations'], ensure_ascii=False, indent=2)
-                            
-                            st.markdown(f"- **{msg}**")
-                            if details:
-                                st.code(details, language='json' if isinstance(details, dict) else 'text')
-        else:
-            st.success("✅ Nenhum erro de validação encontrado.")
-        
-        # Mostra resumo da validação se disponível
-        if validation_details and isinstance(validation_details, dict):
-            st.markdown("#### Detalhes da Validação")
+                is_valid = result.get('valido', result.get('is_valid', False))
+                status_icon = '✅' if is_valid else '❌'
+                message = result.get('message', result.get('descricao', ''))
+                
+                validation_data.append({
+                    'Campo': field.replace('_', ' ').title(),
+                    'Status': status_icon,
+                    'Detalhes': message if isinstance(message, str) else json.dumps(message, ensure_ascii=False)
+                })
             
-            # Se houver validações individuais, mostra em um formato organizado
-            if 'validations' in validation_details and isinstance(validation_details['validations'], dict):
-                summary_data = []
-                for field, result in validation_details['validations'].items():
-                    if not isinstance(result, dict):
-                        continue
-                    
-                    status = '✅ Aprovado' if result.get('is_valid', False) else '❌ Rejeitado'
-                    message = result.get('message', '')
-                    
-                    summary_data.append({
-                        'Campo': field.replace('_', ' ').title(),
-                        'Status': status,
-                        'Mensagem': message
-                    })
-                
-                if summary_data:
-                    df_summary = pd.DataFrame(summary_data)
-                    st.dataframe(
-                        df_summary,
-                        column_config={
-                            "Campo": st.column_config.TextColumn("Campo"),
-                            "Status": st.column_config.TextColumn("Status"),
-                            "Mensagem": st.column_config.TextColumn("Mensagem")
-                        },
-                        hide_index=True,
-                        use_container_width=True
-                    )
+            if validation_data:
+                df_validation = pd.DataFrame(validation_data)
+                st.dataframe(
+                    df_validation,
+                    column_config={
+                        "Campo": st.column_config.TextColumn("Campo", width="medium"),
+                        "Status": st.column_config.TextColumn("Status", width="small"),
+                        "Detalhes": st.column_config.TextColumn("Detalhes", width="large")
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
+        
+        # Mostra dados brutos de validação se disponível
+        if validation_details:
+            with st.expander("📊 Dados Brutos de Validação (JSON)"):
+                st.json(validation_details)
     
     with tab4:
         # Dados completos em formato JSON

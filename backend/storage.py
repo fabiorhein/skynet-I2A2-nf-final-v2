@@ -587,6 +587,81 @@ class SupabaseStorage(StorageInterface):
     def _table_url(self, table: str) -> str:
         return f"{self.url}/rest/v1/{table}"
 
+    def _extract_document_id(self, response_obj: Any, response_headers: Dict[str, str] = None, status_code: int = None) -> Optional[str]:
+        """
+        Extrai o ID do documento de várias fontes possíveis.
+        
+        Args:
+            response_obj: Objeto de resposta (dict, list, ou outro)
+            response_headers: Headers da resposta HTTP
+            status_code: Status code da resposta HTTP
+            
+        Returns:
+            str: ID do documento, ou None se não encontrado
+        """
+        # 1. Tenta extrair do header Location
+        if response_headers:
+            location = response_headers.get('Location', '')
+            if location:
+                # Extrai o ID da URL (último segmento)
+                doc_id = location.split('/')[-1]
+                if doc_id and doc_id.strip():
+                    print(f"[DEBUG] ID extraído do header Location: {doc_id}")
+                    return doc_id
+        
+        # 2. Tenta extrair do header Content-Location (alternativa do Supabase)
+        if response_headers:
+            content_location = response_headers.get('Content-Location', '')
+            if content_location:
+                # Extrai o ID da URL (último segmento antes de ?)
+                doc_id = content_location.split('/')[-1].split('?')[0]
+                if doc_id and doc_id.strip():
+                    print(f"[DEBUG] ID extraído do header Content-Location: {doc_id}")
+                    return doc_id
+        
+        # 3. Tenta extrair do corpo da resposta
+        if isinstance(response_obj, dict):
+            # Tenta chaves comuns para ID
+            id_keys = ['id', 'ID', 'document_id', 'doc_id', 'fiscal_document_id']
+            for key in id_keys:
+                if key in response_obj and response_obj[key]:
+                    doc_id = str(response_obj[key]).strip()
+                    if doc_id:
+                        print(f"[DEBUG] ID extraído da chave '{key}': {doc_id}")
+                        return doc_id
+            
+            # Tenta extrair de estruturas aninhadas
+            if 'data' in response_obj and isinstance(response_obj['data'], dict):
+                for key in id_keys:
+                    if key in response_obj['data'] and response_obj['data'][key]:
+                        doc_id = str(response_obj['data'][key]).strip()
+                        if doc_id:
+                            print(f"[DEBUG] ID extraído de data.{key}: {doc_id}")
+                            return doc_id
+        
+        # 4. Tenta extrair de lista
+        elif isinstance(response_obj, list) and response_obj:
+            first_item = response_obj[0]
+            if isinstance(first_item, dict):
+                id_keys = ['id', 'ID', 'document_id', 'doc_id', 'fiscal_document_id']
+                for key in id_keys:
+                    if key in first_item and first_item[key]:
+                        doc_id = str(first_item[key]).strip()
+                        if doc_id:
+                            print(f"[DEBUG] ID extraído do primeiro item da lista, chave '{key}': {doc_id}")
+                            return doc_id
+        
+        # 5. Para respostas 201 sem conteúdo, tenta gerar um ID baseado em timestamp
+        # (Esta é uma fallback, não é ideal, mas melhor que nada)
+        if status_code == 201 and not response_obj:
+            print("[AVISO] Resposta 201 sem conteúdo. Tentando estratégia alternativa...")
+            # Nota: Idealmente, o Supabase deveria retornar o ID, mas se não retornar,
+            # precisamos de uma estratégia alternativa (como fazer um SELECT após INSERT)
+            return None
+        
+        print("[AVISO] Não foi possível extrair o ID da resposta")
+        return None
+
     def _handle_response(self, r: requests.Response, preserve_list: bool = False) -> Union[dict, list]:
         """Processa a resposta da API do Supabase.
 
@@ -909,31 +984,85 @@ class SupabaseStorage(StorageInterface):
                         print(f"[MDFe] Erro ao converter vCarga para valor numérico: {e}")
                         # Se não conseguir converter, mantém o valor original ou o padrão
 
+            # Função auxiliar para formatar datas corretamente
+            def _format_date(date_value):
+                """Formata uma data para o padrão ISO 8601 aceito pelo PostgreSQL."""
+                if not date_value:
+                    return None
+                
+                try:
+                    # Se for um objeto datetime, converte para string ISO 8601
+                    if hasattr(date_value, 'isoformat'):
+                        return date_value.isoformat()
+                    
+                    # Se for uma string
+                    if isinstance(date_value, str):
+                        date_value = date_value.strip()
+                        
+                        # Formato DD/MM/YYYY ou DD/MM/YYYY HH:MM:SS
+                        if '/' in date_value:
+                            parts = date_value.split()
+                            date_part = parts[0]
+                            time_part = parts[1] if len(parts) > 1 else None
+                            
+                            try:
+                                day, month, year = date_part.split('/')
+                                formatted = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                                if time_part:
+                                    formatted += f"T{time_part}"
+                                return formatted
+                            except (ValueError, IndexError):
+                                pass
+                        
+                        # Formato YYYY-MM-DD ou YYYY-MM-DDTHH:MM:SS (já correto)
+                        if date_value.count('-') >= 2:
+                            # Tenta validar se é um formato válido
+                            if 'T' in date_value or ' ' in date_value:
+                                # Tem hora, tenta parsear
+                                try:
+                                    # Tenta remover caracteres inválidos
+                                    # Formato malformado: "2025 09:40:31-08-08"
+                                    # Esperado: "2025-09-24T09:40:31"
+                                    if date_value.count(' ') > 0 and date_value.count('-') > 2:
+                                        # Parece ser malformado
+                                        parts = date_value.split()
+                                        if len(parts) >= 2:
+                                            year = parts[0]
+                                            time_str = parts[1]
+                                            # Remove caracteres inválidos da hora
+                                            time_str = time_str.replace('-', ':')
+                                            return f"{year}T{time_str}"
+                                except Exception:
+                                    pass
+                            return date_value
+                        
+                        # Formato YYYY-MM-DD (data apenas)
+                        if date_value.count('-') == 2 and len(date_value) == 10:
+                            return date_value
+                    
+                    # Se for um timestamp numérico
+                    if isinstance(date_value, (int, float)):
+                        try:
+                            dt_obj = dt.fromtimestamp(date_value)
+                            return dt_obj.isoformat()
+                        except (ValueError, OSError):
+                            return None
+                    
+                    return None
+                    
+                except Exception as e:
+                    print(f"[AVISO] Erro ao formatar data (valor: {date_value}): {e}")
+                    return None
+            
             # Garante que os campos de data estão no formato correto
             for date_field in ['uploaded_at', 'processed_at', 'issue_date']:
-                if date_field in prepared_record and prepared_record[date_field]:
-                    try:
-                        # Se a data estiver no formato DD/MM/YYYY, converte para YYYY-MM-DD
-                        if isinstance(prepared_record[date_field], str) and '/' in prepared_record[date_field]:
-                            day, month, year = prepared_record[date_field].split('/')
-                            prepared_record[date_field] = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-                        # Se for um objeto datetime, converte para string ISO 8601
-                        elif hasattr(prepared_record[date_field], 'isoformat'):
-                            prepared_record[date_field] = prepared_record[date_field].isoformat()
-                        # Se for um timestamp numérico, converte para datetime e depois para string
-                        elif isinstance(prepared_record[date_field], (int, float)):
-                            try:
-                                dt_obj = dt.fromtimestamp(prepared_record[date_field])
-                                prepared_record[date_field] = dt_obj.isoformat()
-                            except (ValueError, OSError):
-                                print(f"[AVISO] Não foi possível converter timestamp para data: {prepared_record[date_field]}")
-                                prepared_record[date_field] = None
-                    except (ValueError, AttributeError, TypeError) as e:
-                        print(f"[AVISO] Erro ao formatar data {date_field} (valor: {prepared_record[date_field]}): {e}")
-                        prepared_record[date_field] = None  # Define como None em caso de erro
-                elif date_field in prepared_record and not prepared_record[date_field]:
-                    # Se o campo existir mas estiver vazio, define como None
-                    prepared_record[date_field] = None
+                if date_field in prepared_record:
+                    formatted_date = _format_date(prepared_record[date_field])
+                    prepared_record[date_field] = formatted_date
+                    if formatted_date:
+                        print(f"[DEBUG] Data {date_field} formatada: {formatted_date}")
+                    else:
+                        print(f"[DEBUG] Data {date_field} definida como None")
 
             # Log para depuração (sem expor dados sensíveis)
             debug_record = prepared_record.copy()
@@ -1001,35 +1130,56 @@ class SupabaseStorage(StorageInterface):
                 # Verifica se a resposta foi bem sucedida (2xx)
                 if 200 <= r.status_code < 300:
                     try:
-                        # Tenta obter o ID do cabeçalho Location se disponível
-                        location = r.headers.get('Location')
-                        if location:
-                            # Extrai o ID da URL (último segmento)
-                            doc_id = location.split('/')[-1]
+                        # Tenta extrair o ID usando o novo método robusto
+                        response_data = None
+                        if r.content:
+                            try:
+                                response_data = r.json()
+                            except json.JSONDecodeError:
+                                response_data = None
+                        
+                        # Extrai o ID de várias fontes possíveis
+                        doc_id = self._extract_document_id(response_data, dict(r.headers), r.status_code)
+                        
+                        # Se não conseguiu extrair o ID e foi 201, tenta fazer um SELECT para obter o ID
+                        if not doc_id and r.status_code == 201:
+                            print("[DEBUG] Tentando recuperar ID via SELECT após INSERT...")
+                            try:
+                                # Tenta buscar o documento mais recente com base no file_name
+                                file_name = prepared_record.get('file_name', '')
+                                if file_name:
+                                    select_url = self._table_url('fiscal_documents')
+                                    select_params = {
+                                        'select': 'id',
+                                        'file_name': f'eq.{file_name}',
+                                        'order': 'created_at.desc',
+                                        'limit': 1
+                                    }
+                                    select_response = requests.get(
+                                        select_url,
+                                        headers=self._headers(),
+                                        params=select_params,
+                                        timeout=10
+                                    )
+                                    
+                                    if select_response.status_code == 200:
+                                        select_data = select_response.json()
+                                        if isinstance(select_data, list) and select_data:
+                                            doc_id = select_data[0].get('id')
+                                            print(f"[DEBUG] ID recuperado via SELECT: {doc_id}")
+                            except Exception as e:
+                                print(f"[AVISO] Erro ao tentar recuperar ID via SELECT: {str(e)}")
+                        
+                        if doc_id:
                             print(f"[SUCESSO] Documento salvo com sucesso. ID: {doc_id}")
                             return {
                                 'id': doc_id,
                                 'success': True,
                                 'message': 'Documento salvo com sucesso',
-                                'data': {'id': doc_id},
+                                'data': {'id': doc_id} if response_data is None else response_data,
                                 'validation_status': prepared_record.get('validation_status', 'pending'),
                                 'validation_details': prepared_record.get('validation_details', {})
                             }
-                        
-                        # Se não tiver Location, tenta obter da resposta
-                        if r.content:
-                            response_data = r.json()
-                            if isinstance(response_data, dict) and 'id' in response_data:
-                                doc_id = response_data['id']
-                                print(f"[SUCESSO] Documento salvo com sucesso. ID: {doc_id}")
-                                return {
-                                    'id': doc_id,
-                                    'success': True,
-                                    'message': 'Documento salvo com sucesso',
-                                    'data': response_data,
-                                    'validation_status': prepared_record.get('validation_status', 'pending'),
-                                    'validation_details': prepared_record.get('validation_details', {})
-                                }
                         
                         # Se chegou aqui, é porque a resposta foi 2xx mas não temos um ID
                         print("[AVISO] Resposta de sucesso sem ID do documento")
