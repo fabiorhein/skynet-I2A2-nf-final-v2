@@ -54,7 +54,7 @@ def render():
             st.markdown("""
             - Suporte a múltiplos formatos (XML, PDF, Imagens)
             - OCR avançado com Tesseract
-            - Parser XML para NFe/NFCe/CTe
+            - Parser XML para NFe/NFCe/CTe/MDFe
             """)
     
     with col2:
