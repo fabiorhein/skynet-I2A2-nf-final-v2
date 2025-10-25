@@ -57,11 +57,12 @@ SUPABASE_URL = _get('SUPABASE_URL') or _get('connections.supabase.URL')
 SUPABASE_KEY = _get('SUPABASE_KEY') or _get('connections.supabase.KEY')
 
 # Database connection settings for direct database access (migrations)
-DATABASE = _get('DATABASE') or _get('connections.supabase.DATABASE', 'postgres')
-DB_USER = _get('USER') or _get('connections.supabase.USER')
-DB_PASSWORD = _get('PASSWORD') or _get('connections.supabase.PASSWORD')
-DB_HOST = _get('HOST') or _get('connections.supabase.HOST')
-DB_PORT = _get('PORT') or _get('connections.supabase.PORT', '5432')
+# First try to get from connections.supabase.database section, then fallback to root level
+DATABASE = _get('connections.supabase.database.DATABASE') or _get('DATABASE') or 'postgres'
+DB_USER = _get('connections.supabase.database.USER') or _get('USER')
+DB_PASSWORD = _get('connections.supabase.database.PASSWORD') or _get('PASSWORD')
+DB_HOST = _get('connections.supabase.database.HOST') or _get('HOST')
+DB_PORT = _get('connections.supabase.database.PORT') or _get('PORT') or '5432'
 
 # Other settings
 GOOGLE_API_KEY = _get('GOOGLE_API_KEY')

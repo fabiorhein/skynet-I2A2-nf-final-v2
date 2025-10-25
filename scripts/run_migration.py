@@ -47,8 +47,10 @@ def run_migration(conn, migration_sql: str):
 
 def main():
     # Usa as configurações do config.py
+    from config import DATABASE_CONFIG
+    
     db_config = {
-        **SUPABASE_CONFIG,
+        **DATABASE_CONFIG,
         'connect_timeout': '10'  # Timeout de conexão de 10 segundos
     }
     
