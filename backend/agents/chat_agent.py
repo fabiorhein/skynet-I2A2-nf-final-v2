@@ -201,33 +201,43 @@ class ChatAgent:
             logger.error("GOOGLE_API_KEY not configured")
             self.model = None
         else:
-            # Configuração do modelo Gemini 2.0 Flash com LangChain
+            # Configuração do modelo Gemini 1.5 Flash com limites de quota mais generosos
             try:
                 self.model = ChatGoogleGenerativeAI(
-                    model="gemini-2.0-flash",
+                    model="gemini-1.5-flash",  # Modelo com melhor quota no free tier
                     google_api_key=GOOGLE_API_KEY,
                     temperature=0.0,
                     request_timeout=30
                 )
-                self.model_name = 'gemini-2.0-flash'
-                logger.info("✅ Successfully initialized Gemini model: gemini-2.0-flash")
+                self.model_name = 'gemini-1.5-flash'
+                logger.info("✅ Successfully initialized Gemini model: gemini-1.5-flash")
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"❌ Failed to initialize Gemini model: {error_msg}")
                 if "quota" in error_msg.lower() or "429" in error_msg:
                     friendly_msg = (
-                        "Parece que excedemos o limite de requisições gratuitas da API do Gemini para hoje.\n\n"
-                        "- Limite diário atingido: 200 requisições\n"
-                        "- Tempo estimado para liberação: aproximadamente 1 minuto\n"
-                        "- Modelo afetado: Gemini 2.0 Flash\n\n"
-                        "O que você pode fazer:\n"
-                        "1. Aguarde cerca de 1 minuto antes de tentar novamente\n"
-                        "2. Se precisar de mais requisições, considere:\n"
-                        "   - Verificar seu plano e limites de cota\n"
-                        "   - Acessar: https://ai.google.dev/gemini-api/docs/rate-limits"
+                        "Limite de quota da API do Gemini excedido.\n\n"
+                        "🔄 **Tentando modelo alternativo com melhor quota...**\n\n"
+                        "Se o problema persistir, aguarde alguns minutos ou:\n"
+                        "1. Verifique seu plano: https://ai.google.dev/gemini-api/docs/rate-limits\n"
+                        "2. Considere usar uma chave API diferente\n"
+                        "3. Aguarde a liberação da quota (geralmente 1-2 horas)"
                     )
-                    raise Exception(friendly_msg) from e
-                raise
+                    # Tentar modelo ainda mais básico
+                    try:
+                        self.model = ChatGoogleGenerativeAI(
+                            model="gemini-pro",  # Modelo mais antigo com quota mais generosa
+                            google_api_key=GOOGLE_API_KEY,
+                            temperature=0.0,
+                            request_timeout=30
+                        )
+                        self.model_name = 'gemini-pro'
+                        logger.info("✅ Successfully initialized fallback Gemini model: gemini-pro")
+                    except Exception as fallback_error:
+                        logger.error(f"❌ Failed to initialize fallback model: {fallback_error}")
+                        raise Exception(friendly_msg) from e
+                else:
+                    raise
 
         # Simple conversation history (replaces deprecated LangChain memory)
         self.conversation_history = {}
