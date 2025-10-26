@@ -201,10 +201,14 @@ def validate_totals(items: List[Dict[str, Any]], total: float) -> Tuple[bool, fl
     
     for i, item in enumerate(items, 1):
         try:
-            # Converte valores para Decimal para evitar problemas de arredondamento
-            qtd = Decimal(str(item.get('quantidade', 0))).quantize(Decimal('0.0000'))
-            v_unit = Decimal(str(item.get('valor_unitario', 0))).quantize(Decimal('0.0000'))
-            v_total = Decimal(str(item.get('valor_total', 0))).quantize(Decimal('0.00'))
+            # Converte valores para Decimal tratando casos None
+            qtd_raw = item.get("quantidade", 0)
+            v_unit_raw = item.get("valor_unitario", 0)
+            v_total_raw = item.get("valor_total", 0)
+            
+            qtd = Decimal(str(qtd_raw)).quantize(Decimal("0.0000")) if qtd_raw is not None else Decimal("0")
+            v_unit = Decimal(str(v_unit_raw)).quantize(Decimal("0.0000")) if v_unit_raw is not None else Decimal("0")
+            v_total = Decimal(str(v_total_raw)).quantize(Decimal("0.00")) if v_total_raw is not None else Decimal("0")
             
             # Soma o valor total do item
             total_calculado += v_total
@@ -352,7 +356,8 @@ def _validate_impostos_nfe(doc: Dict[str, Any], erros: List[str], avisos: List[s
             
             # Verifica se o valor do ICMS está presente quando necessário
             if cst not in ('40', '41', '50'):  # CSTs que podem ter valor zero
-                valor_icms = float(icms.get('valor', 0))
+                valor_icms_raw = icms.get('valor', 0)
+                valor_icms = float(valor_icms_raw) if valor_icms_raw is not None else 0.0
                 if valor_icms <= 0:
                     avisos.append(f'ICMS com valor zerado para CST {cst}')
                     _log_validation('warning', f'ICMS com valor zerado para CST {cst}')
@@ -385,8 +390,12 @@ def _validate_impostos_nfe(doc: Dict[str, Any], erros: List[str], avisos: List[s
             erros.append(f'CST IPI {cst_ipi} inválido')
             _log_validation('error', f'CST IPI inválido: {cst_ipi}')
         
-        # Verifica alíquota e valor do IPI
-        aliquota = float(ipi.get('aliquota', 0))
+        # Verifica alíquota e valor do IPI com tratamento seguro
+        aliquota_raw = ipi.get('aliquota', 0)
+        valor_raw = ipi.get('valor', 0)
+        
+        aliquota = float(aliquota_raw) if aliquota_raw is not None else 0.0
+        valor = float(valor_raw) if valor_raw is not None else 0.0
         valor = float(ipi.get('valor', 0))
         
         detalhes_ipi['aliquota'] = aliquota
@@ -412,9 +421,13 @@ def _validate_impostos_nfe(doc: Dict[str, Any], erros: List[str], avisos: List[s
             detalhes_imp['cst'] = cst
             
             # Valida o CST do PIS/COFINS
-            if cst not in CST_PIS_COFINS_VALIDOS:
-                erros.append(f'CST {imposto.upper()} {cst} inválido')
-                _log_validation('error', f'CST {imposto.upper()} inválido: {cst}')
+            # Verifica alíquota e valor com tratamento seguro
+            aliquota_raw = trib.get('aliquota', 0)
+            valor_raw = trib.get('valor', 0)
+            
+            aliquota = float(aliquota_raw) if aliquota_raw is not None else 0.0
+            valor = float(valor_raw) if valor_raw is not None else 0.0
+            _log_validation('error', f'CST {imposto.upper()} inválido: {cst}')
             
             # Verifica alíquota e valor
             aliquota = float(trib.get('aliquota', 0))
@@ -425,9 +438,13 @@ def _validate_impostos_nfe(doc: Dict[str, Any], erros: List[str], avisos: List[s
             
             if cst in ('01', '02') and (aliquota <= 0 or valor <= 0):
                 avisos.append(f'{imposto.upper()} com alíquota/valor zerado para CST {cst}')
-                _log_validation('warning', f'{imposto.upper()} com alíquota/valor zerado para CST {cst}')
-            
-            detalhes[imposto] = detalhes_imp
+        valor_st_raw = icms_st.get('valor', 0)
+        mva_raw = icms_st.get('mva', 0)
+        aliquota_raw = icms_st.get('aliquota', 0)
+        
+        valor_st = float(valor_st_raw) if valor_st_raw is not None else 0.0
+        mva = float(mva_raw) if mva_raw is not None else 0.0
+        aliquota = float(aliquota_raw) if aliquota_raw is not None else 0.0
     
     # Validação de ICMS ST (quando aplicável)
     if 'icms_st' in impostos and impostos['icms_st']:
@@ -656,10 +673,15 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
                     _log_validation('warning', f'Item {i}: CFOP do item diferente do documento', 
                                   {'item': i, 'cfop_item': cfop_item, 'cfop_doc': cfop_doc})
             
-            # Valida quantidade e valores
-            quantidade = float(item.get('quantidade', 0))
-            valor_unitario = float(item.get('valor_unitario', 0))
-            valor_total = float(item.get('valor_total', 0))
+            # Valida quantidade e valores com tratamento seguro para None
+            quantidade_raw = item.get("quantidade", 0)
+            valor_unitario_raw = item.get("valor_unitario", 0)
+            valor_total_raw = item.get("valor_total", 0)
+            
+            # Converte para float tratando casos None
+            quantidade = float(quantidade_raw) if quantidade_raw is not None else 0.0
+            valor_unitario = float(valor_unitario_raw) if valor_unitario_raw is not None else 0.0
+            valor_total = float(valor_total_raw) if valor_total_raw is not None else 0.0
             
             detalhes_item.update({
                 'quantidade': quantidade,
