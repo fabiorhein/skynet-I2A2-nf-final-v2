@@ -21,14 +21,24 @@ from frontend.components import document_renderer
 
 st.title('SkyNET-I2A2 - Processamento Fiscal (MVP)')
 
-menu = st.sidebar.selectbox('Navegação', ['Home', 'Upload Documento', 'Upload CSV (EDA)', 'Chat IA', 'Histórico'])
+menu = st.sidebar.selectbox('Navegação', ['Home', 'Upload Documento', 'Upload CSV (EDA)', 'Chat IA', 'RAG', 'Histórico'])
 
-# Initialize session state for storage info and documents
-if 'processed_documents' not in st.session_state:
-    st.session_state.processed_documents = []
+# Initialize session state for RAG service
+if 'rag_service' not in st.session_state:
+    try:
+        from backend.services import RAGService
+        st.session_state.rag_service = RAGService()
+        st.sidebar.success("✅ Sistema RAG inicializado")
+    except Exception as e:
+        st.sidebar.error(f"❌ Erro no RAG: {str(e)[:50]}...")
+        st.session_state.rag_service = None
 
 # Display storage status in the sidebar
 storage_manager.display_status()
+
+# Initialize session state for processed documents
+if 'processed_documents' not in st.session_state:
+    st.session_state.processed_documents = []
 
 # Load documents if not already loaded
 if not st.session_state.processed_documents:
@@ -52,6 +62,9 @@ elif menu == 'Upload CSV (EDA)':
 elif menu == 'Chat IA':
     from frontend.pages import chat
     chat.render()
+elif menu == 'RAG':
+    from frontend.pages import rag
+    rag.main()
 elif menu == 'Histórico':
     from frontend.pages import history
     history.render(storage)

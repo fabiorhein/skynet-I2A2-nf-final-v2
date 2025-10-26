@@ -14,12 +14,16 @@ import requests
 from enum import Enum, auto
 from abc import ABC, abstractmethod
 import warnings
+import logging
 
 # Importa datetime no escopo global para evitar problemas de referência
 from datetime import datetime as dt
 
 # Import configuration
 from config import SUPABASE_URL, SUPABASE_KEY
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 # Type variable for the storage implementation
 T = TypeVar('T', bound='BaseStorage')
@@ -350,7 +354,7 @@ class LocalJSONStorage(StorageInterface):
                 return []
             return data.get("documents", [])
         except Exception as e:
-            print(f"[ERROR] Failed to load documents: {e}")
+            logger.error(f"Failed to load documents: {e}")
             return []
     
     def save_document(self, record: Dict[str, Any]) -> Dict[str, Any]:
@@ -417,7 +421,7 @@ class LocalJSONStorage(StorageInterface):
             )
             
         except Exception as e:
-            print(f"[ERROR] Failed to get fiscal documents: {e}")
+            logger.error(f"Failed to get fiscal documents: {e}")
             return PaginatedResponse(
                 items=[],
                 total=0,
@@ -454,6 +458,7 @@ class LocalJSONStorage(StorageInterface):
             json.dumps(events, ensure_ascii=False, indent=2),
             encoding='utf-8'
         )
+        logger.debug(f"History saved to {history_path}")
         
         return event
 
@@ -466,7 +471,7 @@ class LocalJSONStorage(StorageInterface):
                 data = json.load(f)
                 return data if isinstance(data, list) else []
         except json.JSONDecodeError:
-            print(f"Error loading history file: {history_path}. Returning empty list.")
+            logger.error(f"Error loading history file: {history_path}. Returning empty list.")
             return []
 
     def save_history(self, event: Dict[str, Any]) -> Dict[str, Any]:
@@ -590,12 +595,12 @@ class SupabaseStorage(StorageInterface):
     def _extract_document_id(self, response_obj: Any, response_headers: Dict[str, str] = None, status_code: int = None) -> Optional[str]:
         """
         Extrai o ID do documento de várias fontes possíveis.
-        
+
         Args:
             response_obj: Objeto de resposta (dict, list, ou outro)
             response_headers: Headers da resposta HTTP
             status_code: Status code da resposta HTTP
-            
+
         Returns:
             str: ID do documento, ou None se não encontrado
         """
@@ -606,9 +611,9 @@ class SupabaseStorage(StorageInterface):
                 # Extrai o ID da URL (último segmento)
                 doc_id = location.split('/')[-1]
                 if doc_id and doc_id.strip():
-                    print(f"[DEBUG] ID extraído do header Location: {doc_id}")
+                    logger.debug(f"ID extracted from Location header: {doc_id}")
                     return doc_id
-        
+
         # 2. Tenta extrair do header Content-Location (alternativa do Supabase)
         if response_headers:
             content_location = response_headers.get('Content-Location', '')
@@ -616,9 +621,9 @@ class SupabaseStorage(StorageInterface):
                 # Extrai o ID da URL (último segmento antes de ?)
                 doc_id = content_location.split('/')[-1].split('?')[0]
                 if doc_id and doc_id.strip():
-                    print(f"[DEBUG] ID extraído do header Content-Location: {doc_id}")
+                    logger.debug(f"ID extracted from Content-Location header: {doc_id}")
                     return doc_id
-        
+
         # 3. Tenta extrair do corpo da resposta
         if isinstance(response_obj, dict):
             # Tenta chaves comuns para ID
@@ -627,18 +632,18 @@ class SupabaseStorage(StorageInterface):
                 if key in response_obj and response_obj[key]:
                     doc_id = str(response_obj[key]).strip()
                     if doc_id:
-                        print(f"[DEBUG] ID extraído da chave '{key}': {doc_id}")
+                        logger.debug(f"ID extracted from key '{key}': {doc_id}")
                         return doc_id
-            
+
             # Tenta extrair de estruturas aninhadas
             if 'data' in response_obj and isinstance(response_obj['data'], dict):
                 for key in id_keys:
                     if key in response_obj['data'] and response_obj['data'][key]:
                         doc_id = str(response_obj['data'][key]).strip()
                         if doc_id:
-                            print(f"[DEBUG] ID extraído de data.{key}: {doc_id}")
+                            logger.debug(f"ID extracted from data.{key}: {doc_id}")
                             return doc_id
-        
+
         # 4. Tenta extrair de lista
         elif isinstance(response_obj, list) and response_obj:
             first_item = response_obj[0]
@@ -648,18 +653,18 @@ class SupabaseStorage(StorageInterface):
                     if key in first_item and first_item[key]:
                         doc_id = str(first_item[key]).strip()
                         if doc_id:
-                            print(f"[DEBUG] ID extraído do primeiro item da lista, chave '{key}': {doc_id}")
+                            logger.debug(f"ID extracted from first list item, key '{key}': {doc_id}")
                             return doc_id
-        
+
         # 5. Para respostas 201 sem conteúdo, tenta gerar um ID baseado em timestamp
         # (Esta é uma fallback, não é ideal, mas melhor que nada)
         if status_code == 201 and not response_obj:
-            print("[AVISO] Resposta 201 sem conteúdo. Tentando estratégia alternativa...")
+            logger.warning("201 response without content. Attempting alternative strategy...")
             # Nota: Idealmente, o Supabase deveria retornar o ID, mas se não retornar,
             # precisamos de uma estratégia alternativa (como fazer um SELECT após INSERT)
             return None
-        
-        print("[AVISO] Não foi possível extrair o ID da resposta")
+
+        logger.warning("Could not extract document ID from response")
         return None
 
     def _handle_response(self, r: requests.Response, preserve_list: bool = False) -> Union[dict, list]:
@@ -678,19 +683,15 @@ class SupabaseStorage(StorageInterface):
             SupabaseStorageError: Se houver um erro na requisição HTTP
         """
         try:
-            print("\n[DEBUG] ========== INÍCIO DO PROCESSAMENTO DA RESPOSTA ==========")
-            print(f"[DEBUG] URL da requisição: {r.request.method} {r.request.url}")
-            print(f"[DEBUG] Cabeçalhos da requisição: {dict(r.request.headers)}")
-            print(f"[DEBUG] Status code: {r.status_code}")
-            print(f"[DEBUG] Cabeçalhos da resposta: {dict(r.headers)}")
-            
+            logger.debug(f"Processing HTTP response: {r.request.method} {r.request.url} - Status: {r.status_code}")
+
             # Para respostas 201 (Created) sem conteúdo, tenta extrair o ID do header Location
             if r.status_code == 201:
                 location = r.headers.get('Location', '')
                 if location:
                     # Extrai o ID da URL (último segmento)
                     doc_id = location.split('/')[-1]
-                    print(f"[DEBUG] ID do documento extraído do header Location: {doc_id}")
+                    logger.debug(f"Document ID extracted from Location header: {doc_id}")
                     return {
                         'id': doc_id,
                         'success': True,
@@ -698,21 +699,21 @@ class SupabaseStorage(StorageInterface):
                         'created': True
                     }
                 else:
-                    print("[AVISO] Resposta 201 sem header Location. Não foi possível obter o ID do documento.")
+                    logger.warning("201 response without Location header. Cannot retrieve document ID.")
                     return {'success': True, 'message': 'Documento criado com sucesso', 'created': True}
-            
+
             # Tenta extrair o conteúdo da resposta para log
             try:
                 content_type = r.headers.get('content-type', '').lower()
                 if 'application/json' in content_type and r.content:
                     response_data = r.json()
-                    print(f"[DEBUG] Conteúdo da resposta (JSON): {json.dumps(response_data, ensure_ascii=False, indent=2)[:1000]}...")
+                    logger.debug(f"Response JSON content: {str(response_data)[:200]}...")
                 elif r.content:
-                    print(f"[DEBUG] Conteúdo da resposta (texto): {r.text[:1000]}...")
+                    logger.debug(f"Response text content: {r.text[:200]}...")
             except Exception as e:
-                print(f"[AVISO] Não foi possível exibir o conteúdo da resposta: {str(e)}")
+                logger.warning(f"Could not display response content: {str(e)}")
                 if r.text:
-                    print(f"[DEBUG] Conteúdo bruto: {r.text[:1000]}...")
+                    logger.debug(f"Raw content: {r.text[:200]}...")
 
             # Verifica se houve erro na requisição HTTP
             try:
@@ -723,38 +724,38 @@ class SupabaseStorage(StorageInterface):
                     if r.content:
                         error_data = r.json()
                         error_detail = error_data.get('message', str(error_data))
-                        print(f"[ERRO] Erro detalhado: {error_detail}")
+                        logger.error(f"API Error details: {error_detail}")
                 except Exception as json_err:
                     error_detail = f"{r.text[:500]}..." if r.text else str(http_err)
-                    print(f"[ERRO] Erro ao processar resposta JSON: {str(json_err)}")
-                
-                print(f"[ERRO] Falha na requisição: {error_detail}")
+                    logger.error(f"JSON parsing error: {str(json_err)}")
+
+                logger.error(f"HTTP request failed: {error_detail}")
                 raise SupabaseStorageError(f"Erro na requisição: {error_detail}") from http_err
 
             # Para respostas 201 (Created)
             if r.status_code == 201:
-                print("[DEBUG] Resposta 201 - Documento criado com sucesso")
-                
+                logger.debug("201 response - Document created successfully")
+
                 # Tenta obter o ID do header Location
                 location = r.headers.get('Location', '')
                 if location:
                     # Extrai o ID da URL (último segmento)
                     doc_id = location.split('/')[-1]
-                    print(f"[DEBUG] ID do documento extraído do header Location: {doc_id}")
+                    logger.debug(f"Document ID extracted from Location header: {doc_id}")
                     return {
                         'id': doc_id,
                         'success': True,
                         'message': 'Documento criado com sucesso',
                         'created': True
                     }
-                
+
                 # Se não tiver Location, tenta obter do corpo da resposta
                 if r.content:
                     try:
                         response_data = r.json()
                         if isinstance(response_data, dict) and 'id' in response_data:
                             doc_id = response_data['id']
-                            print(f"[DEBUG] ID do documento obtido do corpo da resposta: {doc_id}")
+                            logger.debug(f"Document ID obtained from response body: {doc_id}")
                             return {
                                 'id': doc_id,
                                 'success': True,
@@ -764,57 +765,57 @@ class SupabaseStorage(StorageInterface):
                             }
                     except json.JSONDecodeError:
                         pass
-                
-                print("[AVISO] Resposta 201 sem ID do documento. Não foi possível obter o ID.")
+
+                logger.warning("201 response without document ID. Cannot retrieve document ID.")
                 return {'success': True, 'message': 'Documento criado com sucesso', 'created': True}
 
             # Para respostas com conteúdo JSON
             if r.content and 'application/json' in r.headers.get('content-type', '').lower():
-                print("[DEBUG] Tentando fazer parse do JSON da resposta...")
+                logger.debug("Processing JSON response...")
                 try:
                     response_data = r.json()
-                    print(f"[DEBUG] JSON parseado com sucesso. Tipo: {type(response_data)}")
+                    logger.debug(f"JSON parsed successfully. Type: {type(response_data)}")
 
                     # Se for uma lista
                     if isinstance(response_data, list):
-                        print(f"[DEBUG] Resposta é uma lista com {len(response_data)} itens")
+                        logger.debug(f"Response is a list with {len(response_data)} items")
                         if not response_data:
-                            print("[AVISO] Lista vazia retornada")
+                            logger.warning("Empty list returned")
                             return [] if preserve_list else {}
 
                         if preserve_list:
-                            print("[DEBUG] Retornando lista completa (preserve_list=True)")
+                            logger.debug("Returning complete list (preserve_list=True)")
                             return response_data
 
                         first_item = response_data[0]
                         if not isinstance(first_item, dict):
-                            print(f"[AVISO] O primeiro item não é um dicionário: {first_item}")
+                            logger.warning(f"First item is not a dictionary: {first_item}")
                             return {"data": first_item}
-                        
-                        print("[DEBUG] Retornando primeiro item da lista")
+
+                        logger.debug("Returning first item from list")
                         return first_item
 
                     # Se for um dicionário
                     elif isinstance(response_data, dict):
-                        print("[DEBUG] Resposta é um dicionário")
-                        
+                        logger.debug("Response is a dictionary")
+
                         # Verifica se há uma chave 'data' que contém os resultados
                         if 'data' in response_data:
-                            print(f"[DEBUG] Encontrada chave 'data' do tipo: {type(response_data['data'])}")
+                            logger.debug(f"Found 'data' key of type: {type(response_data['data'])}")
                             if isinstance(response_data['data'], list):
                                 data_list = response_data['data']
-                                print(f"[DEBUG] 'data' é uma lista com {len(data_list)} itens")
+                                logger.debug(f"'data' is a list with {len(data_list)} items")
                                 if preserve_list:
                                     return data_list
                                 return data_list[0] if data_list else {}
                             elif isinstance(response_data['data'], dict):
-                                print("[DEBUG] 'data' é um dicionário")
+                                logger.debug("'data' is a dictionary")
                                 return response_data['data']
-                        
+
                         # Verifica se há uma chave 'items' que contém os resultados
                         if 'items' in response_data and isinstance(response_data['items'], list):
                             items = response_data['items']
-                            print(f"[DEBUG] Encontrada chave 'items' com {len(items)} itens")
+                            logger.debug(f"Found 'items' key with {len(items)} items")
                             if preserve_list:
                                 return items
                             return items[0] if items else {}
@@ -822,36 +823,36 @@ class SupabaseStorage(StorageInterface):
                         # Se for uma resposta de erro
                         if 'error' in response_data:
                             error_msg = response_data.get('message', str(response_data.get('error', 'Erro desconhecido')))
-                            print(f"[ERRO] Erro na resposta: {error_msg}")
+                            logger.error(f"Error in response: {error_msg}")
                             raise SupabaseStorageError(error_msg)
-                        
+
                         # Se não for nenhum dos casos acima, retorna o dicionário como está
-                        print("[DEBUG] Retornando dicionário completo")
+                        logger.debug("Returning complete dictionary")
                         return [response_data] if preserve_list else response_data
 
                 except json.JSONDecodeError as e:
-                    print(f"[ERRO] Falha ao decodificar JSON: {str(e)}")
-                    print(f"[DEBUG] Conteúdo da resposta: {r.text[:1000]}...")
-                    
+                    logger.error(f"Failed to decode JSON: {str(e)}")
+                    logger.debug(f"Response content: {r.text[:200]}...")
+
                     if r.text.strip():
                         return [{"raw_response": r.text.strip()}] if preserve_list else {"raw_response": r.text.strip()}
-                    
-                    print("[AVISO] Resposta vazia do servidor (após falha no parse do JSON)")
+
+                    logger.warning("Empty response from server (after JSON parse failure)")
                     return [] if preserve_list else {}
 
             # Se chegou até aqui, retorna a resposta como texto
-            print("[DEBUG] Retornando resposta como texto")
+            logger.debug("Returning response as text")
             if r.text.strip():
                 return [{"response": r.text.strip()}] if preserve_list else {"response": r.text.strip()}
-            
+
             return [] if preserve_list else {}
 
         except Exception as e:
             error_msg = f"Erro inesperado ao processar resposta: {str(e)}"
-            print(f"[ERRO] {error_msg}")
-            print(f"[DEBUG] Tipo de exceção: {type(e).__name__}")
-            print(f"[DEBUG] Traceback: {traceback.format_exc()}")
-            
+            logger.error(error_msg)
+            logger.debug(f"Exception type: {type(e).__name__}")
+            logger.debug(f"Traceback: {traceback.format_exc()}")
+
             # Retorna uma lista vazia ou dicionário vazio em vez de levantar exceção
             # para permitir que o código continue executando
             return [] if preserve_list else {}
@@ -949,7 +950,7 @@ class SupabaseStorage(StorageInterface):
                 prepared_record['validation_details'] = _validate_validation_data(
                     prepared_record['validation_details']
                 )
-            
+
             # Atualiza os metadados de validação, mas não força a existência do campo
             # para evitar erros com colunas que podem não existir no banco de dados
             if 'validation_metadata' in prepared_record and isinstance(prepared_record['validation_metadata'], dict):
@@ -961,7 +962,7 @@ class SupabaseStorage(StorageInterface):
                 # Se não houver validation_metadata, não forçamos sua criação
                 # para evitar erros com colunas que não existem no banco de dados
                 prepared_record.pop('validation_metadata', None)
-            
+
             # Removed verbose validation debug output
 
             # Move raw_text para o nível superior se estiver em extracted_data
@@ -981,7 +982,7 @@ class SupabaseStorage(StorageInterface):
                             prepared_record['total_value'] = float(vcarga)
                             # Removed debug output for vCarga value
                     except (ValueError, TypeError) as e:
-                        print(f"[MDFe] Erro ao converter vCarga para valor numérico: {e}")
+                        logger.warning(f"Error converting vCarga to numeric value: {e}")
                         # Se não conseguir converter, mantém o valor original ou o padrão
 
             # Função auxiliar para formatar datas corretamente
@@ -1051,7 +1052,7 @@ class SupabaseStorage(StorageInterface):
                     return None
                     
                 except Exception as e:
-                    print(f"[AVISO] Erro ao formatar data (valor: {date_value}): {e}")
+                    logger.warning(f"Error formatting date (value: {date_value}): {e}")
                     return None
             
             # Garante que os campos de data estão no formato correto
@@ -1060,38 +1061,38 @@ class SupabaseStorage(StorageInterface):
                     formatted_date = _format_date(prepared_record[date_field])
                     prepared_record[date_field] = formatted_date
                     if formatted_date:
-                        print(f"[DEBUG] Data {date_field} formatada: {formatted_date}")
+                        logger.debug(f"Date {date_field} formatted: {formatted_date}")
                     else:
-                        print(f"[DEBUG] Data {date_field} definida como None")
+                        logger.debug(f"Date {date_field} set to None")
 
             # Log para depuração (sem expor dados sensíveis)
             debug_record = prepared_record.copy()
             if 'raw_text' in debug_record and len(debug_record['raw_text']) > 100:
-                debug_record['raw_text'] = debug_record['raw_text'][:100] + '... (truncado)'
-            print(f"[DEBUG] Dados a serem enviados para o Supabase: {debug_record}")
+                debug_record['raw_text'] = debug_record['raw_text'][:100] + '... (truncated)'
+            logger.debug(f"Data to be sent to Supabase: {debug_record}")
 
             # Prepara a URL e os cabeçalhos
             url = self._table_url('fiscal_documents')
-            print(f"[DEBUG] Enviando requisição para: {url}")
+            logger.debug(f"Sending request to: {url}")
 
             try:
                 # Remove campos que podem não existir no banco de dados
                 record_to_save = prepared_record.copy()
-                
+
                 # Remove validation_metadata se não for um dicionário
                 if 'validation_metadata' in record_to_save and not isinstance(record_to_save['validation_metadata'], dict):
                     record_to_save.pop('validation_metadata')
-                
+
                 # Tenta salvar o documento
                 try:
                     url = self._table_url('fiscal_documents')
                     headers = self._headers()
-                    
+
                     # Log dos dados que serão enviados
-                    print(f"[DEBUG] Enviando requisição para: {url}")
-                    print(f"[DEBUG] Headers: {headers}")
-                    print(f"[DEBUG] Dados a serem enviados: {json.dumps(record_to_save, default=str, ensure_ascii=False)[:500]}...")
-                    
+                    logger.debug(f"Sending request to: {url}")
+                    logger.debug(f"Headers: {headers}")
+                    logger.debug(f"Data to be sent: {json.dumps(record_to_save, default=str, ensure_ascii=False)[:500]}...")
+
                     # Faz a requisição
                     r = requests.post(
                         url,
@@ -1099,22 +1100,22 @@ class SupabaseStorage(StorageInterface):
                         headers=headers,
                         timeout=30  # Aumenta o timeout para 30 segundos
                     )
-                    
-                    print(f"[DEBUG] Resposta recebida - Status: {r.status_code}")
-                    print(f"[DEBUG] Cabeçalhos da resposta: {dict(r.headers)}")
-                    print(f"[DEBUG] Conteúdo da resposta: {r.text[:1000]}")
-                    
+
+                    logger.debug(f"Response received - Status: {r.status_code}")
+                    logger.debug(f"Response headers: {dict(r.headers)}")
+                    logger.debug(f"Response content: {r.text[:1000]}")
+
                     # Se houver erro 400, tenta novamente sem os campos opcionais
                     if r.status_code == 400:
                         error_msg = r.json().get('message', r.text)
-                        print(f"[AVISO] Erro ao salvar documento: {error_msg}")
-                        
+                        logger.warning(f"Error saving document: {error_msg}")
+
                         # Remove campos opcionais que podem estar causando o problema
                         optional_fields = ['validation_metadata', 'validation_details']
                         for field in optional_fields:
                             if field in record_to_save:
                                 record_to_save.pop(field)
-                        
+
                         # Tenta novamente sem os campos opcionais
                         r = requests.post(
                             self._table_url('fiscal_documents'),
@@ -1123,8 +1124,8 @@ class SupabaseStorage(StorageInterface):
                             timeout=10
                         )
                 except requests.exceptions.RequestException as e:
-                    error_msg = f"Erro na requisição HTTP: {str(e)}"
-                    print(f"[ERRO] {error_msg}")
+                    error_msg = f"HTTP request error: {str(e)}"
+                    logger.error(error_msg)
                     raise SupabaseStorageError(error_msg)
 
                 # Verifica se a resposta foi bem sucedida (2xx)
@@ -1137,13 +1138,13 @@ class SupabaseStorage(StorageInterface):
                                 response_data = r.json()
                             except json.JSONDecodeError:
                                 response_data = None
-                        
+
                         # Extrai o ID de várias fontes possíveis
                         doc_id = self._extract_document_id(response_data, dict(r.headers), r.status_code)
-                        
+
                         # Se não conseguiu extrair o ID e foi 201, tenta fazer um SELECT para obter o ID
                         if not doc_id and r.status_code == 201:
-                            print("[DEBUG] Tentando recuperar ID via SELECT após INSERT...")
+                            logger.debug("Attempting to retrieve ID via SELECT after INSERT...")
                             try:
                                 # Tenta buscar o documento mais recente com base no file_name
                                 file_name = prepared_record.get('file_name', '')
@@ -1161,17 +1162,17 @@ class SupabaseStorage(StorageInterface):
                                         params=select_params,
                                         timeout=10
                                     )
-                                    
+
                                     if select_response.status_code == 200:
                                         select_data = select_response.json()
                                         if isinstance(select_data, list) and select_data:
                                             doc_id = select_data[0].get('id')
-                                            print(f"[DEBUG] ID recuperado via SELECT: {doc_id}")
+                                            logger.debug(f"ID retrieved via SELECT: {doc_id}")
                             except Exception as e:
-                                print(f"[AVISO] Erro ao tentar recuperar ID via SELECT: {str(e)}")
-                        
+                                logger.warning(f"Error retrieving ID via SELECT: {str(e)}")
+
                         if doc_id:
-                            print(f"[SUCESSO] Documento salvo com sucesso. ID: {doc_id}")
+                            logger.info(f"Document saved successfully. ID: {doc_id}")
                             return {
                                 'id': doc_id,
                                 'success': True,
@@ -1180,9 +1181,9 @@ class SupabaseStorage(StorageInterface):
                                 'validation_status': prepared_record.get('validation_status', 'pending'),
                                 'validation_details': prepared_record.get('validation_details', {})
                             }
-                        
+
                         # Se chegou aqui, é porque a resposta foi 2xx mas não temos um ID
-                        print("[AVISO] Resposta de sucesso sem ID do documento")
+                        logger.warning("Successful response without document ID")
                         return {
                             'success': True,
                             'message': 'Documento processado com sucesso',
@@ -1190,9 +1191,9 @@ class SupabaseStorage(StorageInterface):
                             'validation_status': prepared_record.get('validation_status', 'pending'),
                             'validation_details': prepared_record.get('validation_details', {})
                         }
-                            
+
                     except Exception as e:
-                        print(f"[AVISO] Erro ao processar resposta de sucesso: {str(e)}")
+                        logger.warning(f"Error processing success response: {str(e)}")
                         # Mesmo com erro no processamento, se o status for 2xx, consideramos sucesso
                         return {
                             'success': True,
@@ -1211,25 +1212,25 @@ class SupabaseStorage(StorageInterface):
                     except:
                         if r.text:
                             error_msg = f"{error_msg}: {r.text[:200]}"
-                    
-                    print(f"[ERRO] {error_msg}")
+
+                    logger.error(error_msg)
                     raise SupabaseStorageError(error_msg)
 
             except requests.exceptions.RequestException as e:
-                error_msg = f"Erro na requisição HTTP: {str(e)}"
-                print(f"[ERRO] {error_msg}")
+                error_msg = f"HTTP request error: {str(e)}"
+                logger.error(error_msg)
                 self._last_error = error_msg
                 raise SupabaseStorageError(error_msg)
 
             except Exception as e:
-                error_msg = f"Erro inesperado ao processar resposta: {str(e)}"
-                print(f"[ERRO] {error_msg}")
+                error_msg = f"Unexpected error processing response: {str(e)}"
+                logger.error(error_msg)
                 self._last_error = error_msg
                 raise SupabaseStorageError(error_msg)
 
         except Exception as e:
-            error_msg = f"Erro ao processar documento: {str(e)}"
-            print(f"[ERRO] {error_msg}")
+            error_msg = f"Error processing document: {str(e)}"
+            logger.error(error_msg)
             self._last_error = error_msg
             raise SupabaseStorageError(error_msg)
 
@@ -1259,9 +1260,9 @@ class SupabaseStorage(StorageInterface):
         url = self._table_url('fiscal_documents')
         offset = (page - 1) * page_size
 
-        print(f"[DEBUG] Buscando documentos - página {page}, tamanho da página: {page_size}, offset: {offset}")
+        logger.debug(f"Fetching documents - page {page}, page_size: {page_size}, offset: {offset}")
         if filters:
-            print(f"[DEBUG] Filtros aplicados: {filters}")
+            logger.debug(f"Filters applied: {filters}")
 
         # Parâmetros da consulta
         params: Dict[str, Any] = {
@@ -1286,7 +1287,7 @@ class SupabaseStorage(StorageInterface):
 
                 # Usa ilike para busca parcial case-insensitive
                 params[k] = f'ilike.%{v}%'
-                print(f"[DEBUG] Aplicando filtro: {k}={params[k]}")
+                logger.debug(f"Applying filter: {k}={params[k]}")
 
         try:
             # 1. Primeiro, busca o total de itens que correspondem aos filtros
@@ -1294,10 +1295,10 @@ class SupabaseStorage(StorageInterface):
             count_headers = {**self._headers(), 'Prefer': 'count=exact'}
 
             # Remove parâmetros de paginação e ordenação para a contagem
-            count_params = {k: v for k, v in params.items() 
+            count_params = {k: v for k, v in params.items()
                           if k not in ['limit', 'offset', 'order']}
 
-            print(f"[DEBUG] Contando documentos com filtros: {count_params}")
+            logger.debug(f"Counting documents with filters: {count_params}")
 
             r = requests.get(
                 count_url,
@@ -1310,34 +1311,34 @@ class SupabaseStorage(StorageInterface):
             if r.status_code in (200, 206):  # Adiciona suporte para status 206 (Partial Content)
                 try:
                     response_data = r.json()
-                    print(f"[DEBUG] Resposta da contagem: {response_data}")
+                    logger.debug(f"Count response: {response_data}")
 
                     # Tenta extrair a contagem da resposta JSON
                     if isinstance(response_data, list) and response_data:
                         if isinstance(response_data[0], dict) and 'count' in response_data[0]:
                             total = int(response_data[0]['count'])
-                            print(f"[DEBUG] Total extraído do JSON: {total}")
+                            logger.debug(f"Total extracted from JSON: {total}")
                         elif len(response_data) == 1 and isinstance(response_data[0], (int, float)):
                             total = int(response_data[0])
-                            print(f"[DEBUG] Total extraído de lista numérica: {total}")
+                            logger.debug(f"Total extracted from numeric list: {total}")
 
                     # Se não encontrou no JSON, tenta do header Content-Range
                     if total == 0 and 'Content-Range' in r.headers:
                         content_range = r.headers['Content-Range']
                         if '/' in content_range:
                             total = int(content_range.split('/')[-1])
-                            print(f"[DEBUG] Total extraído do Content-Range: {total}")
+                            logger.debug(f"Total extracted from Content-Range: {total}")
                 except (ValueError, KeyError, IndexError) as e:
-                    print(f"[WARNING] Erro ao extrair contagem total: {e}")
-                    print(f"[DEBUG] Conteúdo da resposta: {r.text}")
+                    logger.warning(f"Error extracting total count: {e}")
+                    logger.debug(f"Response content: {r.text}")
             else:
-                print(f"[WARNING] Falha ao obter contagem total: {r.status_code} - {r.text}")
+                logger.warning(f"Failed to get total count: {r.status_code} - {r.text}")
 
-            print(f"[DEBUG] Total de itens encontrados: {total}")
+            logger.debug(f"Total items found: {total}")
 
             # Se não há itens, retorna resposta vazia
             if total == 0:
-                print("[DEBUG] Nenhum documento encontrado com os filtros fornecidos")
+                logger.debug("No documents found with the provided filters")
                 return PaginatedResponse(
                     items=[],
                     total=0,
@@ -1347,7 +1348,7 @@ class SupabaseStorage(StorageInterface):
                 )
 
             # 2. Agora busca os itens da página atual
-            print(f"[DEBUG] Buscando itens da página {page} (offset: {offset}, limit: {page_size})")
+            logger.debug(f"Fetching page {page} items (offset: {offset}, limit: {page_size})")
 
             # Usa o método _handle_response para processar a resposta
             items = self._handle_response(
@@ -1357,10 +1358,10 @@ class SupabaseStorage(StorageInterface):
 
             # Garante que items seja uma lista
             if not isinstance(items, list):
-                print(f"[WARNING] Resposta inesperada do servidor (não é uma lista): {items}")
+                logger.warning(f"Unexpected server response (not a list): {items}")
                 items = []
 
-            print(f"[DEBUG] Itens retornados: {len(items)}")
+            logger.debug(f"Items returned: {len(items)}")
 
             # Calcula o total de páginas
             total_pages = (total + page_size - 1) // page_size if page_size > 0 else 1
@@ -1374,14 +1375,14 @@ class SupabaseStorage(StorageInterface):
                 total_pages=total_pages
             )
 
-            print(f"[DEBUG] Resposta paginada criada: {len(items)} itens, {total} no total, {total_pages} páginas")
+            logger.debug(f"Paginated response created: {len(items)} items, {total} total, {total_pages} pages")
 
             return response
 
         except requests.exceptions.RequestException as e:
-            error_msg = f"Erro na requisição HTTP: {str(e)}"
-            print(f"[ERRO] {error_msg}")
-            print(f"[DEBUG] Traceback: {traceback.format_exc()}")
+            error_msg = f"HTTP request error: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Traceback: {traceback.format_exc()}")
             # Retorna uma resposta vazia em caso de erro
             return PaginatedResponse(
                 items=[],
@@ -1392,9 +1393,9 @@ class SupabaseStorage(StorageInterface):
             )
 
         except Exception as e:
-            error_msg = f"Erro inesperado ao buscar documentos: {str(e)}"
-            print(f"[ERRO] {error_msg}")
-            print(f"[DEBUG] Traceback: {traceback.format_exc()}")
+            error_msg = f"Unexpected error fetching documents: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Traceback: {traceback.format_exc()}")
             # Retorna uma resposta vazia em caso de erro
             return PaginatedResponse(
                 items=[],
@@ -1451,7 +1452,7 @@ class SupabaseStorage(StorageInterface):
             )
 
             if is_temporary:
-                print(f"[AVISO] Não é possível salvar histórico para documento temporário: {fiscal_document_id}")
+                logger.warning(f"Cannot save history for temporary document: {fiscal_document_id}")
                 return {
                     'success': False,
                     'message': 'Histórico não salvo - documento temporário',
@@ -1465,7 +1466,7 @@ class SupabaseStorage(StorageInterface):
                 r = requests.get(doc_url, headers=self._headers())
 
                 if r.status_code == 200 and not r.json():
-                    print(f"[AVISO] Documento não encontrado: {fiscal_document_id}")
+                    logger.warning(f"Document not found: {fiscal_document_id}")
                     return {
                         'success': False,
                         'message': f'Documento {fiscal_document_id} não encontrado',
@@ -1474,8 +1475,8 @@ class SupabaseStorage(StorageInterface):
                     }
 
             except requests.exceptions.RequestException as e:
-                error_msg = f"Erro ao verificar documento: {str(e)}"
-                print(f"[ERRO] {error_msg}")
+                error_msg = f"Error verifying document: {str(e)}"
+                logger.error(error_msg)
                 raise StorageError(error_msg) from e
 
             # Salva o histórico
@@ -1491,8 +1492,8 @@ class SupabaseStorage(StorageInterface):
                 if 'created_at' not in clean_event:
                     clean_event['created_at'] = datetime.now(timezone.utc).isoformat()
 
-                print(f"[DEBUG] Enviando histórico para {url}")
-                print(f"[DEBUG] Dados do histórico: {clean_event}")
+                logger.debug(f"Sending history to {url}")
+                logger.debug(f"History data: {clean_event}")
 
                 r = requests.post(url, json=clean_event, headers=self._headers(), timeout=10)
                 r.raise_for_status()
@@ -1515,7 +1516,7 @@ class SupabaseStorage(StorageInterface):
                     if r.content:
                         try:
                             response_data = r.json()
-                            print(f"[DEBUG] Resposta do servidor (raw): {response_data}")
+                            logger.debug(f"Server response (raw): {response_data}")
                             
                             # Se for uma lista, pega o primeiro item
                             if isinstance(response_data, list) and response_data:
@@ -1525,19 +1526,19 @@ class SupabaseStorage(StorageInterface):
                                 saved_history.update(response_data)
                             
                         except ValueError as json_error:
-                            print(f"[AVISO] Resposta não é um JSON válido: {r.text}")
+                            logger.warning(f"Response is not valid JSON: {r.text}")
                             saved_history['raw_response'] = r.text
                     
                     # Se chegou aqui sem ID, tenta buscar o histórico mais recente
                     if not saved_history.get('id') and fiscal_document_id:
                         try:
-                            print(f"[DEBUG] Tentando buscar histórico mais recente para o documento {fiscal_document_id}")
+                            logger.debug(f"Attempting to fetch recent history for document {fiscal_document_id}")
                             history = self.get_document_history(fiscal_document_id)
                             if history and isinstance(history, list) and history:
                                 latest = max(history, key=lambda x: x.get('created_at', ''))
                                 saved_history.update(latest)
                         except Exception as history_error:
-                            print(f"[AVISO] Erro ao buscar histórico recente: {history_error}")
+                            logger.warning(f"Error fetching recent history: {history_error}")
                     
                     # Se ainda não tem ID, gera um ID temporário
                     if not saved_history.get('id'):
@@ -1545,11 +1546,11 @@ class SupabaseStorage(StorageInterface):
                         saved_history['id'] = str(uuid.uuid4())
                         saved_history['_temporary_id'] = True
                     
-                    print(f"[DEBUG] Histórico processado: {saved_history}")
+                    logger.debug(f"History processed: {saved_history}")
                     return saved_history
                     
                 except Exception as json_error:
-                    print(f"[ERRO] Erro inesperado ao processar resposta: {json_error}")
+                    logger.error(f"Unexpected error processing response: {json_error}")
                     # Se não conseguir processar, retorna o que temos até agora
                     saved_history = saved_history or {}
                     saved_history.update({
@@ -1561,15 +1562,15 @@ class SupabaseStorage(StorageInterface):
                     return saved_history
                 
             except requests.exceptions.RequestException as e:
-                error_msg = f"Erro ao salvar histórico: {str(e)}"
+                error_msg = f"Error saving history: {str(e)}"
                 if hasattr(e, 'response') and e.response is not None:
-                    error_msg += f" - Status: {e.response.status_code} - Resposta: {e.response.text}"
-                print(f"[ERRO] {error_msg}")
+                    error_msg += f" - Status: {e.response.status_code} - Response: {e.response.text}"
+                logger.error(error_msg)
                 raise StorageError(error_msg) from e
                 
         except Exception as e:
-            error_msg = f"Erro inesperado em save_history: {str(e)}"
-            print(f"[ERRO CRÍTICO] {error_msg}")
+            error_msg = f"Unexpected error in save_history: {str(e)}"
+            logger.error(error_msg)
             raise StorageError(error_msg) from e
 
     def upsert_fiscal_document(self, record: Dict[str, Any], conflict_target: str = 'id') -> Dict[str, Any]:
@@ -1582,7 +1583,7 @@ class SupabaseStorage(StorageInterface):
         """Get a single fiscal document by ID."""
         url = self._table_url('fiscal_documents')
         params = {'select': '*', 'id': f'eq.{doc_id}'}
-        
+
         try:
             response = requests.get(url, headers=self._headers(), params=params)
             if response.status_code == 200:
@@ -1591,13 +1592,13 @@ class SupabaseStorage(StorageInterface):
             return None
         except Exception as e:
             error_msg = f"Erro ao buscar documento {doc_id}: {str(e)}"
-            print(f"[ERRO] {error_msg}")
+            logger.error(error_msg)
             raise SupabaseStorageError(error_msg)
-    
+
     def delete_fiscal_document(self, doc_id: str) -> bool:
         """Delete a fiscal document by ID."""
         url = f"{self._table_url('fiscal_documents')}?id=eq.{doc_id}"
-        
+
         try:
             response = requests.delete(url, headers=self._headers())
             if response.status_code == 204:
@@ -1608,31 +1609,31 @@ class SupabaseStorage(StorageInterface):
                 raise SupabaseStorageError(f"Failed to delete document: {response.text}")
         except Exception as e:
             error_msg = f"Erro ao deletar documento {doc_id}: {str(e)}"
-            print(f"[ERRO] {error_msg}")
+            logger.error(error_msg)
             raise SupabaseStorageError(error_msg)
-    
+
     def add_document_analysis(self, doc_id: str, analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Add an analysis to a document."""
         # First, get the document to update
         document = self.get_fiscal_document(doc_id)
         if not document:
             raise SupabaseStorageError(f"Document {doc_id} not found")
-        
+
         # Add analysis to document
         if 'analyses' not in document:
             document['analyses'] = []
-        
+
         # Generate analysis ID
         analysis_id = len(document['analyses']) + 1
         analysis['id'] = analysis_id
         analysis['created_at'] = datetime.now(timezone.utc).isoformat()
-        
+
         document['analyses'].append(analysis)
         document['updated_at'] = datetime.now(timezone.utc).isoformat()
-        
+
         # Update the document
         url = f"{self._table_url('fiscal_documents')}?id=eq.{doc_id}"
-        
+
         try:
             response = requests.patch(
                 url,
@@ -1642,15 +1643,15 @@ class SupabaseStorage(StorageInterface):
                     'updated_at': document['updated_at']
                 }
             )
-            
+
             if response.status_code != 200 and response.status_code != 204:
                 raise SupabaseStorageError(f"Failed to update document: {response.text}")
-                
+
             return analysis
-            
+
         except Exception as e:
             error_msg = f"Erro ao adicionar análise ao documento {doc_id}: {str(e)}"
-            print(f"[ERRO] {error_msg}")
+            logger.error(error_msg)
             raise SupabaseStorageError(error_msg)
     
     # Backward compatibility
@@ -1715,7 +1716,7 @@ class StorageManager:
             self._storage = LocalJSONStorage()
             self._status = "⚠️ Usando armazenamento local (arquivos JSON)"
             self._status_type = "warning"
-            print(f"Erro ao conectar ao Supabase: {str(error)}")
+            logger.error(f"Error connecting to Supabase: {str(error)}")
     
     @property
     def storage(self) -> StorageInterface:
