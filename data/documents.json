@@ -943,7 +943,68 @@
       },
       "id": "12",
       "created_at": "2025-10-27T14:08:46.336897+00:00"
+    },
+    {
+      "file_name": "validation_test.xml",
+      "document_type": "NFe",
+      "document_number": "99999",
+      "issuer_cnpj": "12345678000195",
+      "issuer_name": "Emitente Teste Ltda",
+      "recipient_cnpj": "98765432000100",
+      "recipient_name": "Destinatário Teste S.A.",
+      "issue_date": "28/08/2025",
+      "total_value": 1000.0,
+      "cfop": "5102",
+      "extracted_data": {
+        "emitente": {
+          "cnpj": "12345678000195",
+          "razao_social": "Emitente Teste Ltda"
+        },
+        "destinatario": {
+          "cnpj": "98765432000100",
+          "razao_social": "Destinatário Teste S.A."
+        },
+        "itens": [
+          {
+            "descricao": "Produto teste",
+            "valor": 1000.0
+          }
+        ]
+      },
+      "classification": {
+        "tipo": "venda",
+        "categoria": "mercadorias"
+      },
+      "validation_details": {
+        "status": "success",
+        "issues": [],
+        "warnings": []
+      },
+      "metadata": {
+        "has_issues": false,
+        "item_count": 1
+      },
+      "id": "13",
+      "created_at": "2025-10-27T14:23:21.462149+00:00"
+    },
+    {
+      "file_name": "test_recipient.xml",
+      "document_type": "NFe",
+      "document_number": "99999",
+      "issuer_cnpj": "12345678000195",
+      "recipient_cnpj": "98765432000100",
+      "recipient_name": "Cliente Teste",
+      "issue_date": "28/08/2025",
+      "total_value": 100.0,
+      "extracted_data": {
+        "test": true
+      },
+      "metadata": {
+        "has_issues": false
+      },
+      "id": "14",
+      "created_at": "2025-10-27T14:26:41.672605+00:00"
     }
   ],
-  "next_id": 13
+  "next_id": 15
 }
