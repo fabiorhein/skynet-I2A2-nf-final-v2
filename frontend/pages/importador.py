@@ -1,4 +1,5 @@
 """Importador page for processing XML/PDF/image files."""
+import json
 import logging
 import streamlit as st
 from pathlib import Path
@@ -636,7 +637,6 @@ def render(storage):
 
                             # Garantir que extracted_data é serializável
                             try:
-                                import json
                                 json.dumps(record['extracted_data'])
                             except (TypeError, OverflowError) as e:
                                 st.error(f'Erro: Dados extraídos contêm valores não serializáveis: {str(e)}')
@@ -670,7 +670,7 @@ def render(storage):
                                             # Executar processamento RAG em background
                                             async def process_rag():
                                                 try:
-                                                    result = await st.session_state.rag_service.process_document_for_rag(record)
+                                                    result = await st.session_state.rag_service.process_document_for_rag(saved)  # ✅ Usar documento salvo com ID correto
                                                     return result
                                                 except Exception as rag_error:
                                                     logger.error(f"Erro no processamento RAG: {rag_error}")

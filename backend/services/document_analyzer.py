@@ -4,6 +4,7 @@ Document Analyzer Service
 Fornece funcionalidades avançadas de análise de documentos fiscais
 usando RAG (Retrieval-Augmented Generation).
 """
+import json
 from typing import List, Dict, Any, Optional
 import logging
 
@@ -109,7 +110,6 @@ class DocumentAnalyzer:
                     if doc.get('extracted_data'):
                         data = doc['extracted_data']
                         if isinstance(data, str):
-                            import json
                             data = json.loads(data)
 
                         if isinstance(data, dict):
@@ -173,7 +173,6 @@ class DocumentAnalyzer:
             try:
                 data = doc['extracted_data']
                 if isinstance(data, str):
-                    import json
                     data = json.loads(data)
 
                 if isinstance(data, dict):

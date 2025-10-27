@@ -96,17 +96,21 @@ def _log_validation(level: str, message: str, details: Optional[Dict] = None):
         logger.info(log_msg)
 
 
-def _convert_brazilian_number(value: Any) -> float:
-    """Converte valores monetários brasileiros (com vírgula) para formato float.
+def _only_digits(s: str) -> str:
+    """Remove todos os caracteres não numéricos de uma string.
 
     Args:
-        value: Valor a ser convertido (string, int, float ou None)
+        s: String de entrada que pode conter caracteres não numéricos
 
     Returns:
-        float: Valor convertido para formato americano
+        String contendo apenas dígitos numéricos
     """
-    if value is None or value == "":
-        return 0.0
+    if s is None:
+        return ""
+    return re.sub(r"\D", "", str(s))
+
+
+def _convert_brazilian_number(value: Any) -> float:
 
     # Converte para string para processamento
     value_str = str(value).strip()
@@ -402,29 +406,43 @@ def _validate_impostos_nfe(doc: Dict[str, Any], erros: List[str], avisos: List[s
     if 'ipi' in impostos and impostos['ipi']:
         ipi = impostos['ipi']
         detalhes_ipi = {}
-        
-        cst_ipi = str(ipi.get('cst', '')).zfill(2)
+
+        # Verifica se IPI é um dicionário ou uma string/valor simples
+        if isinstance(ipi, dict):
+            cst_ipi = str(ipi.get('cst', '')).zfill(2)
+            aliquota_raw = ipi.get('aliquota', 0)
+            valor_raw = ipi.get('valor', 0)
+        elif isinstance(ipi, (str, int, float)):
+            # Se for um valor simples, assume CST padrão
+            cst_ipi = '00'  # CST padrão para IPI
+            aliquota_raw = 0
+            valor_raw = _convert_brazilian_number(ipi) if isinstance(ipi, str) else float(ipi)
+        else:
+            # Tipo desconhecido, pula validação
+            avisos.append('Formato de IPI inválido')
+            _log_validation('warning', 'Formato de IPI inválido')
+            cst_ipi = '00'
+            aliquota_raw = 0
+            valor_raw = 0
+
         detalhes_ipi['cst'] = cst_ipi
-        
+
         # Valida o CST do IPI
         if cst_ipi not in CST_IPI_VALIDOS:
             erros.append(f'CST IPI {cst_ipi} inválido')
-        
-        # Verifica alíquota e valor do IPI com tratamento seguro
-        aliquota_raw = ipi.get('aliquota', 0)
-        valor_raw = ipi.get('valor', 0)
 
+        # Verifica alíquota e valor do IPI com tratamento seguro
         aliquota = _convert_brazilian_number(aliquota_raw)
-        detalhes_ipi['aliquota'] = aliquota
-        
         valor = _convert_brazilian_number(valor_raw)
+
+        detalhes_ipi['aliquota'] = aliquota
         detalhes_ipi['valor'] = valor
-        
+
         if cst_ipi not in ('01', '02', '03', '04', '51', '52', '53', '54', '55'):
             if aliquota > 0 or valor > 0:
                 avisos.append(f'IPI com valor/alíquota para CST {cst_ipi}')
                 _log_validation('warning', f'IPI com valor/alíquota para CST {cst_ipi}')
-        
+
         detalhes['ipi'] = detalhes_ipi
     else:
         avisos.append('IPI não informado')

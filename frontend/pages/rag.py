@@ -217,8 +217,32 @@ def process_documents_for_rag(documents):
         try:
             status_text.text(f"Processando documento {i+1}/{len(documents)}: {doc.get('file_name', doc.get('id', 'N/A'))}")
 
+            # Garantir que o documento tem formato correto para RAG
+            # Documentos do banco podem não ter todos os campos necessários
+            rag_document = {
+                'id': doc.get('id'),
+                'file_name': doc.get('file_name'),
+                'document_type': doc.get('document_type'),
+                'document_number': doc.get('document_number'),
+                'issuer_cnpj': doc.get('issuer_cnpj'),
+                'recipient_cnpj': doc.get('recipient_cnpj'),
+                'issue_date': doc.get('issue_date'),
+                'total_value': doc.get('total_value'),
+                'cfop': doc.get('cfop'),
+                'extracted_data': doc.get('extracted_data', {}),
+                'validation_status': doc.get('validation_status'),
+                'classification': doc.get('classification', {}),
+                'raw_text': doc.get('raw_text', ''),
+                'validation_details': doc.get('validation_details', {}),
+                'metadata': doc.get('metadata', {}),
+                'document_data': doc.get('document_data', {})
+            }
+
+            # Remover campos None/empty
+            rag_document = {k: v for k, v in rag_document.items() if v is not None}
+
             # Processar documento
-            result = asyncio.run(st.session_state.rag_service.process_document_for_rag(doc))
+            result = asyncio.run(st.session_state.rag_service.process_document_for_rag(rag_document))
 
             if result.get('success', False):
                 success_count += 1

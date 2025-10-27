@@ -61,6 +61,25 @@ class VectorStoreService:
                     logger.warning(f"Skipping chunk without embedding: {chunk.get('metadata', {}).get('chunk_number')}")
                     continue
 
+                # Debug: Log the document ID being used
+                doc_id_from_metadata = chunk['metadata'].get('document_id')
+                logger.debug(f"Processing chunk {chunk['metadata']['chunk_number']} for document ID: {doc_id_from_metadata}")
+
+                # Verify document exists before saving chunk
+                doc_check = self.supabase.table('fiscal_documents').select('id').eq('id', doc_id_from_metadata).execute()
+                if not doc_check.data:
+                    logger.error(f"Document {doc_id_from_metadata} not found in fiscal_documents table!")
+                    logger.error(f"Available documents: {len([d for d in self.supabase.table('fiscal_documents').select('id').execute().data or []])}")
+                    logger.error(f"First few document IDs: {[d['id'][:8] for d in (self.supabase.table('fiscal_documents').select('id').limit(5).execute().data or [])]}")
+
+                    # Try to get the document with more details
+                    all_docs = self.supabase.table('fiscal_documents').select('id, file_name, document_type').execute()
+                    logger.error(f"All documents in table: {len(all_docs.data or [])}")
+                    for doc in (all_docs.data or [])[:3]:
+                        logger.error(f"  - ID: {doc['id']}, File: {doc.get('file_name')}, Type: {doc.get('document_type')}")
+
+                    continue  # Skip this chunk
+
                 chunk_data = {
                     'fiscal_document_id': chunk['metadata']['document_id'],
                     'chunk_number': chunk['metadata']['chunk_number'],

@@ -175,23 +175,29 @@ class RAGService:
         """
         try:
             logger.info(f"Processing document {document.get('id')} for RAG")
+            logger.debug(f"Document data: {document}")
 
-            # Update status to processing
-            self.vector_store.update_document_embedding_status(document['id'], 'processing')
-
-            # Process document: split and generate embeddings
+            # Process document: split and generate embeddings FIRST
             chunks_with_embeddings = self.embedding_service.process_document_for_embedding(document)
 
             if not chunks_with_embeddings:
-                self.vector_store.update_document_embedding_status(document['id'], 'failed')
+                logger.error("No chunks generated from document")
                 return {
                     'success': False,
                     'error': 'No chunks generated or embedding failed',
                     'chunks_processed': 0,
-                    'document_id': document['id']
+                    'document_id': document.get('id')
                 }
 
+            # Only update status AFTER chunks are ready to be saved
+            logger.info(f"Generated {len(chunks_with_embeddings)} chunks, now updating status")
+            update_success = self.vector_store.update_document_embedding_status(document['id'], 'processing')
+
+            if not update_success:
+                logger.warning(f"Failed to update document status to processing for {document['id']}")
+
             # Save chunks to database
+            logger.info("Saving chunks to database...")
             saved_chunk_ids = self.vector_store.save_document_chunks(chunks_with_embeddings)
 
             # Update status to completed
@@ -209,12 +215,16 @@ class RAGService:
 
         except Exception as e:
             logger.error(f"Error processing document for RAG: {str(e)}")
-            self.vector_store.update_document_embedding_status(document['id'], 'failed')
+            logger.error(f"Document ID in error: {document.get('id', 'NO_ID')}")
+            try:
+                self.vector_store.update_document_embedding_status(document['id'], 'failed')
+            except:
+                logger.error("Failed to update status to failed")
             return {
                 'success': False,
                 'error': str(e),
                 'chunks_processed': 0,
-                'document_id': document['id']
+                'document_id': document.get('id')
             }
 
     def get_embedding_statistics(self) -> Dict[str, Any]:

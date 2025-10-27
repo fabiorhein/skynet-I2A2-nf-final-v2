@@ -158,10 +158,29 @@ Toda a documentação foi consolidada neste README.md único. Este arquivo cont�
   - Adicionada conversão no PostgreSQL storage para campos numéricos
   - Suporte a formatos: `35,57`, `1.234,56`, `R$ 1.234,56`
 
-#### **11. Suporte Completo a Formatos Brasileiros**
-- **Validação:** Conversão automática de valores monetários
-- **Banco:** Envio correto para PostgreSQL (formato americano)
-- **Compatibilidade:** Mantém formato brasileiro na interface
+#### **12. Funções Utilitárias Faltantes**
+- **Erro:** `name '_only_digits' is not defined` e `can't adapt type 'dict'`
+- **Causa:** Função `_only_digits` removida acidentalmente e conversão JSON inadequada
+- **Solução:** 
+  - Recriada função `_only_digits` no fiscal_validator.py
+  - Adicionada conversão JSON no PostgreSQL storage
+  - Conversão automática de dicionários para strings JSON
+
+#### **14. Validação de IPI Flexível**
+- **Erro:** `'str' object has no attribute 'get'` na validação de IPI
+- **Causa:** Sistema assumindo IPI sempre como dicionário, mas pode vir como string
+- **Solução:** 
+  - Suporte a IPI como dicionário `{'cst': '00', 'valor': '0,00'}`
+  - Suporte a IPI como string/valor simples `'0,00'`
+  - Conversão automática entre formatos
+
+#### **16. Formato JSONB Correto no save_fiscal_document**
+- **Erro:** `violates foreign key constraint` devido a formato JSON incorreto
+- **Causa:** Documento retornado pelo save_fiscal_document com campos JSONB como strings
+- **Solução:** 
+  - Conversão automática JSONB → dicionário no save_fiscal_document
+  - Garante que campos como extracted_data, classification sejam dicionários
+  - Compatibilidade com embedding service que espera dicionários
 
 | Problema | Status | Descrição da Solução |
 |----------|--------|----------------------|
@@ -177,6 +196,11 @@ Toda a documentação foi consolidada neste README.md único. Este arquivo cont�
 | ❌ `expected 768 dimensions, not 384` | ✅ **RESOLVIDO** | Modelo alterado para 768 dimensões |
 | ❌ `could not convert string to float: '35,57'` | ✅ **RESOLVIDO** | Conversão automática de valores brasileiros |
 | ❌ `invalid input syntax for type numeric: "38,57"` | ✅ **RESOLVIDO** | PostgreSQL storage com conversão numérica |
+| ❌ `name '_only_digits' is not defined` | ✅ **RESOLVIDO** | Função recriada no fiscal_validator.py |
+| ❌ `can't adapt type 'dict'` | ✅ **RESOLVIDO** | Conversão automática para JSON strings |
+| ❌ `'str' object has no attribute 'get'` | ✅ **RESOLVIDO** | Validação IPI flexível para strings/dicionários |
+| ❌ `violates foreign key constraint` | ✅ **RESOLVIDO** | RAG processing com ID correto |
+| ❌ `JSONB format mismatch` | ✅ **RESOLVIDO** | save_fiscal_document retorna dicionários corretos |
 | ❌ Inconsistência em `chunk_number` | ✅ **RESOLVIDO** | Estrutura padronizada em `metadata` |
 | ❌ Falta de testes | ✅ **IMPLEMENTADO** | Suíte completa de testes (22+ testes) |
 | ❌ Documentação desatualizada | ✅ **ATUALIZADO** | README completo para 3 plataformas |
@@ -193,6 +217,11 @@ Toda a documentação foi consolidada neste README.md único. Este arquivo cont�
 | **RAG** | ❌ Quota Gemini | ✅ RAG local funcionando |
 | **Performance** | ❌ Timeout migração | ✅ Migração rápida |
 | **Banco** | ❌ Erros numéricos | ✅ Conversão automática |
+| **JSON** | ❌ Dicionários crash | ✅ Strings JSON |
+| **CNPJ** | ❌ _only_digits faltando | ✅ Validação completa |
+| **IPI** | ❌ String vs Dict crash | ✅ Formato flexível |
+| **Chunks** | ❌ Foreign key error | ✅ ID correto |
+| **RAG** | ❌ JSONB format error | ✅ Dicionários corretos |
 
 ### 🧪 **Testes Implementados:**
 
@@ -732,10 +761,73 @@ python scripts/run_migration.py --single 014-add_recipient_columns.sql
 
 **Resultado**: O sistema agora processa automaticamente valores brasileiros sem erros.
 
-#### ❌ "invalid input syntax for type numeric: "38,57""
-**Solução**: Mesmo problema do anterior, mas no nível do banco de dados.
+#### ❌ "name '_only_digits' is not defined"
+**Solução**: Função utilitária removida acidentalmente.
 
-**Correção**: Conversão automática no PostgreSQL storage para enviar valores no formato correto (americano) para o banco.
+**Causa**: A função `_only_digits` era usada para validação de CNPJ mas foi removida em alguma refatoração.
+
+**Correção Implementada**:
+```python
+def _only_digits(s: str) -> str:
+    """Remove todos os caracteres não numéricos de uma string."""
+    if s is None:
+        return ""
+    return re.sub(r"\D", "", str(s))
+```
+
+**Resultado**: Validação de CNPJ funcionando novamente.
+
+#### ❌ "'str' object has no attribute 'get'"
+**Solução**: Validação de IPI tentando acessar métodos de string como se fosse dicionário.
+
+**Causa**: O campo IPI pode vir como string simples (`'0,00'`) ou como dicionário (`{'cst': '00', 'valor': '0,00'}`).
+
+**Correção Implementada**:
+```python
+# Verifica se IPI é dicionário ou string
+if isinstance(ipi, dict):
+    cst_ipi = str(ipi.get('cst', '')).zfill(2)
+    valor_raw = ipi.get('valor', 0)
+elif isinstance(ipi, (str, int, float)):
+    # Se for valor simples, assume CST padrão
+    cst_ipi = '00'
+    valor_raw = _convert_brazilian_number(ipi)
+```
+
+**Resultado**: Validação IPI funciona com qualquer formato.
+
+#### ❌ "violates foreign key constraint "document_chunks_fiscal_document_id_fkey""
+**Solução**: RAG processando documento sem ID correto.
+
+**Causa**: O RAG service estava usando o documento original em vez do documento salvo com ID correto.
+
+**Correção Implementada**:
+```python
+# ANTES (causava erro)
+result = await st.session_state.rag_service.process_document_for_rag(record)
+
+# DEPOIS (funciona)
+result = await st.session_state.rag_service.process_document_for_rag(saved)
+```
+
+**Resultado**: Chunks salvos com ID correto, integridade referencial mantida.
+
+#### ❌ "violates foreign key constraint" (formato JSONB)
+**Solução**: save_fiscal_document retornando campos JSONB como strings em vez de dicionários.
+
+**Causa**: O método save_fiscal_document não estava convertendo campos JSONB de volta para dicionários Python, causando incompatibilidade com o embedding service.
+
+**Correção Implementada**:
+```python
+# No save_fiscal_document, adicionar conversão JSONB
+jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data']
+for field in jsonb_fields:
+    if field in saved_doc and saved_doc[field] is not None:
+        if isinstance(saved_doc[field], str):
+            saved_doc[field] = json.loads(saved_doc[field])
+```
+
+**Resultado**: Documento retornado com formato correto para RAG processing.
 
 ### Verificação do Sistema
 

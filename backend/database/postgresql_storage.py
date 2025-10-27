@@ -140,6 +140,21 @@ class PostgreSQLStorage(StorageInterface):
             logger.debug(f"Field: {col} = {type(value)} - {str(value)[:100]}...")
         logger.debug("=== END DEBUG ===")
 
+        # Convert dict/list objects to JSON strings for JSONB columns
+        jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data']
+        for i, (col, value) in enumerate(zip(columns, values)):
+            if col in jsonb_fields and value is not None:
+                if not isinstance(value, (str, bytes, bytearray)):
+                    logger.debug(f"Converting {col} to JSON: {type(value)}")
+                    try:
+                        values[i] = json.dumps(value, ensure_ascii=False)
+                        logger.debug(f"Successfully converted {col} to JSON")
+                    except Exception as json_error:
+                        logger.error(f"Error converting {col} to JSON: {json_error}")
+                        logger.error(f"Field value: {value}")
+                        logger.error(f"Field value type: {type(value)}")
+                        raise
+
         # Convert numeric fields from Brazilian format to American format
         numeric_fields = ['total_value', 'base_calculo_icms', 'valor_icms', 'base_calculo_icms_st', 'valor_icms_st']
         for i, (col, value) in enumerate(zip(columns, values)):
@@ -209,6 +224,18 @@ class PostgreSQLStorage(StorageInterface):
             if result:
                 # Convert result back to dict format expected by the interface
                 saved_doc = dict(result)
+
+                # Convert JSONB fields back from string to dict/list (same as get_fiscal_document)
+                jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data']
+                for field in jsonb_fields:
+                    if field in saved_doc and saved_doc[field] is not None:
+                        if isinstance(saved_doc[field], str):
+                            try:
+                                saved_doc[field] = json.loads(saved_doc[field])
+                            except (json.JSONDecodeError, TypeError):
+                                # Keep as string if cannot decode
+                                pass
+
                 logger.info(f"Document saved successfully. ID: {saved_doc['id']}")
                 return saved_doc
             else:
@@ -235,7 +262,6 @@ class PostgreSQLStorage(StorageInterface):
                 if field in doc and doc[field] is not None:
                     if isinstance(doc[field], str):
                         try:
-                            import json
                             doc[field] = json.loads(doc[field])
                         except (json.JSONDecodeError, TypeError):
                             # Keep as string if cannot decode
@@ -302,7 +328,6 @@ class PostgreSQLStorage(StorageInterface):
                 if field in item and item[field] is not None:
                     if isinstance(item[field], str):
                         try:
-                            import json
                             item[field] = json.loads(item[field])
                         except (json.JSONDecodeError, TypeError):
                             # Keep as string if cannot decode
@@ -382,7 +407,6 @@ class PostgreSQLStorage(StorageInterface):
 
         # Converter event_data para JSON se for um dicionário
         if "event_data" in event and event["event_data"] is not None:
-            import json
             if not isinstance(event["event_data"], (str, bytes, bytearray)):
                 event["event_data"] = json.dumps(event["event_data"], ensure_ascii=False)
 
@@ -404,7 +428,6 @@ class PostgreSQLStorage(StorageInterface):
                 # Converter event_data de volta para dicionário se for uma string JSON
                 if 'event_data' in saved_event and isinstance(saved_event['event_data'], str):
                     try:
-                        import json
                         saved_event['event_data'] = json.loads(saved_event['event_data'])
                     except (json.JSONDecodeError, TypeError):
                         # Maném como string se não for possível decodificar
@@ -450,7 +473,6 @@ class PostgreSQLStorage(StorageInterface):
                 if 'event_data' in event and event['event_data'] is not None:
                     if isinstance(event['event_data'], str):
                         try:
-                            import json
                             event['event_data'] = json.loads(event['event_data'])
                         except (json.JSONDecodeError, TypeError):
                             # Manter como está se não for possível decodificar

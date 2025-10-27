@@ -251,6 +251,7 @@ class FreeEmbeddingService:
                 result_chunks.append(chunk_metadata)
 
             logger.info(f"Split document into {len(result_chunks)} chunks")
+            logger.debug(f"Document ID used for chunks: {document_content.get('id', 'NO_ID')}")
             return result_chunks
 
         except Exception as e:
