@@ -1,6 +1,6 @@
 """Common test cases for storage implementations."""
 from typing import Any, Dict, List
-from backend.storage import StorageInterface
+from backend.database import StorageInterface
 import pytest
 
 

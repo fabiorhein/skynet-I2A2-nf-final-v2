@@ -9,7 +9,8 @@ from unittest.mock import patch, MagicMock
 # Add parent directory to path
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from backend.storage import SupabaseStorage, StorageError
+from backend.database.postgresql_storage import PostgreSQLStorage
+from backend.database.base_storage import StorageError
 from storage_compliance import StorageComplianceTests
 
 # Skip all tests in this module if integration tests are not enabled
@@ -28,10 +29,7 @@ def supabase_storage():
     
     This fixture is module-scoped to reuse the same storage instance across tests.
     """
-    storage = SupabaseStorage(
-        url=os.environ['TEST_SUPABASE_URL'],
-        key=os.environ['TEST_SUPABASE_KEY']
-    )
+    storage = PostgreSQLStorage()
     
     # Clean up any test data before and after tests
     try:

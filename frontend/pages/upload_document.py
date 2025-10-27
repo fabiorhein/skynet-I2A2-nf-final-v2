@@ -41,27 +41,57 @@ def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
     """Prepara o registro do documento para ser salvo."""
     if not isinstance(parsed, dict):
         raise ValueError("Dados do documento devem ser um dicionário")
-    
+
     # Extrair dados de validação da classificação, se disponível
     validation = {}
     if classification and isinstance(classification, dict):
         validation = classification.get('validacao', {})
-    
+
     # Obter o status de validação ou definir como 'pending' se não houver
     validation_status = validation.get('status', 'pending')
-    
+
     # Extrair dados do emitente
     emitente = parsed.get('emitente', {})
-    
+
     # Extrair dados do destinatário, se disponível
     destinatario = parsed.get('destinatario', {})
-    
+
     # Extrair dados de itens, se disponível
     itens = parsed.get('itens', [])
-    
+
     # Extrair totais, se disponível
     totais = parsed.get('totals', {})
-    
+
+    # Função auxiliar para converter datas do formato brasileiro para ISO
+    def convert_date_to_iso(date_str):
+        """Converte data do formato DD/MM/YYYY para YYYY-MM-DDTHH:MM:SSZ"""
+        if not date_str:
+            return None
+
+        date_str = str(date_str).strip()
+
+        # Se já estiver no formato ISO, retorna como está
+        if 'T' in date_str or '-' in date_str and ' ' not in date_str:
+            return date_str
+
+        # Tenta converter do formato DD/MM/YYYY
+        try:
+            from datetime import datetime
+            # Primeiro tenta DD/MM/YYYY
+            if '/' in date_str and len(date_str.split('/')) == 3:
+                parts = date_str.split('/')
+                if len(parts[0]) == 2 and len(parts[1]) == 2:  # DD/MM/YYYY
+                    dt = datetime.strptime(date_str, '%d/%m/%Y')
+                    return dt.strftime('%Y-%m-%dT00:00:00Z')
+                elif len(parts[2]) == 2:  # DD/MM/YY
+                    dt = datetime.strptime(date_str, '%d/%m/%y')
+                    return dt.strftime('%Y-%m-%dT00:00:00Z')
+        except (ValueError, IndexError):
+            pass
+
+        # Se não conseguiu converter, retorna None
+        return None
+
     # Preparar dados do documento
     doc_data = {
         'file_name': str(uploaded.name if hasattr(uploaded, 'name') else 'documento_sem_nome.pdf'),
@@ -71,7 +101,7 @@ def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
         'issuer_name': emitente.get('razao_social') or emitente.get('nome') or emitente.get('xNome', ''),
         'recipient_cnpj': destinatario.get('cnpj') or destinatario.get('CNPJ'),
         'recipient_name': destinatario.get('razao_social') or destinatario.get('nome') or destinatario.get('xNome', ''),
-        'issue_date': parsed.get('data_emissao') or parsed.get('dhEmi'),
+        'issue_date': convert_date_to_iso(parsed.get('data_emissao') or parsed.get('dhEmi')),
         'total_value': parsed.get('total') or totais.get('valorTotal') or 0.0,
         'cfop': parsed.get('cfop') or (itens[0].get('cfop') if itens else None),
         'extracted_data': parsed,
@@ -93,14 +123,14 @@ def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
             'document_subtype': parsed.get('tipoDocumento') or 'Outros'
         }
     }
-    
+
     # Garante que todos os campos necessários tenham valores padrão
     doc_data.setdefault('document_type', 'Outros')
     doc_data.setdefault('document_number', 'SEM_NUMERO')
     doc_data.setdefault('issuer_cnpj', '00000000000000')
     doc_data.setdefault('issuer_name', 'Emitente não identificado')
     doc_data.setdefault('total_value', 0.0)
-    
+
     return doc_data
 
 def render(storage):
@@ -219,7 +249,7 @@ def render(storage):
                 # Preparar e salvar o documento
                 try:
                     record = _prepare_document_record(uploaded, parsed, classification)
-                    saved = storage.save_document(record)
+                    saved = storage.save_fiscal_document(record)
                     
                     # Debug: Exibir a estrutura da resposta salva
                     logger.info(f"Resposta do save_document: {saved}")
@@ -427,7 +457,7 @@ def render(storage):
                                 st.stop()
                             
                             # Salvar o documento
-                            saved = storage.save_document(record)
+                            saved = storage.save_fiscal_document(record)
                             
                             # Verificar se o documento foi salvo com sucesso
                             if not isinstance(saved, dict) or 'id' not in saved:

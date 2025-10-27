@@ -416,55 +416,53 @@ def _validate_impostos_nfe(doc: Dict[str, Any], erros: List[str], avisos: List[s
         if imposto in impostos and impostos[imposto]:
             trib = impostos[imposto]
             detalhes_imp = {}
-            
+
             cst = str(trib.get('cst', '')).zfill(2)
             detalhes_imp['cst'] = cst
-            
+
             # Valida o CST do PIS/COFINS
             # Verifica alíquota e valor com tratamento seguro
             aliquota_raw = trib.get('aliquota', 0)
             valor_raw = trib.get('valor', 0)
-            
+
             aliquota = float(aliquota_raw) if aliquota_raw is not None else 0.0
             valor = float(valor_raw) if valor_raw is not None else 0.0
             _log_validation('error', f'CST {imposto.upper()} inválido: {cst}')
-            
+
             # Verifica alíquota e valor
             aliquota = float(trib.get('aliquota', 0))
             valor = float(trib.get('valor', 0))
-            
+
             detalhes_imp['aliquota'] = aliquota
             detalhes_imp['valor'] = valor
-            
+
             if cst in ('01', '02') and (aliquota <= 0 or valor <= 0):
                 avisos.append(f'{imposto.upper()} com alíquota/valor zerado para CST {cst}')
-        valor_st_raw = icms_st.get('valor', 0)
-        mva_raw = icms_st.get('mva', 0)
-        aliquota_raw = icms_st.get('aliquota', 0)
-        
-        valor_st = float(valor_st_raw) if valor_st_raw is not None else 0.0
-        mva = float(mva_raw) if mva_raw is not None else 0.0
-        aliquota = float(aliquota_raw) if aliquota_raw is not None else 0.0
-    
+
+            detalhes[imposto] = detalhes_imp
+        else:
+            avisos.append(f'{imposto.upper()} não informado')
+            _log_validation('warning', f'{imposto.upper()} não informado')
+
     # Validação de ICMS ST (quando aplicável)
     if 'icms_st' in impostos and impostos['icms_st']:
         icms_st = impostos['icms_st']
         detalhes_st = {}
-        
+
         valor_st = float(icms_st.get('valor', 0))
         mva = float(icms_st.get('mva', 0))
         aliquota = float(icms_st.get('aliquota', 0))
-        
+
         detalhes_st['valor'] = valor_st
         detalhes_st['mva'] = mva
         detalhes_st['aliquota'] = aliquota
-        
+
         if valor_st > 0 and (mva <= 0 or aliquota <= 0):
             avisos.append('ICMS ST com valor, mas sem MVA ou alíquota informada')
             _log_validation('warning', 'ICMS ST com valor, mas sem MVA ou alíquota informada')
-        
+
         detalhes['icms_st'] = detalhes_st
-    
+
     return detalhes, erros, avisos
 
 

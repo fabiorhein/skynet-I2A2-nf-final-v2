@@ -1,6 +1,6 @@
 """Home page of the SkyNET-I2A2 Fiscal Processing System."""
 import streamlit as st
-from backend.storage import storage_manager
+from backend.database import storage_manager
 
 # Try to import streamlit_extras, but make it optional
 HAS_STREAMLIT_EXTRAS = False

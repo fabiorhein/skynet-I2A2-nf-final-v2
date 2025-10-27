@@ -48,7 +48,12 @@ _file_secrets = _read_secrets_file(_secrets_file)
 
 # Compose final secrets: env vars override Streamlit secrets override file secrets
 def _get(key: str, default=None):
-    return os.getenv(key) or _streamlit_secrets.get(key) or _file_secrets.get(key) or default
+    # For Supabase database configuration, prioritize file secrets over environment variables
+    # to avoid conflicts with system user variables
+    if key in ['USER', 'user', 'PASSWORD', 'password', 'HOST', 'host', 'PORT', 'port', 'DATABASE', 'database']:
+        return _file_secrets.get(key) or _streamlit_secrets.get(key) or os.getenv(key) or default
+    else:
+        return os.getenv(key) or _streamlit_secrets.get(key) or _file_secrets.get(key) or default
 
 
 # Common config entries

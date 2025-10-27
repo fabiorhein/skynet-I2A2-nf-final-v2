@@ -35,7 +35,7 @@ def render(storage):
         # Save analysis
         try:
             record = {'file': csv.name, 'analysis': analysis}
-            saved = storage.save_document(record)
+            saved = storage.save_fiscal_document(record)
             if hasattr(storage, 'save_history'):
                 storage.save_history({
                     'fiscal_document_id': saved.get('id'),
@@ -50,6 +50,6 @@ def render(storage):
         if 'processed_documents' in st.session_state:
             try:
                 result = storage.get_fiscal_documents(page=1, page_size=1000)
-                st.session_state.processed_documents = result['items']
+                st.session_state.processed_documents = result.items if hasattr(result, 'items') else []
             except Exception:
                 pass  # Keep existing list if refresh fails
