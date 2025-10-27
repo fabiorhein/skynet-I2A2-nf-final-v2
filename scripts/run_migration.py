@@ -1,5 +1,10 @@
 """
-Script para executar migrações SQL no Supabase.
+Script para executar migrações SQL no PostgreSQL/Supabase.
+
+Uso:
+  python scripts/run_migration.py              # Executa todas as migrações
+  python scripts/run_migration.py --single NOME # Executa apenas uma migração específica
+  python scripts/run_migration.py --help       # Mostra esta ajuda
 """
 import os
 import sys
@@ -11,7 +16,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 try:
-    from config import SUPABASE_CONFIG
+    from config import DATABASE_CONFIG
     print("✅ Configurações carregadas com sucesso do config.py")
 except ImportError as e:
     print(f"❌ Erro ao importar configurações: {e}")
@@ -55,9 +60,9 @@ def main():
             return
         elif sys.argv[1] in ['--help', '-h']:
             print("Uso:")
-            print("  python run_migration.py              # Executa todas as migrações")
-            print("  python run_migration.py --single NOME # Executa apenas uma migração específica")
-            print("  python run_migration.py --help       # Mostra esta ajuda")
+            print("  python scripts/run_migration.py              # Executa todas as migrações")
+            print("  python scripts/run_migration.py --single NOME # Executa apenas uma migração específica")
+            print("  python scripts/run_migration.py --help       # Mostra esta ajuda")
             sys.exit(0)
 
     # Modo padrão: executa todas as migrações
@@ -66,9 +71,6 @@ def main():
 
 def run_single_migration(migration_name: str):
     """Executa uma migração específica."""
-    # Usa as configurações do config.py
-    from config import DATABASE_CONFIG
-
     db_config = {
         **DATABASE_CONFIG,
         'connect_timeout': '10'  # Timeout de conexão de 10 segundos
@@ -124,9 +126,6 @@ def run_single_migration(migration_name: str):
 
 def run_all_migrations():
     """Executa todas as migrações em ordem."""
-    # Usa as configurações do config.py
-    from config import DATABASE_CONFIG
-
     db_config = {
         **DATABASE_CONFIG,
         'connect_timeout': '10'  # Timeout de conexão de 10 segundos
@@ -187,6 +186,7 @@ def run_all_migrations():
 
     conn.close()
     print("\n✨ Todas as migrações foram concluídas com sucesso!")
+
 
 if __name__ == "__main__":
     main()

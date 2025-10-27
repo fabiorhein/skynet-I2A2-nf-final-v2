@@ -122,7 +122,7 @@ class FiscalDocumentValidation(BaseModel):
 class FiscalValidatorAgent:
     """Agente para validação de códigos fiscais usando LLM."""
     
-    def __init__(self, api_key: str, model_name: str = "gemini-pro", cache_enabled: bool = True, cache_dir: str = ".fiscal_cache"):
+    def __init__(self, api_key: str, model_name: str = "gemini-1.5-flash", cache_enabled: bool = True, cache_dir: str = ".fiscal_cache"):
         """Inicializa o validador fiscal.
         
         Args:

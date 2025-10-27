@@ -82,7 +82,7 @@ pytest
 pytest tests/test_date_conversion.py -v      # Conversão de data
 pytest tests/test_postgresql_storage.py -v   # PostgreSQL
 pytest tests/test_recipient_fields.py -v     # Campos recipient
-pytest tests/test_upload_document.py -v      # Upload completo
+pytest tests/test_importador.py -v           # Upload completo (importador)
 pytest tests/test_fiscal_validator.py -v     # Validação fiscal
 ```
 
@@ -114,7 +114,54 @@ Toda a documentação foi consolidada neste README.md único. Este arquivo cont�
 - ✅ **Histórico de Correções** - Detalhes técnicos
 - ✅ **Contribuição** - Como ajudar o projeto
 
-### 🐛 **Problemas Resolvidos:**
+### ✅ Problemas Resolvidos
+
+#### **1. Método Faltante no FallbackEmbeddingService**
+- **Erro:** `'FallbackEmbeddingService' object has no attribute 'process_document_for_embedding'`
+- **Solução:** Implementado método `process_document_for_embedding` com fallback automático
+
+#### **2. Import Duplicado no RAG Service**
+- **Erro:** Import desnecessário do `GeminiEmbeddingService` na linha 12
+- **Solução:** Removido import duplicado, mantido apenas o import local no fallback
+
+#### **3. Timeout na Migração 011**
+- **Erro:** `canceling statement due to statement timeout` na criação do índice HNSW
+- **Solução:** 
+  - Removido índice HNSW complexo da migração principal
+  - Criado script separado `011b-add_embedding_indexes.sql` para índices de performance
+  - Migração principal agora executa rapidamente
+
+#### **4. Operadores Incorretos para Campos UUID**
+- **Erro:** `operator does not exist: uuid ~~* unknown`
+- **Solução:** Método `get_fiscal_documents` agora usa `=` para UUIDs e `ILIKE` para texto
+
+#### **6. Sistema Configurado para Sentence Transformers**
+- **Erro:** Sistema tentava usar Gemini com quota excedida
+- **Solução:** 
+  - Modificado `FallbackEmbeddingService` para usar apenas Sentence Transformers
+  - Removido todas as referências ao Gemini embedding
+  - Corrigida estrutura de dados inconsistente em `chunk_number`
+
+#### **8. Dimensões de Embedding Corrigidas**
+- **Erro:** `expected 768 dimensions, not 384`
+- **Causa:** Modelo `all-MiniLM-L6-v2` gera 384d, mas banco espera 768d
+- **Solução:** 
+  - Alterado para modelo `all-mpnet-base-v2` (768 dimensões)
+  - Criada migração simplificada para evitar timeout
+  - Script direto SQL como alternativa
+
+#### **10. Conversão de Valores Monetários Brasileiros**
+- **Erro:** `could not convert string to float: '35,57'` e `invalid input syntax for type numeric: "38,57"`
+- **Causa:** Sistema brasileiro usa vírgula como separador decimal, mas Python/PostgreSQL esperam ponto
+- **Solução:** 
+  - Criada função `_convert_brazilian_number()` no fiscal_validator.py
+  - Adicionada conversão no PostgreSQL storage para campos numéricos
+  - Suporte a formatos: `35,57`, `1.234,56`, `R$ 1.234,56`
+
+#### **11. Suporte Completo a Formatos Brasileiros**
+- **Validação:** Conversão automática de valores monetários
+- **Banco:** Envio correto para PostgreSQL (formato americano)
+- **Compatibilidade:** Mantém formato brasileiro na interface
 
 | Problema | Status | Descrição da Solução |
 |----------|--------|----------------------|
@@ -122,6 +169,15 @@ Toda a documentação foi consolidada neste README.md único. Este arquivo cont�
 | ❌ `UnboundLocalError: datetime` | ✅ **RESOLVIDO** | Import duplicado removido no `postgresql_storage.py` |
 | ❌ `date/time field value out of range` | ✅ **RESOLVIDO** | Conversão automática DD/MM/YYYY → ISO implementada |
 | ❌ `column recipient_cnpj does not exist` | ✅ **RESOLVIDO** | Campos adicionados via `migration/014-add_recipient_columns.sql` |
+| ❌ `column "filters" does not exist` | ✅ **RESOLVIDO** | Parâmetros corrigidos no importador |
+| ❌ `operator does not exist: uuid ~~* unknown` | ✅ **RESOLVIDO** | Operadores UUID corrigidos no storage |
+| ❌ `'FallbackEmbeddingService' object has no attribute 'process_document_for_embedding'` | ✅ **RESOLVIDO** | Método implementado com fallback |
+| ❌ `canceling statement due to statement timeout` | ✅ **RESOLVIDO** | Migração simplificada sem índices complexos |
+| ❌ `429 You exceeded your current quota` | ✅ **RESOLVIDO** | Sistema configurado para Sentence Transformers |
+| ❌ `expected 768 dimensions, not 384` | ✅ **RESOLVIDO** | Modelo alterado para 768 dimensões |
+| ❌ `could not convert string to float: '35,57'` | ✅ **RESOLVIDO** | Conversão automática de valores brasileiros |
+| ❌ `invalid input syntax for type numeric: "38,57"` | ✅ **RESOLVIDO** | PostgreSQL storage com conversão numérica |
+| ❌ Inconsistência em `chunk_number` | ✅ **RESOLVIDO** | Estrutura padronizada em `metadata` |
 | ❌ Falta de testes | ✅ **IMPLEMENTADO** | Suíte completa de testes (22+ testes) |
 | ❌ Documentação desatualizada | ✅ **ATUALIZADO** | README completo para 3 plataformas |
 
@@ -132,9 +188,11 @@ Toda a documentação foi consolidada neste README.md único. Este arquivo cont�
 | **Upload** | ❌ 100% falha | ✅ 100% sucesso |
 | **Validação** | ❌ ICMS ST crash | ✅ ICMS ST funcional |
 | **Data** | ❌ Formato inválido | ✅ Conversão automática |
-| **Campos** | ❌ Recipient perdidos | ✅ Recipient salvos |
-| **Performance** | ❌ API HTTP lenta | ✅ PostgreSQL nativo |
-| **Testes** | ❌ Incompletos | ✅ Cobertura total |
+| **Valores** | ❌ Formato brasileiro crash | ✅ Conversão automática |
+| **Embeddings** | ❌ 384d vs 768d | ✅ 768d Sentence Transformers |
+| **RAG** | ❌ Quota Gemini | ✅ RAG local funcionando |
+| **Performance** | ❌ Timeout migração | ✅ Migração rápida |
+| **Banco** | ❌ Erros numéricos | ✅ Conversão automática |
 
 ### 🧪 **Testes Implementados:**
 
@@ -165,7 +223,7 @@ pytest tests/test_recipient_fields.py -v
 
 #### **Upload Completo** (6 testes)
 ```bash
-pytest tests/test_upload_document.py -v
+pytest tests/test_importador.py -v
 ```
 - ✅ Testa preparação de documentos
 - ✅ Testa validação de dados
@@ -263,7 +321,7 @@ skynet-I2A2-nf-final-v2/
 │   └── pages/                      # Páginas da aplicação
 │       ├── chat.py                 # Interface do chat IA
 │       ├── home.py                 # Página inicial
-│       ├── upload_document.py      # Upload com conversão de data
+│       ├── importador.py            # Upload com conversão de data e RAG automático
 │       └── history.py              # Histórico de documentos
 │
 ├── migration/                      # Scripts de migração SQL
@@ -434,7 +492,7 @@ api_key = "sua_google_api_key"
 
 ### Migrações
 
-O sistema utiliza um sistema avançado de migrações:
+**Nota:** Os scripts `apply_migrations.py` e `run_migration.py` são idênticos e podem ser usados alternadamente. Ambos suportam execução de todas as migrações ou apenas uma específica.
 
 ```bash
 # Executar todas as migrações
@@ -443,11 +501,38 @@ python scripts/run_migration.py
 # Executar apenas uma migração específica
 python scripts/run_migration.py --single 014-add_recipient_columns.sql
 
-# Ver ajuda
-python scripts/run_migration.py --help
+# Executar migração RAG (essencial)
+python scripts/apply_migrations.py --single 011-add_rag_support.sql
+
+# Executar migração de índices de performance (opcional, pode ser lento)
+python scripts/apply_migrations.py --single 011b-add_embedding_indexes.sql
+
+### 🚨 **Solução para o Problema de Dimensões de Embedding**
+
+Se você está vendo o erro **`expected 768 dimensions, not 384`**, execute estes passos:
+
+#### **1. Migração Simplificada (Recomendado):**
+```bash
+python scripts/apply_migrations.py --single 011-add_rag_support.sql
 ```
 
-### 📊 Campos Suportados
+#### **2. Script SQL Direto (Alternativa):**
+Se a migração Python falhar por timeout, execute o SQL em `migration/011-direct-rag-setup.sql` diretamente no **Supabase SQL Editor**.
+
+#### **3. Verificar Configuração:**
+```bash
+python scripts/check_rag_setup.py
+```
+
+#### **4. Testar Sistema:**
+```bash
+python -c "
+from backend.services.fallback_embedding_service import FallbackEmbeddingService
+service = FallbackEmbeddingService()
+embedding = service.generate_embedding('teste')
+print(f'Dimensões: {len(embedding)} (deve ser 768)')
+"
+```
 
 A tabela `fiscal_documents` suporta os seguintes campos:
 
@@ -494,7 +579,7 @@ pytest --cov=backend --cov-report=html
 pytest tests/test_postgresql_storage.py -v
 pytest tests/test_date_conversion.py -v
 pytest tests/test_recipient_fields.py -v
-pytest tests/test_upload_document.py -v
+pytest tests/test_importador.py -v
 ```
 
 ### 🆕 Testes Adicionados
@@ -526,7 +611,7 @@ pytest tests/test_recipient_fields.py -v
 
 #### Upload Completo
 ```bash
-pytest tests/test_upload_document.py -v
+pytest tests/test_importador.py -v
 ```
 - ✅ Testa preparação de documentos
 - ✅ Testa validação de dados
@@ -554,7 +639,7 @@ markers =
 
 ### 📤 Upload de Documentos
 
-1. **Acesse a página de Upload** no menu lateral
+1. **Acesse a página "Importador"** no menu lateral
 2. **Arraste ou selecione** um arquivo (XML, PDF, PNG, JPG)
 3. **Aguarde o processamento**:
    - Extração automática de dados
@@ -607,7 +692,7 @@ O sistema valida automaticamente:
 
 - `backend/database/postgresql_storage.py` - PostgreSQL nativo
 - `backend/tools/fiscal_validator.py` - Validação fiscal (atualizada)
-- `frontend/pages/upload_document.py` - Upload com conversão de data
+- `frontend/pages/importador.py` - Upload com conversão de data e RAG automático e RAG automático
 - `scripts/run_migration.py` - Sistema de migrações
 - `tests/` - Testes completos
 
@@ -634,8 +719,23 @@ python scripts/run_migration.py --single 014-add_recipient_columns.sql
 #### ❌ "cannot access local variable 'icms_st'"
 **Solução**: Erro corrigido no fiscal_validator.py.
 
-#### ❌ "cannot access local variable 'datetime'"
-**Solução**: Import duplicado removido no postgresql_storage.py.
+#### ❌ "could not convert string to float: '35,57'"
+**Solução**: Problema de formato de valores monetários brasileiros.
+
+**Causa**: O sistema brasileiro usa vírgula como separador decimal (`35,57`), mas o Python espera ponto (`35.57`).
+
+**Correção Implementada**:
+1. Criada função `_convert_brazilian_number()` para conversão automática
+2. Aplicada em todas as validações de valores no fiscal_validator.py
+3. Adicionada conversão no PostgreSQL storage antes de salvar no banco
+4. Suporte a múltiplos formatos: `35,57`, `1.234,56`, `R$ 1.234,56`
+
+**Resultado**: O sistema agora processa automaticamente valores brasileiros sem erros.
+
+#### ❌ "invalid input syntax for type numeric: "38,57""
+**Solução**: Mesmo problema do anterior, mas no nível do banco de dados.
+
+**Correção**: Conversão automática no PostgreSQL storage para enviar valores no formato correto (americano) para o banco.
 
 ### Verificação do Sistema
 

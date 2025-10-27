@@ -215,17 +215,75 @@ class DocumentAnalyzer:
         return 'Desconhecido'
     
     async def search_documents(self, query: str, limit: int = 5) -> List[Dict]:
-        """Busca documentos relevantes usando busca simples por texto."""
+        """Busca documentos relevantes usando busca inteligente por texto."""
         try:
-            # Busca simples por texto usando o método mais compatível
+            # Busca mais inteligente por texto com múltiplos campos
             search_term = f'%{query}%'
 
-            # Tentar busca direta primeiro
+            # Busca principal usando OR para múltiplos campos
             result = self.supabase.table('fiscal_documents').select('*').or_(
-                f'file_name.ilike.{search_term},document_type.ilike.{search_term},document_number.ilike.{search_term},issuer_cnpj.ilike.{search_term}'
+                f'file_name.ilike.{search_term},'
+                f'document_type.ilike.{search_term},'
+                f'document_number.ilike.{search_term},'
+                f'issuer_cnpj.ilike.{search_term},'
+                f'issuer_name.ilike.{search_term},'
+                f'extracted_data::text.ilike.{search_term}'
             ).order('created_at', desc=True).limit(limit).execute()
 
-            return result.data if result.data else []
+            documents = result.data if result.data else []
+
+            # Se não encontrou resultados, tentar busca mais ampla
+            if not documents:
+                # Buscar também em tabelas relacionadas (summaries e insights)
+                try:
+                    # Buscar IDs de documentos que têm summaries relevantes
+                    summary_result = self.supabase.table('document_summaries').select(
+                        'fiscal_document_id'
+                    ).ilike('summary_text', search_term).execute()
+
+                    if summary_result.data:
+                        doc_ids_from_summaries = [item['fiscal_document_id'] for item in summary_result.data]
+
+                        # Buscar documentos completos
+                        if doc_ids_from_summaries:
+                            docs_from_summaries = self.supabase.table('fiscal_documents').select('*').in_(
+                                'id', doc_ids_from_summaries
+                            ).limit(limit).execute()
+
+                            if docs_from_summaries.data:
+                                documents.extend(docs_from_summaries.data)
+
+                    # Buscar IDs de documentos que têm insights relevantes
+                    insights_result = self.supabase.table('analysis_insights').select(
+                        'fiscal_document_id'
+                    ).ilike('insight_text', search_term).execute()
+
+                    if insights_result.data:
+                        doc_ids_from_insights = [item['fiscal_document_id'] for item in insights_result.data]
+
+                        # Buscar documentos completos
+                        if doc_ids_from_insights:
+                            docs_from_insights = self.supabase.table('fiscal_documents').select('*').in_(
+                                'id', doc_ids_from_insights
+                            ).limit(limit - len(documents)).execute()
+
+                            if docs_from_insights.data:
+                                documents.extend(docs_from_insights.data)
+
+                except Exception as secondary_error:
+                    logger.warning(f"Secondary search failed: {secondary_error}")
+
+            # Remover duplicatas e limitar resultados
+            seen_ids = set()
+            unique_documents = []
+            for doc in documents:
+                if doc['id'] not in seen_ids:
+                    unique_documents.append(doc)
+                    seen_ids.add(doc['id'])
+                    if len(unique_documents) >= limit:
+                        break
+
+            return unique_documents
 
         except Exception as e:
             logger.error(f"Erro na busca de documentos: {e}")

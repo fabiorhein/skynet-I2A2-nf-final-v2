@@ -141,9 +141,9 @@ def show_quota_solutions():
     print("   - Cache automático ativado no sistema")
 
     print("\n4. ⚡ **Use modelo com melhor quota:**")
-    print("   - gemini-1.5-flash (recomendado)")
-    print("   - gemini-pro (alternativo)")
-    print("   - EVITE: gemini-2.0-flash")
+    print("   - gemini-2.0-flash-exp (recomendado se disponível)")
+    print("   - gemini-1.5-flash (alternativo)")
+    print("   - gemini-pro (último fallback)")
 
     print("\n5. 📊 **Monitore uso:**")
     print("   - Dashboard: https://ai.dev/usage?tab=rate-limit")
@@ -175,7 +175,7 @@ def main():
     print("\n✅ **SISTEMA OTIMIZADO!**")
     print("   - Cache de embeddings: ✅ Ativo")
     print("   - Rate limiting: ✅ Ativo")
-    print("   - Modelo otimizado: ✅ gemini-1.5-flash")
+    print("   - Modelo otimizado: ✅ gemini-2.0-flash-exp / gemini-1.5-flash")
 
     print("\n📈 **Para verificar uso:**")
     print("   Execute: python scripts/check_api_quota.py")

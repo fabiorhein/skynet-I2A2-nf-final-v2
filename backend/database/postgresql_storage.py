@@ -4,6 +4,7 @@ This replaces the HTTP-based SupabaseStorage for better performance.
 """
 import json
 import logging
+import re
 import traceback
 from typing import Dict, Any, List, Optional, Union
 
@@ -139,21 +140,27 @@ class PostgreSQLStorage(StorageInterface):
             logger.debug(f"Field: {col} = {type(value)} - {str(value)[:100]}...")
         logger.debug("=== END DEBUG ===")
 
-        # Convert dict/list objects to JSON strings for JSONB columns
-        jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data']
+        # Convert numeric fields from Brazilian format to American format
+        numeric_fields = ['total_value', 'base_calculo_icms', 'valor_icms', 'base_calculo_icms_st', 'valor_icms_st']
         for i, (col, value) in enumerate(zip(columns, values)):
-            if col in jsonb_fields and value is not None:
-                if not isinstance(value, (str, bytes, bytearray)):
-                    logger.debug(f"Converting {col} to JSON: {type(value)}")
-                    import json
-                    try:
-                        values[i] = json.dumps(value, ensure_ascii=False)
-                        logger.debug(f"Successfully converted {col} to JSON")
-                    except Exception as json_error:
-                        logger.error(f"Error converting {col} to JSON: {json_error}")
-                        logger.error(f"Field value: {value}")
-                        logger.error(f"Field value type: {type(value)}")
-                        raise
+            if col in numeric_fields and value is not None:
+                try:
+                    # Convert Brazilian number format to float
+                    if isinstance(value, str):
+                        # Remove currency symbols and spaces
+                        clean_value = re.sub(r'[R$\s]', '', value)
+                        # Convert Brazilian format (1.234,56) to American format (1234.56)
+                        if ',' in clean_value and '.' in clean_value:
+                            clean_value = clean_value.replace('.', '').replace(',', '.')
+                        elif ',' in clean_value:
+                            clean_value = clean_value.replace(',', '.')
+                        values[i] = float(clean_value)
+                        logger.debug(f"Converted {col} from '{value}' to {values[i]}")
+                    else:
+                        values[i] = float(value)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Could not convert {col} value '{value}' to number: {e}")
+                    values[i] = 0.0
 
         # Check if columns exist in the table before executing query
         try:
@@ -256,13 +263,19 @@ class PostgreSQLStorage(StorageInterface):
 
         for key, value in filters.items():
             if value is not None and value != "":
-                if key in ['issuer_cnpj', 'recipient_cnpj']:
+                # Campos UUID devem usar igualdade exata, não ILIKE
+                uuid_fields = ['id', 'fiscal_document_id', 'session_id']  # Campos UUID em várias tabelas
+                if key in uuid_fields:
+                    where_conditions.append(f"{key} = %s")
+                    params.append(value)
+                elif key in ['issuer_cnpj', 'recipient_cnpj']:
                     # Remove formatting for CNPJ search
                     value = ''.join(filter(str.isdigit, str(value)))
                     where_conditions.append(f"REPLACE({key}, '.', '') ILIKE %s")
+                    params.append(f"%{value}%")
                 else:
                     where_conditions.append(f"{key} ILIKE %s")
-                params.append(f"%{value}%")
+                    params.append(f"%{value}%")
                 param_index += 1
 
         where_clause = " WHERE " + " AND ".join(where_conditions) if where_conditions else ""

@@ -9,7 +9,6 @@ from typing import List, Dict, Any, Optional, Tuple
 import asyncio
 from datetime import datetime
 import streamlit as st
-from backend.services.embedding_service import GeminiEmbeddingService
 from backend.services.vector_store_service import VectorStoreService
 
 logger = logging.getLogger(__name__)
@@ -289,9 +288,27 @@ class RAGService:
             import google.generativeai as genai
             from config import GOOGLE_API_KEY
 
-            # Configure Gemini
+            # Configure Gemini - tentar 2.0-flash primeiro, depois 1.5-flash
             genai.configure(api_key=GOOGLE_API_KEY)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+
+            # Tentar modelo mais avançado primeiro
+            model_name = 'gemini-2.0-flash-exp'
+            try:
+                model = genai.GenerativeModel(model_name)
+                logger.info(f"✅ Using Gemini model: {model_name}")
+            except Exception as e:
+                logger.warning(f"Gemini 2.0-flash not available: {e}")
+                # Fallback para 1.5-flash
+                model_name = 'gemini-1.5-flash'
+                try:
+                    model = genai.GenerativeModel(model_name)
+                    logger.info(f"✅ Using Gemini model: {model_name}")
+                except Exception as e2:
+                    logger.error(f"Gemini 1.5-flash also not available: {e2}")
+                    # Último fallback para pro
+                    model_name = 'gemini-pro'
+                    model = genai.GenerativeModel(model_name)
+                    logger.info(f"✅ Using fallback Gemini model: {model_name}")
 
             # Create RAG prompt
             rag_prompt = f"""

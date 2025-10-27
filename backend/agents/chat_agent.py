@@ -90,11 +90,60 @@ class DocumentSearchEngine:
         search_query += f" ORDER BY ai.confidence_score DESC NULLS LAST LIMIT {limit}"
 
         try:
-            result = self.supabase.table('fiscal_documents').select(
+            # Busca simples mas eficiente usando a API do Supabase
+            # Primeiro busca em extracted_data (JSON)
+            result1 = self.supabase.table('fiscal_documents').select(
                 'id, file_name, document_type, document_number, issuer_cnpj, extracted_data, classification'
-            ).execute()
+            ).or_(
+                f'extracted_data.ilike.%{query}%,file_name.ilike.%{query}%,document_type.ilike.%{query}%'
+            ).limit(limit).execute()
 
-            documents = result.data if result.data else []
+            # Busca também em document_summaries se existirem
+            try:
+                result2 = self.supabase.table('document_summaries').select(
+                    'fiscal_document_id, summary_text, key_insights'
+                ).ilike('summary_text', f'%{query}%').execute()
+
+                # Busca em analysis_insights se existirem
+                result3 = self.supabase.table('analysis_insights').select(
+                    'fiscal_document_id, insight_text, insight_type, confidence_score'
+                ).ilike('insight_text', f'%{query}%').execute()
+
+                # Combina os resultados
+                all_docs = {}
+                if result1.data:
+                    for doc in result1.data:
+                        all_docs[doc['id']] = doc
+
+                # Adiciona documentos encontrados através de summaries
+                if result2.data:
+                    for summary in result2.data:
+                        doc_id = summary['fiscal_document_id']
+                        if doc_id not in all_docs:
+                            # Busca o documento completo
+                            doc_result = self.supabase.table('fiscal_documents').select(
+                                'id, file_name, document_type, document_number, issuer_cnpj, extracted_data, classification'
+                            ).eq('id', doc_id).execute()
+                            if doc_result.data:
+                                all_docs[doc_id] = doc_result.data[0]
+
+                # Adiciona documentos encontrados através de insights
+                if result3.data:
+                    for insight in result3.data:
+                        doc_id = insight['fiscal_document_id']
+                        if doc_id not in all_docs:
+                            # Busca o documento completo
+                            doc_result = self.supabase.table('fiscal_documents').select(
+                                'id, file_name, document_type, document_number, issuer_cnpj, extracted_data, classification'
+                            ).eq('id', doc_id).execute()
+                            if doc_result.data:
+                                all_docs[doc_id] = doc_result.data[0]
+
+                documents = list(all_docs.values())[:limit]
+
+            except Exception as e:
+                logger.warning(f"Error in advanced search: {e}")
+                documents = result1.data if result1.data else []
 
             # Get summaries
             summary_result = self.supabase.table('document_summaries').select(
@@ -201,43 +250,52 @@ class ChatAgent:
             logger.error("GOOGLE_API_KEY not configured")
             self.model = None
         else:
-            # Configuração do modelo Gemini 1.5 Flash com limites de quota mais generosos
+            # Configuração do modelo Gemini - tentar 2.0-flash primeiro, depois 1.5-flash
             try:
-                self.model = ChatGoogleGenerativeAI(
-                    model="gemini-1.5-flash",  # Modelo com melhor quota no free tier
-                    google_api_key=GOOGLE_API_KEY,
-                    temperature=0.0,
-                    request_timeout=30
-                )
-                self.model_name = 'gemini-1.5-flash'
-                logger.info("✅ Successfully initialized Gemini model: gemini-1.5-flash")
+                # Tentar modelo mais avançado primeiro
+                model_name = 'gemini-2.0-flash-exp'
+                try:
+                    self.model = ChatGoogleGenerativeAI(
+                        model=model_name,
+                        google_api_key=GOOGLE_API_KEY,
+                        temperature=0.0,
+                        request_timeout=30
+                    )
+                    self.model_name = model_name
+                    logger.info(f"✅ Successfully initialized Gemini model: {model_name}")
+                except Exception as e:
+                    logger.warning(f"Gemini 2.0-flash not available: {e}")
+                    # Fallback para 1.5-flash
+                    model_name = 'gemini-1.5-flash'
+                    self.model = ChatGoogleGenerativeAI(
+                        model=model_name,
+                        google_api_key=GOOGLE_API_KEY,
+                        temperature=0.0,
+                        request_timeout=30
+                    )
+                    self.model_name = model_name
+                    logger.info(f"✅ Successfully initialized fallback Gemini model: {model_name}")
             except Exception as e:
                 error_msg = str(e)
-                logger.error(f"❌ Failed to initialize Gemini model: {error_msg}")
+                logger.error(f"❌ Failed to initialize Gemini models: {error_msg}")
                 if "quota" in error_msg.lower() or "429" in error_msg:
                     friendly_msg = (
                         "Limite de quota da API do Gemini excedido.\n\n"
-                        "🔄 **Tentando modelo alternativo com melhor quota...**\n\n"
-                        "Se o problema persistir, aguarde alguns minutos ou:\n"
-                        "1. Verifique seu plano: https://ai.google.dev/gemini-api/docs/rate-limits\n"
+                        "🔄 **Verifique seu plano e tente novamente:**\n"
+                        "1. Acesse: https://ai.google.dev/gemini-api/docs/rate-limits\n"
                         "2. Considere usar uma chave API diferente\n"
-                        "3. Aguarde a liberação da quota (geralmente 1-2 horas)"
+                        "3. Aguarde a liberação da quota (geralmente 1-2 horas)\n\n"
+                        "💡 Alternativamente, configure uma chave API do OpenAI em .streamlit/secrets.toml"
                     )
-                    # Tentar modelo ainda mais básico
-                    try:
-                        self.model = ChatGoogleGenerativeAI(
-                            model="gemini-pro",  # Modelo mais antigo com quota mais generosa
-                            google_api_key=GOOGLE_API_KEY,
-                            temperature=0.0,
-                            request_timeout=30
-                        )
-                        self.model_name = 'gemini-pro'
-                        logger.info("✅ Successfully initialized fallback Gemini model: gemini-pro")
-                    except Exception as fallback_error:
-                        logger.error(f"❌ Failed to initialize fallback model: {fallback_error}")
-                        raise Exception(friendly_msg) from e
                 else:
-                    raise
+                    friendly_msg = (
+                        "Erro ao inicializar modelos Gemini.\n\n"
+                        "💡 Para resolver:\n"
+                        "1. Verifique se a GOOGLE_API_KEY está correta em .streamlit/secrets.toml\n"
+                        "2. Certifique-se de que sua conta tem acesso aos modelos Gemini\n"
+                        "3. Considere usar uma chave API do OpenAI como alternativa"
+                    )
+                raise Exception(friendly_msg) from e
 
         # Simple conversation history (replaces deprecated LangChain memory)
         self.conversation_history = {}
@@ -786,32 +844,64 @@ Responda em português de forma profissional e útil."""
             return ChatResponse(content=error_message, metadata={'error': True}, cached=False)
 
     async def _handle_specific_search(self, session_id: str, query: str, context: Optional[Dict[str, Any]]) -> ChatResponse:
-        """Handle specific document searches."""
-        # Busca normal para perguntas específicas
+        """Handle specific document searches using RAG when available."""
         document_context = DocumentContext(documents=[], summaries=[], insights=[])
 
         try:
-            if context and 'document_types' in context:
-                relevant_docs = await self._search_documents(query, limit=context.get('limit', 5))
+            # Tentar usar RAG se disponível para busca semântica
+            try:
+                from backend.services.rag_service import RAGService
+                rag_service = RAGService()
 
-                if not relevant_docs:
-                    document_context = await self.search_engine.search_documents(
-                        query=query,
-                        limit=context.get('limit', 5),
-                        document_types=context.get('document_types')
-                    )
-                else:
-                    documents = []
-                    for doc in relevant_docs:
-                        if isinstance(doc, tuple) and len(doc) > 0:
-                            doc = doc[0]
-                        documents.append(doc)
+                # Gerar embedding da query
+                query_embedding = rag_service.embedding_service.generate_query_embedding(query)
 
-                    document_context = DocumentContext(
-                        documents=documents,
-                        summaries=[],
-                        insights=[]
-                    )
+                # Buscar documentos relevantes usando RAG
+                similar_docs = rag_service.vector_store.get_document_context(
+                    query_embedding=query_embedding,
+                    max_documents=context.get('limit', 5) if context else 5,
+                    max_chunks_per_document=2
+                )
+
+                if similar_docs:
+                    # Extrair IDs dos documentos
+                    doc_ids = [doc['fiscal_document_id'] for doc in similar_docs]
+
+                    # Buscar documentos completos
+                    result = self.supabase.table('fiscal_documents').select('*').in_('id', doc_ids).execute()
+
+                    if result.data:
+                        documents = []
+                        for doc in result.data:
+                            # Adicionar similaridade do RAG
+                            doc_similarity = next((d['total_similarity'] for d in similar_docs if d['fiscal_document_id'] == doc['id']), 0)
+                            doc['rag_similarity'] = doc_similarity
+                            documents.append(doc)
+
+                        document_context = DocumentContext(
+                            documents=documents,
+                            summaries=[],
+                            insights=[]
+                        )
+                        logger.info(f"RAG search found {len(documents)} relevant documents")
+
+            except Exception as rag_error:
+                logger.warning(f"RAG search failed, using fallback: {rag_error}")
+                # Fallback para busca por texto
+                if context and 'document_types' in context:
+                    relevant_docs = await self._search_documents(query, limit=context.get('limit', 5))
+                    if relevant_docs:
+                        documents = []
+                        for doc in relevant_docs:
+                            if isinstance(doc, tuple) and len(doc) > 0:
+                                doc = doc[0]
+                            documents.append(doc)
+
+                        document_context = DocumentContext(
+                            documents=documents,
+                            summaries=[],
+                            insights=[]
+                        )
 
         except Exception as e:
             logger.error(f"Erro na busca específica: {e}")
@@ -844,7 +934,9 @@ Responda em português de forma profissional e útil."""
             metadata = {
                 'model': self.model_name or 'unknown',
                 'timestamp': datetime.now().isoformat(),
-                'tokens_used': len(content.split())
+                'tokens_used': len(content.split()),
+                'rag_used': len(document_context.documents) > 0,
+                'documents_found': len(document_context.documents)
             }
 
             # Cache the response

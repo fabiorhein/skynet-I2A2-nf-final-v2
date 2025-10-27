@@ -16,7 +16,7 @@ import re
 
 
 class LLMOCRMapper:
-    def __init__(self, model: str = "gemini-2.5-flash"):  # Modelo rápido e estável para processamento de texto
+    def __init__(self, model: str = "gemini-2.0-flash-exp"):  # Tenta modelos avançados primeiro, com fallback
         self.model = model
         self.available = False
         self._client = None
@@ -55,9 +55,22 @@ class LLMOCRMapper:
             return ""
 
         try:
-            # For Gemini 2.5 Flash model
-            model = self._client.GenerativeModel(self.model)
-            
+            # Tentar modelo mais avançado primeiro
+            model_names = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-pro']
+            model = None
+
+            for model_name in model_names:
+                try:
+                    model = self._client.GenerativeModel(model_name)
+                    print(f"✅ Using Gemini model: {model_name}")
+                    break
+                except Exception as e:
+                    print(f"Model {model_name} not available: {e}")
+                    continue
+
+            if model is None:
+                raise Exception("No Gemini models available")
+
             # Configuração de geração para melhorar a saída JSON
             generation_config = {
                 "temperature": 0.1,  # Reduz a criatividade para respostas mais previsíveis

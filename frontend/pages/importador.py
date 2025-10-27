@@ -1,4 +1,4 @@
-"""Upload Document page for processing XML/PDF/image files."""
+"""Importador page for processing XML/PDF/image files."""
 import logging
 import streamlit as st
 from pathlib import Path
@@ -14,7 +14,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('upload_document.log')
+        logging.FileHandler('importador.log')
     ]
 )
 
@@ -24,17 +24,17 @@ def _validate_document_data(data: any) -> bool:
     if not isinstance(data, dict):
         st.error(f"Erro: Dados em formato inválido. Esperado dicionário, obtido {type(data).__name__}")
         return False
-    
+
     required_fields = ['emitente', 'itens', 'total']
     missing = [field for field in required_fields if field not in data]
     if missing:
         st.error(f"Erro: Campos obrigatórios ausentes: {', '.join(missing)}")
         return False
-        
+
     if not isinstance(data.get('itens'), list):
         st.error("Erro: O campo 'itens' deve ser uma lista")
         return False
-        
+
     return True
 
 def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
@@ -134,25 +134,164 @@ def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
     return doc_data
 
 def render(storage):
-    """Render the upload document page."""
-    st.header('📄 Upload de Documento Fiscal')
-    st.caption('Suporta XML, PDF ou imagens (JPG, PNG)')
-    
+    """Render the importador page."""
+    st.header('📥 Importador de Documentos Fiscais')
+    st.caption('Inteligência artificial para processamento automático de documentos fiscais')
+
+    # Informações sobre tipos de arquivo suportados
+    with st.expander('📋 Tipos de arquivo suportados', expanded=False):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("""
+            **Documentos Estruturados:**
+            - **XML**: NF-e, NFC-e, CT-e, MDF-e
+            - Extração automática de campos
+            - Validação fiscal completa
+            """)
+
+        with col2:
+            st.markdown("""
+            **Documentos Digitais:**
+            - **PDF**: Documentos escaneados
+            - **JPG/PNG**: Imagens de documentos
+            - OCR com IA para extração
+            """)
+
+    # Área de upload com melhor visual
+    st.markdown("---")
+    st.markdown("### 📄 Upload do Documento")
+
     uploaded = st.file_uploader(
         'Arraste ou selecione um arquivo',
         type=['xml', 'pdf', 'png', 'jpg', 'jpeg'],
-        help='Envie um documento fiscal para processamento automático.'
+        help='Envie um documento fiscal para processamento automático com IA.',
+        key='document_uploader'
     )
-    
+
     if not uploaded:
-        st.info('Por favor, selecione um arquivo para começar.')
+        st.info('👆 Selecione um arquivo para começar o processamento automático.')
+        st.markdown("""
+        **O que acontece após o upload:**
+        1. 🔍 **Extração**: IA extrai dados automaticamente
+        2. 🏷️ **Classificação**: Identifica tipo e validade
+        3. ✅ **Validação**: Verifica conformidade fiscal
+        4. 💾 **Armazenamento**: Salva com embeddings para busca
+        """)
+
+        # Seção para processar documentos existentes
+        st.markdown("---")
+        st.markdown("### 🧠 Processar Documentos Existentes")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button('🔄 Processar Todos os Documentos para RAG',
+                        help='Processa todos os documentos salvos que ainda não têm embeddings',
+                        type='secondary'):
+                if 'rag_service' in st.session_state and st.session_state.rag_service:
+                    with st.spinner('🔄 Processando todos os documentos para busca inteligente...'):
+                        try:
+                            import asyncio
+
+                            # Buscar documentos que não foram processados pelo RAG
+                            all_docs = storage.get_fiscal_documents(page=1, page_size=1000)
+                            docs_to_process = []
+
+                            if hasattr(all_docs, 'items'):
+                                for doc in all_docs.items:
+                                    # Verificar se o documento já tem embeddings
+                                    if doc.get('embedding_status') != 'completed':
+                                        docs_to_process.append(doc)
+
+                            if docs_to_process:
+                                st.info(f'📋 Encontrados {len(docs_to_process)} documentos para processar')
+
+                                async def process_all_rag():
+                                    results = []
+                                    for doc in docs_to_process:
+                                        try:
+                                            result = await st.session_state.rag_service.process_document_for_rag(doc)
+                                            results.append((doc['id'], result))
+                                        except Exception as e:
+                                            results.append((doc['id'], {'success': False, 'error': str(e)}))
+                                    return results
+
+                                # Processar em background
+                                rag_results = asyncio.run(process_all_rag())
+
+                                # Mostrar resultados
+                                success_count = sum(1 for _, result in rag_results if result.get('success', False))
+                                error_count = len(rag_results) - success_count
+
+                                if success_count > 0:
+                                    st.success(f'✅ {success_count} documentos processados com sucesso!')
+                                if error_count > 0:
+                                    st.warning(f'⚠️ {error_count} documentos tiveram problemas no processamento')
+
+                                # Detalhes dos resultados
+                                with st.expander('📊 Detalhes do Processamento', expanded=False):
+                                    for doc_id, result in rag_results:
+                                        if result.get('success', False):
+                                            chunks = result.get('chunks_processed', 0)
+                                            st.success(f'✅ Documento {doc_id}: {chunks} chunks criados')
+                                        else:
+                                            error = result.get('error', 'Erro desconhecido')
+                                            st.error(f'❌ Documento {doc_id}: {error}')
+
+                            else:
+                                st.info('ℹ️ Todos os documentos já estão processados para busca inteligente!')
+
+                        except Exception as e:
+                            st.error(f'Erro no processamento em lote: {str(e)}')
+                else:
+                    st.error('❌ Sistema RAG não disponível. Reinicie a aplicação.')
+
+        with col2:
+            if st.button('📈 Verificar Status do RAG',
+                        help='Mostra estatísticas do sistema RAG',
+                        type='secondary'):
+                if 'rag_service' in st.session_state and st.session_state.rag_service:
+                    try:
+                        stats = st.session_state.rag_service.get_embedding_statistics()
+
+                        if 'error' not in stats:
+                            st.markdown("**📊 Estatísticas do Sistema RAG:**")
+                            col1, col2, col3 = st.columns(3)
+
+                            with col1:
+                                st.metric("Total de Chunks", f"{stats.get('total_chunks', 0):,}")
+                            with col2:
+                                st.metric("Documentos com Embeddings", f"{stats.get('documents_with_embeddings', 0):,}")
+                            with col3:
+                                st.metric("Total de Insights", f"{stats.get('total_insights', 0):,}")
+
+                            # Status dos embeddings
+                            status_dist = stats.get('embedding_status_distribution', {})
+                            if status_dist:
+                                with st.expander('📋 Status dos Embeddings', expanded=False):
+                                    for status, count in status_dist.items():
+                                        if status == 'completed':
+                                            st.success(f'✅ {status.title()}: {count} documentos')
+                                        elif status == 'failed':
+                                            st.error(f'❌ {status.title()}: {count} documentos')
+                                        else:
+                                            st.info(f'⏳ {status.title()}: {count} documentos')
+                        else:
+                            st.error(f"Erro ao carregar estatísticas: {stats['error']}")
+
+                    except Exception as e:
+                        st.error(f'Erro ao carregar estatísticas: {str(e)}')
+                else:
+                    st.error('❌ Sistema RAG não disponível')
+
         return
-        
-    # Save uploaded file to temporary location
+
+        # Save uploaded file to temporary location
     tmp = Path('tmp_upload')
     tmp.mkdir(exist_ok=True, parents=True)
     dest = tmp / uploaded.name
-    
+
     try:
         with open(dest, 'wb') as f:
             f.write(uploaded.getbuffer())
@@ -161,29 +300,29 @@ def render(storage):
         return
 
     file_type = dest.suffix.lower()
-    
+
     with st.spinner(f'Processando {file_type.upper()}...'):
         try:
             # Extract data based on file type
             if file_type == '.xml':
                 parsed = coordinator.run_task('extract', {'path': str(dest)})
-                
+
                 if not _validate_document_data(parsed):
                     return
-                    
+
                 st.subheader('✅ Dados extraídos')
                 with st.expander('Visualizar dados extraídos', expanded=False):
                     st.json(parsed)
-                
+
                 # Classify document
                 with st.spinner('Classificando documento...'):
                     classification = coordinator.run_task('classify', {'parsed': parsed})
                     st.subheader('🏷️ Classificação')
                     st.json(classification)
-                
+
                 # Exibir resultados da validação
                 validation = classification.get('validacao', {})
-                
+
                 # Mostrar status da validação
                 status = validation.get('status', 'unknown')
                 status_emoji = {
@@ -192,12 +331,12 @@ def render(storage):
                     'error': '❌',
                     'pending': '⏳'
                 }.get(status, '❓')
-                
+
                 st.subheader(f'{status_emoji} Status da Validação: {status.upper()}')
-                
+
                 # Mostrar problemas e avisos
                 col1, col2 = st.columns(2)
-                
+
                 with col1:
                     if validation.get('issues'):
                         with st.expander(f'❌ {len(validation["issues"])} Problemas Encontrados', expanded=True):
@@ -205,7 +344,7 @@ def render(storage):
                                 st.error(issue)
                     else:
                         st.success('✅ Nenhum problema crítico encontrado')
-                
+
                 with col2:
                     if validation.get('warnings'):
                         with st.expander(f'⚠️ {len(validation["warnings"])} Avisos', expanded=False):
@@ -213,11 +352,11 @@ def render(storage):
                                 st.warning(warning)
                     else:
                         st.info('ℹ️ Nenhum aviso')
-                
+
                 # Mostrar detalhes da validação
                 with st.expander('🔍 Detalhes da Validação', expanded=False):
                     validations = validation.get('validations', {})
-                    
+
                     # Validação do Emitente
                     if 'emitente' in validations:
                         st.subheader('Emitente')
@@ -225,17 +364,17 @@ def render(storage):
                         cols = st.columns(2)
                         cols[0].metric("CNPJ Válido", "✅ Sim" if emit.get('cnpj') else "❌ Não")
                         cols[1].metric("Razão Social", "✅ Informada" if emit.get('razao_social') else "⚠️ Ausente")
-                    
+
                     # Validação de Itens
                     if 'itens' in validations:
                         st.subheader('Itens')
                         itens = validations['itens']
                         cols = st.columns(2)
-                        cols[0].metric("Itens Encontrados", 
+                        cols[0].metric("Itens Encontrados",
                                     f"✅ {len(parsed.get('itens', []))}" if itens.get('has_items') else "❌ Nenhum")
-                        cols[1].metric("Itens Válidos", 
+                        cols[1].metric("Itens Válidos",
                                     "✅ Todos" if itens.get('all_valid') else "⚠️ Alguns itens inválidos")
-                    
+
                     # Validação de Totais
                     if 'totals' in validations:
                         st.subheader('Totais')
@@ -245,34 +384,34 @@ def render(storage):
                                 st.success("✅ Soma dos itens confere com o total do documento")
                             else:
                                 st.error(f"❌ Diferença de R$ {abs(totais.get('document_total', 0) - totais.get('calculated_total', 0)):.2f} nos totais")
-                
+
                 # Preparar e salvar o documento
                 try:
                     record = _prepare_document_record(uploaded, parsed, classification)
                     saved = storage.save_fiscal_document(record)
-                    
+
                     # Debug: Exibir a estrutura da resposta salva
                     logger.info(f"Resposta do save_document: {saved}")
-                    
+
                     # Função auxiliar para extrair ID de forma robusta
                     def extract_document_id(response):
                         """Extrai o ID do documento da resposta de forma robusta."""
                         if not response:
                             return None
-                        
+
                         # Se for um dicionário
                         if isinstance(response, dict):
                             # Tenta chaves comuns
                             for key in ['id', 'ID', 'document_id', 'doc_id', 'fiscal_document_id']:
                                 if key in response and response[key]:
                                     return str(response[key]).strip()
-                            
+
                             # Tenta em estruturas aninhadas
                             if 'data' in response and isinstance(response['data'], dict):
                                 for key in ['id', 'ID', 'document_id', 'doc_id', 'fiscal_document_id']:
                                     if key in response['data'] and response['data'][key]:
                                         return str(response['data'][key]).strip()
-                            
+
                             # Se data for uma lista
                             if 'data' in response and isinstance(response['data'], list) and response['data']:
                                 first_item = response['data'][0]
@@ -280,7 +419,7 @@ def render(storage):
                                     for key in ['id', 'ID', 'document_id', 'doc_id', 'fiscal_document_id']:
                                         if key in first_item and first_item[key]:
                                             return str(first_item[key]).strip()
-                        
+
                         # Se for uma lista
                         elif isinstance(response, list) and response:
                             first_item = response[0]
@@ -288,68 +427,115 @@ def render(storage):
                                 for key in ['id', 'ID', 'document_id', 'doc_id', 'fiscal_document_id']:
                                     if key in first_item and first_item[key]:
                                         return str(first_item[key]).strip()
-                        
+
                         return None
-                    
+
                     # Extrai o ID usando a função auxiliar
                     document_id = extract_document_id(saved)
                     logger.info(f"ID do documento obtido: {document_id}")
-                    
-                    # Se encontrou o ID, salva o histórico
-                    if document_id and hasattr(storage, 'save_history'):
+
+                    # RAG Processing - Processar documento automaticamente para RAG
+                    if document_id:
                         try:
-                            history_data = {
-                                'fiscal_document_id': document_id,
-                                'event_type': 'created',
-                                'event_data': {
-                                    'source': 'xml_upload',
-                                    'file_type': file_type,
-                                    'validation_status': record.get('validation_status', 'pending'),
-                                    'document_number': record.get('document_number', ''),
-                                    'issuer_cnpj': record.get('issuer_cnpj', '')
-                                },
-                                'created_at': datetime.now(ZoneInfo('UTC')).isoformat()
-                            }
-                            
-                            logger.info(f"Tentando salvar histórico: {history_data}")
-                            storage.save_history(history_data)
-                            logger.info("Histórico salvo com sucesso")
-                            
-                        except Exception as history_error:
-                            error_msg = f'Erro ao salvar histórico: {str(history_error)}'
-                            st.warning(f'Documento salvo, mas houve um erro ao registrar o histórico.')
-                            logger.error(error_msg, exc_info=True)
+                            # Buscar o documento completo do banco para o RAG
+                            full_document = storage.get_fiscal_documents(
+                                id=document_id,
+                                page=1,
+                                page_size=1
+                            )
+
+                            if full_document and hasattr(full_document, 'items') and full_document.items:
+                                doc_for_rag = full_document.items[0]
+
+                                # Chamar RAG service em background
+                                with st.spinner('🧠 Processando documento para busca inteligente...'):
+                                    # Usar o RAG service da sessão se disponível
+                                    if 'rag_service' in st.session_state and st.session_state.rag_service:
+                                        import asyncio
+
+                                        # Executar processamento RAG em background
+                                        async def process_rag():
+                                            try:
+                                                result = await st.session_state.rag_service.process_document_for_rag(doc_for_rag)
+                                                return result
+                                            except Exception as rag_error:
+                                                logger.error(f"Erro no processamento RAG: {rag_error}")
+                                                return {'success': False, 'error': str(rag_error)}
+
+                                        # Executar a função assíncrona
+                                        rag_result = asyncio.run(process_rag())
+
+                                        if rag_result.get('success', False):
+                                            chunks_count = rag_result.get('chunks_processed', 0)
+                                            st.success(f'✅ Documento processado para busca inteligente! ({chunks_count} chunks criados)')
+                                            logger.info(f"RAG processing completed for document {document_id}: {chunks_count} chunks")
+                                        else:
+                                            error_msg = rag_result.get('error', 'Erro desconhecido')
+                                            st.warning(f'⚠️ Documento salvo, mas houve um problema no processamento inteligente: {error_msg}')
+                                            logger.error(f"RAG processing failed for document {document_id}: {error_msg}")
+                                    else:
+                                        st.info('ℹ️ Sistema RAG não disponível no momento. Documento salvo sem processamento inteligente.')
+                                        logger.warning(f"RAG service not available for document {document_id}")
+                            else:
+                                st.warning('⚠️ Não foi possível recuperar o documento completo para processamento RAG')
+                                logger.warning(f"Could not retrieve full document for RAG processing: {document_id}")
+
+                        except Exception as rag_error:
+                            st.warning(f'⚠️ Erro no processamento inteligente: {str(rag_error)}')
+                            logger.error(f"RAG processing error for document {document_id}: {rag_error}")
+
+                    # Se não conseguiu obter o ID do documento
                     elif not document_id:
-                        logger.warning('Documento salvo, mas não foi possível obter o ID para registrar o histórico.')
+                        logger.warning('Documento salvo, mas não foi possível obter o ID para processamento RAG.')
                         logger.warning(f'Resposta completa do save_document: {saved}')
-                    
-                    st.success('✅ Documento processado e salvo com sucesso!')
-                    
+
                     # Debug: Exibir o ID do documento salvo
                     if document_id:
-                        st.info(f'ID do documento: {document_id}')
+                        st.info(f'📄 **ID do documento:** `{document_id}`')
                     else:
-                        st.warning('Não foi possível obter o ID do documento salvo. Verifique os logs para mais detalhes.')
-                    
+                        st.warning('⚠️ Não foi possível obter o ID do documento salvo. Verifique os logs para mais detalhes.')
+
+                    # Mostrar resumo do processamento
+                    with st.expander('📊 Resumo do Processamento', expanded=False):
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            st.markdown(f"""
+                            **Informações Extraídas:**
+                            - **Tipo:** {record.get('document_type', 'N/A')}
+                            - **Número:** {record.get('document_number', 'N/A')}
+                            - **Valor:** R$ {record.get('total_value', 0):.2f}
+                            """)
+
+                        with col2:
+                            validation_status = record.get('validation_status', 'pending')
+                            status_icon = {'success': '✅', 'warning': '⚠️', 'error': '❌', 'pending': '⏳'}.get(validation_status, '❓')
+                            st.markdown(f"""
+                            **Status da Validação:**
+                            - **Status:** {status_icon} {validation_status.upper()}
+                            - **Itens:** {len(record.get('extracted_data', {}).get('itens', []))}
+                            - **Processado:** {datetime.now().strftime('%d/%m/%Y %H:%M')}
+                            """)
+
                 except Exception as e:
                     st.error(f'Erro ao salvar documento: {str(e)}')
                     st.exception(e)  # Show full traceback in logs
-            
+
             else:  # PDF/Image
                 st.info('Processando documento não-XML via OCR...')
                 parsed = coordinator.run_task('extract', {'path': str(dest)})
-                
+
                 # Tratamento de erros com mensagens claras
                 if isinstance(parsed, dict) and parsed.get('error'):
                     error_code = parsed.get('error', 'unknown')
                     error_message = parsed.get('message', 'Erro desconhecido na extração')
-                    
+
                     if error_code == 'empty_ocr':
                         st.error(f'''
                             ❌ Não foi possível extrair texto do documento.
-                            
+
                             Motivo: {error_message}
-                            
+
                             Verifique se:
                             - O documento está legível e em boa qualidade
                             - O PDF contém texto selecionável (não é apenas imagem)
@@ -359,14 +545,14 @@ def render(storage):
                     elif error_code == 'tesseract_not_installed':
                         st.error(f'''
                             ❌ Tesseract OCR não está disponível
-                            
+
                             {error_message}
-                            
+
                             **Instruções de instalação:**
                             - **Windows:** Baixe em https://github.com/UB-Mannheim/tesseract/wiki
                             - **Linux:** `sudo apt-get install tesseract-ocr`
                             - **macOS:** `brew install tesseract`
-                            
+
                             Após instalar, reinicie a aplicação.
                         ''')
                     elif error_code == 'invalid_image_format':
@@ -377,24 +563,24 @@ def render(storage):
                         st.error(f"❌ Tipo de arquivo não suportado: {error_message}")
                     else:
                         st.error(f"❌ Erro na extração ({error_code}): {error_message}")
-                    
+
                     logger.error(f"Erro de extração: {error_code} - {error_message}")
                     return
-                
+
                 # Validação adicional
                 if not isinstance(parsed, dict):
                     st.error(f"❌ Resposta inválida da extração: {type(parsed).__name__}")
                     logger.error(f"Resposta inválida: {parsed}")
                     return
-                
+
                 # Show raw OCR text with better formatting
                 st.subheader('📝 Texto extraído (OCR)')
                 raw_text = parsed.get('raw_text', '').strip()
-                
+
                 if not raw_text:
                     st.warning('Nenhum texto foi extraído do documento.')
                     return
-                    
+
                 with st.expander('Visualizar texto extraído', expanded=False):
                     st.text_area(
                         'Texto extraído (apenas leitura)',
@@ -402,52 +588,52 @@ def render(storage):
                         height=200,
                         disabled=True
                     )
-                
+
                 # Processamento automático com IA
                 with st.spinner('Processando texto com IA para extração estruturada...'):
                     try:
                         # Usar IA para extrair campos automaticamente
                         extracted_data = ocr_text_to_document(raw_text, use_llm=True)
-                        
+
                         # Garantir que extracted_data é um dicionário
                         if not isinstance(extracted_data, dict):
                             st.error('Erro: Dados extraídos não estão no formato esperado')
                             st.stop()
-                        
+
                         # Adicionar o texto bruto extraído
                         extracted_data['raw_text'] = raw_text
-                        
+
                         # Se não conseguiu extrair dados suficientes, tentar com heurística
                         if not extracted_data.get('emitente') or not extracted_data.get('itens'):
                             st.warning('IA não conseguiu extrair todos os campos automaticamente. Tentando com heurística...')
                             extracted_data = ocr_text_to_document(raw_text, use_llm=False)
-                            
+
                             # Garantir que os dados extraídos são válidos
                             if not isinstance(extracted_data, dict):
                                 st.error('Erro: Falha ao extrair dados usando heurística')
                                 st.stop()
-                                
+
                             extracted_data['raw_text'] = raw_text
-                        
+
                         # Classificar o documento
                         classification = coordinator.run_task('classify', {'parsed': extracted_data})
-                        
+
                         try:
                             # Validar os dados extraídos antes de salvar
                             if not _validate_document_data(extracted_data):
                                 st.error('Erro: Dados extraídos não contêm campos obrigatórios')
                                 st.stop()
-                                
+
                             # Preparar e salvar o registro
                             record = _prepare_document_record(uploaded, extracted_data, classification)
-                            
+
                             # Validar o registro antes de salvar
                             required_fields = ['file_name', 'document_type', 'extracted_data', 'raw_text']
                             missing_fields = [field for field in required_fields if field not in record]
                             if missing_fields:
                                 st.error(f'Erro: Registro inválido. Campos faltando: {missing_fields}')
                                 st.stop()
-                            
+
                             # Garantir que extracted_data é serializável
                             try:
                                 import json
@@ -455,10 +641,10 @@ def render(storage):
                             except (TypeError, OverflowError) as e:
                                 st.error(f'Erro: Dados extraídos contêm valores não serializáveis: {str(e)}')
                                 st.stop()
-                            
+
                             # Salvar o documento
                             saved = storage.save_fiscal_document(record)
-                            
+
                             # Verificar se o documento foi salvo com sucesso
                             if not isinstance(saved, dict) or 'id' not in saved:
                                 error_msg = str(saved) if not isinstance(saved, dict) else 'Resposta do servidor não contém ID do documento'
@@ -466,11 +652,49 @@ def render(storage):
                                 if hasattr(storage, '_last_error'):
                                     st.error(f'Detalhes do erro: {getattr(storage, "_last_error", "")}')
                                 st.stop()
-                            
+
                             # Documento salvo com sucesso
                             st.success('✅ Documento salvo com sucesso!')
                             st.balloons()
-                            
+
+                            # RAG Processing - Processar documento automaticamente para RAG
+                            if 'id' in saved:
+                                document_id = saved['id']
+                                try:
+                                    # Chamar RAG service em background
+                                    with st.spinner('🧠 Processando documento para busca inteligente...'):
+                                        # Usar o RAG service da sessão se disponível
+                                        if 'rag_service' in st.session_state and st.session_state.rag_service:
+                                            import asyncio
+
+                                            # Executar processamento RAG em background
+                                            async def process_rag():
+                                                try:
+                                                    result = await st.session_state.rag_service.process_document_for_rag(record)
+                                                    return result
+                                                except Exception as rag_error:
+                                                    logger.error(f"Erro no processamento RAG: {rag_error}")
+                                                    return {'success': False, 'error': str(rag_error)}
+
+                                            # Executar a função assíncrona
+                                            rag_result = asyncio.run(process_rag())
+
+                                            if rag_result.get('success', False):
+                                                chunks_count = rag_result.get('chunks_processed', 0)
+                                                st.success(f'✅ Documento processado para busca inteligente! ({chunks_count} chunks criados)')
+                                                logger.info(f"RAG processing completed for document {document_id}: {chunks_count} chunks")
+                                            else:
+                                                error_msg = rag_result.get('error', 'Erro desconhecido')
+                                                st.warning(f'⚠️ Documento salvo, mas houve um problema no processamento inteligente: {error_msg}')
+                                                logger.error(f"RAG processing failed for document {document_id}: {error_msg}")
+                                        else:
+                                            st.info('ℹ️ Sistema RAG não disponível no momento. Documento salvo sem processamento inteligente.')
+                                            logger.warning(f"RAG service not available for document {document_id}")
+
+                                except Exception as rag_error:
+                                    st.warning(f'⚠️ Erro no processamento inteligente: {str(rag_error)}')
+                                    logger.error(f"RAG processing error for document {document_id}: {rag_error}")
+
                             # Salvar histórico se suportado
                             try:
                                 if hasattr(storage, 'save_history'):
@@ -486,11 +710,11 @@ def render(storage):
                                     storage.save_history(history_data)
                             except Exception as history_error:
                                 st.warning(f'Aviso: Não foi possível salvar o histórico: {str(history_error)}')
-                            
+
                             # Mostrar dados extraídos
                             st.subheader('📊 Dados extraídos automaticamente')
                             st.json(extracted_data)
-                            
+
                             # Mostrar link para visualizar o documento salvo
                             if 'id' in saved:
                                 st.markdown(f'''
@@ -498,19 +722,30 @@ def render(storage):
                                 - [Visualizar documento](#)
                                 - [Editar informações](#)
                                 ''', unsafe_allow_html=True)
-                            
+
+                            # Mostrar resumo do processamento OCR
+                            with st.expander('🔍 Detalhes do OCR', expanded=False):
+                                st.markdown(f"""
+                                **Processamento OCR:**
+                                - **Arquivo:** {uploaded.name}
+                                - **Tipo:** {file_type.upper()}
+                                - **Texto extraído:** {len(raw_text)} caracteres
+                                - **Campos identificados:** {len(extracted_data)} campos
+                                - **Status:** Processamento concluído com IA
+                                """)
+
                         except Exception as e:
                             st.error(f'Erro ao salvar documento: {str(e)}')
                             st.exception(e)  # Log detalhado no console
-                        
+
                     except Exception as e:
                         st.error(f'Erro ao processar documento automaticamente: {str(e)}')
                         st.exception(e)
-        
+
         except Exception as e:
             st.error(f'❌ Ocorreu um erro inesperado: {str(e)}')
             st.exception(e)  # Show full traceback in logs
-        
+
         finally:
             # Clean up temporary file
             try:
@@ -518,7 +753,7 @@ def render(storage):
                     dest.unlink()
             except Exception as e:
                 st.warning(f'Aviso: Não foi possível remover o arquivo temporário: {str(e)}')
-    
+
     # Update session state
     if 'processed_documents' in st.session_state:
         try:

@@ -221,7 +221,7 @@ def render_document_details(doc):
             
             if itens_data:
                 df_itens = pd.DataFrame(itens_data)
-                st.dataframe(df_itens, use_container_width=True, hide_index=True)
+                st.dataframe(df_itens, width='stretch', hide_index=True)
                 
                 # Botão para baixar itens como CSV
                 csv = df_itens.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
@@ -309,7 +309,7 @@ def render_document_details(doc):
                         "Detalhes": st.column_config.TextColumn("Detalhes", width="large")
                     },
                     hide_index=True,
-                    use_container_width=True
+                    width='stretch'
                 )
         
         # Mostra dados brutos de validação se disponível
@@ -571,7 +571,7 @@ def render(storage):
             button_key = f"view_{doc['Ações']}"
             button_key_to_doc[button_key] = doc['_doc']
             
-            if cols[8].button("👁️ Ver Detalhes", key=button_key, use_container_width=True):
+            if cols[8].button("👁️ Ver Detalhes", key=button_key, width='stretch'):
                 st.session_state['selected_doc'] = doc['_doc']
         
         # Exibe os detalhes do documento selecionado

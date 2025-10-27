@@ -80,7 +80,7 @@ FISCAL_VALIDATOR_CONFIG = {
     'cache_enabled': _get('FISCAL_VALIDATOR.cache_enabled', 'true').lower() == 'true',
     'cache_dir': _get('FISCAL_VALIDATOR.cache_dir', '.fiscal_cache'),
     'cache_ttl_days': int(_get('FISCAL_VALIDATOR.cache_ttl_days', '30')),
-    'model_name': 'gemini-1.5-flash'  # Pode ser sobrescrito se necessário
+    'model_name': 'gemini-1.5-flash'  # Modelo mais avançado
 }
 
 # Database connection details for direct database access (migrations and direct queries)

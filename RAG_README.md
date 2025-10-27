@@ -170,7 +170,7 @@ PORT = "5432"
 ```python
 # Configurações padrão no config.py
 GEMINI_EMBEDDING_MODEL = "models/embedding-001"  # 768 dimensões
-GEMINI_CHAT_MODEL = "gemini-flash"              # Para respostas
+GEMINI_CHAT_MODEL = "gemini-2.0-flash-exp"       # Para respostas (fallback para 1.5-flash)
 VECTOR_DIMENSION = 768                          # Dimensão dos embeddings
 SIMILARITY_THRESHOLD = 0.7                      # Limite de similaridade
 MAX_CHUNKS_PER_DOCUMENT = 2                     # Chunks por documento no contexto

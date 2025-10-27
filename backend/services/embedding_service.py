@@ -109,9 +109,9 @@ class GeminiEmbeddingService:
             result_chunks = []
             for i, chunk_text in enumerate(chunks):
                 chunk_metadata = {
-                    'chunk_number': i,
                     'content_text': chunk_text,
                     'metadata': {
+                        'chunk_number': i,
                         'document_id': document_content.get('id', ''),
                         'document_type': document_content.get('document_type', ''),
                         'file_name': document_content.get('file_name', ''),

@@ -21,7 +21,7 @@ from frontend.components import document_renderer
 
 st.title('SkyNET-I2A2 - Processamento Fiscal (MVP)')
 
-menu = st.sidebar.selectbox('Navegação', ['Home', 'Upload Documento', 'Upload CSV (EDA)', 'Chat IA', 'RAG', 'Histórico'])
+menu = st.sidebar.selectbox('Navegação', ['Home', 'Importador', 'Chat IA', 'Histórico', 'RAG'])
 
 # Initialize session state for RAG service
 if 'rag_service' not in st.session_state:
@@ -53,19 +53,16 @@ if not st.session_state.processed_documents:
 if menu == 'Home':
     from frontend.pages import home
     home.render()
-elif menu == 'Upload Documento':
-    from frontend.pages import upload_document
-    upload_document.render(storage)
-elif menu == 'Upload CSV (EDA)':
-    from frontend.pages import upload_csv
-    upload_csv.render(storage)
+elif menu == 'Importador':
+    from frontend.pages import importador
+    importador.render(storage)
 elif menu == 'Chat IA':
     from frontend.pages import chat
     chat.render()
-elif menu == 'RAG':
-    from frontend.pages import rag
-    rag.main()
 elif menu == 'Histórico':
     from frontend.pages import history
     history.render(storage)
+elif menu == 'RAG':
+    from frontend.pages import rag
+    rag.main()
 
