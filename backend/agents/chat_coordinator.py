@@ -17,11 +17,11 @@ logger = logging.getLogger(__name__)
 class ChatCoordinator:
     """Main coordinator for chat system."""
 
-    def __init__(self, supabase_client):
-        self.supabase = supabase_client
-        self.chat_agent = ChatAgent(supabase_client)
-        self.document_tool = DocumentAnalysisTool(supabase_client)
-        self.csv_tool = CSVAnalysisTool(supabase_client)
+    def __init__(self, storage):
+        self.storage = storage
+        self.chat_agent = ChatAgent(storage)
+        self.document_tool = DocumentAnalysisTool(storage)
+        self.csv_tool = CSVAnalysisTool(storage)
         self.insight_generator = InsightGenerator(self.document_tool, self.csv_tool)
 
     async def initialize_session(self, session_name: str = None) -> str:
@@ -103,11 +103,7 @@ class ChatCoordinator:
         """Get chat history for a session."""
 
         try:
-            result = self.supabase.table('chat_messages').select('*').eq(
-                'session_id', session_id
-            ).order('created_at').execute()
-
-            return result.data if result.data else []
+            return self.storage.get_chat_messages(session_id, limit=50)
 
         except Exception as e:
             logger.error(f"Error getting session history: {e}")
@@ -178,12 +174,12 @@ class ChatCoordinator:
 
             # Add text search to criteria
             if query:
-                # Search in extracted data JSON
-                documents = self.supabase.table('fiscal_documents').select('*').execute()
+                # Use storage to search documents
+                all_docs = self.storage.get_fiscal_documents(page=1, page_size=1000)
 
-                # Filter documents containing the query in extracted_data
+                # Filter documents containing the query
                 filtered_docs = []
-                for doc in documents.data:
+                for doc in all_docs.items:
                     if self._document_matches_query(doc, query):
                         filtered_docs.append(doc)
 
@@ -229,13 +225,13 @@ class ChatCoordinator:
         """Get list of chat sessions."""
 
         try:
-            query = self.supabase.table('chat_sessions').select('*')
+            sessions = self.storage.get_chat_sessions(limit=20)
 
+            # Filter by user_id if provided (not implemented in storage yet)
             if user_id:
-                query = query.eq('user_id', user_id)
+                sessions = [s for s in sessions if s.get('user_id') == user_id]
 
-            result = query.order('created_at', desc=True).execute()
-            return result.data if result.data else []
+            return sessions
 
         except Exception as e:
             logger.error(f"Error getting chat sessions: {e}")
@@ -245,12 +241,7 @@ class ChatCoordinator:
         """Delete a chat session and all its messages."""
 
         try:
-            # Messages will be deleted automatically due to CASCADE
-            result = self.supabase.table('chat_sessions').delete().eq(
-                'id', session_id
-            ).execute()
-
-            return len(result.data) > 0 if result.data else False
+            return self.storage.delete_chat_session(session_id)
 
         except Exception as e:
             logger.error(f"Error deleting session: {e}")

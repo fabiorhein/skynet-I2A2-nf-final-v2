@@ -30,7 +30,8 @@ def get_chat_coordinator():
     """Get or create chat coordinator instance."""
     try:
         from backend.database import storage_manager
-        return ChatCoordinator(storage_manager.supabase_client)
+        # Use storage directly instead of supabase_client
+        return ChatCoordinator(storage_manager.storage)
     except Exception as e:
         st.error(f"Erro ao inicializar chat: {e}")
         return None
@@ -103,12 +104,20 @@ def render():
                 for session in sessions[:5]:  # Show last 5 sessions
                     col1, col2 = st.columns([3, 1])
                     with col1:
-                        st.text(f"{session['session_name']}")
-                        st.caption(f"{session['created_at'][:19]}")
+                        st.text(f"{session['title']}")
+                        created_at = session['created_at']
+                        # Handle datetime object or string
+                        if hasattr(created_at, 'strftime'):
+                            # It's a datetime object
+                            date_str = created_at.strftime('%Y-%m-%d %H:%M:%S')
+                        else:
+                            # It's already a string
+                            date_str = str(created_at)[:19]
+                        st.caption(date_str)
                     with col2:
                         if st.button("🔄", key=f"load_{session['id']}", help="Carregar esta sessão"):
                             st.session_state.chat_session_id = session['id']
-                            st.session_state.chat_session_name = session['session_name']
+                            st.session_state.chat_session_name = session['title']
                             messages = asyncio.run(chat_coordinator.get_session_history(session['id']))
                             st.session_state.chat_messages = messages
                             st.success("Sessão carregada!")

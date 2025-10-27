@@ -144,7 +144,11 @@ def get_document_summary(doc):
         'Valor Total': total,
         'Itens': num_itens,
         'Erros de Validação': num_errors,
-        'Data Processamento': doc.get('created_at', 'N/A'),
+        'Data Processamento': (
+            doc.get('created_at', 'N/A').strftime('%Y-%m-%d %H:%M:%S')[:19]
+            if hasattr(doc.get('created_at'), 'strftime')
+            else str(doc.get('created_at', 'N/A'))[:19]
+        ) if doc.get('created_at') else 'N/A',
         'ID': doc.get('id', '')
     }
 

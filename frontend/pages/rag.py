@@ -129,7 +129,11 @@ def show_rag_monitoring():
                         'Número': doc.get('document_number', 'N/A'),
                         'Emissor': doc.get('issuer_cnpj', 'N/A'),
                         'Status': doc.get('embedding_status', 'not_started'),
-                        'Data': doc.get('created_at', 'N/A')[:10] if doc.get('created_at') else 'N/A'
+                        'Data': (
+                            doc.get('created_at', 'N/A').strftime('%Y-%m-%d')[:10]
+                            if hasattr(doc.get('created_at'), 'strftime')
+                            else str(doc.get('created_at', 'N/A'))[:10]
+                        ) if doc.get('created_at') else 'N/A'
                     })
 
                 if docs_data:
@@ -166,7 +170,11 @@ def show_rag_monitoring():
                         'Número': doc.get('document_number', 'N/A'),
                         'Chunks': doc.get('chunks_count', 0),
                         'Status': doc.get('embedding_status', 'completed'),
-                        'Data': doc.get('created_at', 'N/A')[:10] if doc.get('created_at') else 'N/A'
+                        'Data': (
+                            doc.get('created_at', 'N/A').strftime('%Y-%m-%d')[:10]
+                            if hasattr(doc.get('created_at'), 'strftime')
+                            else str(doc.get('created_at', 'N/A'))[:10]
+                        ) if doc.get('created_at') else 'N/A'
                     })
 
                 if processed_data:

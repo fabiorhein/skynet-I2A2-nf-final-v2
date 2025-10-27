@@ -12,9 +12,11 @@ from typing import Dict, Any, List, Optional, Union
 try:
     import psycopg2
     import psycopg2.extras
+    from psycopg2.extras import Json
     PSYCOPG2_AVAILABLE = True
 except ImportError:
     PSYCOPG2_AVAILABLE = False
+    Json = None
 
 from datetime import datetime, timezone, UTC
 
@@ -493,6 +495,177 @@ class PostgreSQLStorage(StorageInterface):
             logger.error(f"Erro ao recuperar histórico do documento {fiscal_document_id}: {e}")
             # Retornar lista vazia em caso de erro para não quebrar o fluxo da aplicação
             return []
+
+    def create_chat_session(self, session_name: str = None) -> Dict[str, Any]:
+        """Create a new chat session."""
+        try:
+            query = """
+                INSERT INTO chat_sessions (title)
+                VALUES (%s)
+                RETURNING *
+            """
+            result = self._execute_query(query, (session_name or f"Chat Session {datetime.now().strftime('%Y-%m-%d %H:%M')}",), "one")
+
+            if result:
+                return dict(result)
+            else:
+                raise PostgreSQLStorageError("Failed to create chat session")
+
+        except Exception as e:
+            logger.error(f"Error creating chat session: {e}")
+            raise
+
+    def save_chat_message(self, session_id: str, message_type: str, content: str, metadata: Dict[str, Any] = None) -> None:
+        """Save a message to the chat session."""
+        try:
+            query = """
+                INSERT INTO chat_messages (session_id, message_type, content, metadata)
+                VALUES (%s, %s, %s, %s)
+            """
+            self._execute_query(query, (session_id, message_type, content, Json(metadata or {})), fetch=None)
+
+        except Exception as e:
+            logger.error(f"Error saving chat message: {e}")
+            raise
+
+    def get_chat_messages(self, session_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get chat messages for a session."""
+        try:
+            query = """
+                SELECT * FROM chat_messages
+                WHERE session_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """
+            results = self._execute_query(query, (session_id, limit), fetch="all")
+
+            # Convert JSONB metadata back to dict
+            messages = []
+            for result in results:
+                msg = dict(result)
+                if msg.get('metadata'):
+                    msg['metadata'] = msg['metadata'] if isinstance(msg['metadata'], dict) else {}
+                messages.append(msg)
+
+            return messages
+
+        except Exception as e:
+            logger.error(f"Error getting chat messages: {e}")
+            return []
+
+    def get_chat_context(self, session_id: str, limit: int = 5) -> str:
+        """Get recent chat messages as context for the LLM."""
+        try:
+            messages = self.get_chat_messages(session_id, limit * 2)  # Get more messages and reverse
+
+            if not messages:
+                return "Esta é uma nova conversa."
+
+            # Reverse to show chronological order
+            messages.reverse()
+
+            # Format recent messages for context
+            context_lines = []
+            for msg in messages[:limit]:  # Last N messages
+                msg_type = "Usuário" if msg['message_type'] == 'user' else "Assistente"
+                context_lines.append(f"{msg_type}: {msg['content']}")
+
+            return "Histórico da conversa:\n" + "\n".join(context_lines)
+
+        except Exception as e:
+            logger.error(f"Error getting chat context: {e}")
+            return "Erro ao carregar histórico da conversa."
+
+    def save_analysis_cache(self, cache_key: str, query_type: str, query_text: str, context_data: Dict[str, Any],
+                           response_content: str, response_metadata: Dict[str, Any], expires_at: str) -> None:
+        """Save analysis cache entry."""
+        try:
+            # Combine response_content and response_metadata into response_data JSONB
+            response_data = {
+                'response_content': response_content,
+                'response_metadata': response_metadata,
+                'query_text': query_text,
+                'context_data': context_data
+            }
+
+            query = """
+                INSERT INTO analysis_cache (cache_key, query_type, response_data, expires_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (cache_key)
+                DO UPDATE SET
+                    response_data = EXCLUDED.response_data,
+                    expires_at = EXCLUDED.expires_at
+            """
+            self._execute_query(query, (cache_key, query_type, Json(response_data), expires_at), fetch=None)
+
+        except Exception as e:
+            logger.error(f"Error saving analysis cache: {e}")
+            raise
+
+    def get_analysis_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """Get cached analysis if available and not expired."""
+        try:
+            query = """
+                SELECT * FROM analysis_cache
+                WHERE cache_key = %s AND expires_at > %s
+            """
+            result = self._execute_query(query, (cache_key, datetime.now().isoformat()), "one")
+
+            if result:
+                cache_entry = dict(result)
+                # Extract data from response_data JSONB
+                response_data = cache_entry.get('response_data', {})
+                if response_data:
+                    return {
+                        'content': response_data.get('response_content', ''),
+                        'metadata': response_data.get('response_metadata', {}),
+                        'cached': True,
+                        'query_text': response_data.get('query_text', ''),
+                        'context_data': response_data.get('context_data', {})
+                    }
+                return None
+
+        except Exception as e:
+            logger.error(f"Error getting analysis cache: {e}")
+
+        return None
+
+    def get_chat_sessions(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get recent chat sessions."""
+        try:
+            query = """
+                SELECT * FROM chat_sessions
+                ORDER BY created_at DESC
+                LIMIT %s
+            """
+            results = self._execute_query(query, (limit,), fetch="all")
+
+            sessions = []
+            for result in results:
+                session = dict(result)
+                # Get message count for this session
+                count_query = "SELECT COUNT(*) as count FROM chat_messages WHERE session_id = %s"
+                count_result = self._execute_query(count_query, (session['id'],), "one")
+                session['message_count'] = count_result['count'] if count_result else 0
+                sessions.append(session)
+
+            return sessions
+
+        except Exception as e:
+            logger.error(f"Error getting chat sessions: {e}")
+            return []
+
+    def delete_chat_session(self, session_id: str) -> bool:
+        """Delete a chat session and all its messages."""
+        try:
+            # Messages will be deleted automatically due to CASCADE
+            query = "DELETE FROM chat_sessions WHERE id = %s"
+            result = self._execute_query(query, (session_id,), fetch=None)
+            return result > 0
+
+        except Exception as e:
+            logger.error(f"Error deleting chat session: {e}")
+            return False
 
     def close(self):
         """Close the database connection."""
