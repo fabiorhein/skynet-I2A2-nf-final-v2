@@ -307,28 +307,68 @@ class FiscalDocumentProcessor:
         Returns:
             String com o tipo de documento ('nfe', 'nfce', 'cte', 'mdfe' ou 'unknown')
         """
+        if not text or not isinstance(text, str):
+            return 'unknown'
+            
         text_lower = text.lower()
         
         # Verifica se é um XML
-        if any(tag in text_lower for tag in ['<nfe', '<nfce', '<cte', '<mdfe']):
-            if '<nfe' in text_lower:
+        if any(tag in text_lower for tag in ['<nfe', '<nfce', '<cte', '<mdfe', 'nfe"', 'nfce"', 'cte"', 'mdfe"']):
+            if any(tag in text_lower for tag in ['<nfe', 'nfe"']):
+                # Verifica se é NFCe (modelo 65)
+                if 'mod="65"' in text_lower or 'mod=65' in text_lower or 'modelo 65' in text_lower:
+                    return 'nfce'
                 return 'nfe'
-            elif '<nfce' in text_lower:
+            elif any(tag in text_lower for tag in ['<nfce', 'nfce"']):
                 return 'nfce'
-            elif '<cte' in text_lower:
+            elif any(tag in text_lower for tag in ['<cte', 'cte"']):
                 return 'cte'
-            elif '<mdfe' in text_lower:
+            elif any(tag in text_lower for tag in ['<mdfe', 'mdfe"']):
                 return 'mdfe'
         
-        # Tenta identificar por padrões de texto
-        if any(term in text_lower for term in ['nota fiscal de consumidor eletrônica', 'nfce']):
+        # Tenta identificar por padrões de texto (nomes completos e siglas)
+        if any(term in text_lower for term in ['nota fiscal de consumidor eletrônico', 'nfce', 'nfc-e', 'modelo 65']):
             return 'nfce'
-        elif any(term in text_lower for term in ['nota fiscal eletrônica', 'nfe']):
+        elif any(term in text_lower for term in ['nota fiscal eletrônica', 'nfe', 'nf-e', 'modelo 55']):
             return 'nfe'
-        elif any(term in text_lower for term in ['conhecimento de transporte eletrônico', 'cte']):
+        elif any(term in text_lower for term in [
+            'conhecimento de transporte eletrônico', 
+            'cte', 
+            'ct-e',
+            'conhecimento transporte',
+            'conhecimento transporte eletrônico',
+            'cte"',
+            'cte ',
+            'cte\n',
+            'cte\r',
+            'cte\t'
+        ]):
             return 'cte'
-        elif any(term in text_lower for term in ['manifesto de documentos fiscais', 'mdfe']):
+        elif any(term in text_lower for term in ['manifesto de documentos fiscais', 'mdfe', 'mdf-e']):
             return 'mdfe'
+            
+        # Verifica por padrões específicos de chave de acesso
+        if re.search(r'cte[0-9]{44}', text_lower):
+            return 'cte'
+        elif re.search(r'nfe[0-9]{44}', text_lower):
+            return 'nfe'
+        elif re.search(r'nfce[0-9]{44}', text_lower):
+            return 'nfce'
+        elif re.search(r'mdfe[0-9]{44}', text_lower):
+            return 'mdfe'
+            
+        # Verifica por padrões de chave de acesso sem o prefixo
+        if re.search(r'[0-9]{44}', text_lower):
+            # Se a chave começa com 57 é MDFe, 67 é CT-e, etc.
+            match = re.search(r'([0-9]{2})[0-9]{42}', text_lower)
+            if match:
+                uf_code = match.group(1)
+                if uf_code == '57':
+                    return 'mdfe'
+                elif uf_code == '67':
+                    return 'cte'
+                elif uf_code in ['55', '65']:  # 55=NF-e, 65=NFC-e
+                    return 'nfe' if uf_code == '55' else 'nfce'
         
         return 'unknown'
     
@@ -420,44 +460,88 @@ class FiscalDocumentProcessor:
         
         # Expressões regulares para extração de campos
         patterns = {
+            # Padrões gerais
             'cnpj': re.compile(r'CNPJ[\s:]*([\d./-]+)', re.IGNORECASE),
             'cpf': re.compile(r'CPF[\s:]*([\d.-]+)', re.IGNORECASE),
             'ie': re.compile(r'(?:I[.\s]*E\.?|Inscri[çc][aã]o\s*Estadual)[\s:]*([^\s]+)', re.IGNORECASE),
             'data_emissao': re.compile(r'(?:Data\s*de\s*Emiss[ãa]o|Emiss[ãa]o)[\s:]*([\d/]+(?:\s+[\d:]+)?)', re.IGNORECASE),
-            'valor_total': re.compile(r'(?:Valor\s*Total\s*R?\$|Total\s*da\s*Nota)[\s:]*([\d.,]+)', re.IGNORECASE),
-            'numero': re.compile(r'(?:N[º°]+\s*da\s*Nota|Nota\s*Fiscal\s*N?[º°\s]*)(\d+)', re.IGNORECASE),
+            'valor_total': re.compile(r'(?:Valor\s*Total\s*R?\$|Total\s*da\s*Nota|Valor\s*da\s*Presta[çc][aã]o)[\s:]*([\d.,]+)', re.IGNORECASE),
+            'numero': re.compile(r'(?:N[º°]+\s*(?:da\s*)?(?:Nota|CT-e|CTe)|(?:Nota|CT-e|CTe)\s*N?[º°\s]*)(\d+)', re.IGNORECASE),
             'chave_acesso': re.compile(r'([0-9]{44})'),
-            'protocolo': re.compile(r'Protocolo[\s:]*([0-9]+)', re.IGNORECASE),
-            'razao_social': re.compile(r'(?:Raz[ãa]o\s*Social|Nome\s*do\s*Emitente)[\s:]*([^\n]+)', re.IGNORECASE),
-            'nome_destinatario': re.compile(r'(?:Destinat[áa]rio|Nome\s*do\s*Destinat[áa]rio)[\s:]*([^\n]+)', re.IGNORECASE),
+            'protocolo': re.compile(r'(?:Protocolo|N[º°]\s*Protocolo)[\s:]*([0-9]+)', re.IGNORECASE),
+            'razao_social': re.compile(r'(?:Raz[ãa]o\s*Social|Nome\s*(?:do\s*)?(?:Emitente|Remetente))[\s:]*([^\n]+)', re.IGNORECASE),
+            'nome_destinatario': re.compile(r'(?:Destinat[áa]rio|Nome\s*do\s*Destinat[áa]rio|Tomador)[\s:]*([^\n]+)', re.IGNORECASE),
+            'endereco_emitente': re.compile(r'Endere[çc]o\s*do\s*Emitente[\s:]*([^\n]+)', re.IGNORECASE),
+            'municipio_emitente': re.compile(r'Munic[íi]pio\s*do\s*Emitente[\s:]*([^\n]+)', re.IGNORECASE),
+            'uf_emitente': re.compile(r'UF\s*do\s*Emitente[\s:]*([A-Z]{2})', re.IGNORECASE),
+            
+            # Padrões específicos para CT-e
+            'cte_numero': re.compile(r'CT-e\s*N[º°]?[\s:]*([0-9]+)', re.IGNORECASE),
+            'cte_serie': re.compile(r'S[ée]rie[\s:]*([0-9]+)', re.IGNORECASE),
+            'cte_modal': re.compile(r'Modal[\s:]*([^\n]+)', re.IGNORECASE),
+            'cte_tipo_servico': re.compile(r'Tipo\s*de\s*Servi[çc]o[\s:]*([^\n]+)', re.IGNORECASE),
+            'cte_uf_inicio': re.compile(r'UF\s*In[íi]cio[\s:]*([A-Z]{2})', re.IGNORECASE),
+            'cte_uf_fim': re.compile(r'UF\s*Fim[\s:]*([A-Z]{2})', re.IGNORECASE),
+            'cte_municipio_inicio': re.compile(r'Munic[íi]pio\s*In[íi]cio[\s:]*([^\n]+)', re.IGNORECASE),
+            'cte_municipio_fim': re.compile(r'Munic[íi]pio\s*Fim[\s:]*([^\n]+)', re.IGNORECASE),
+            'cte_valor_prestacao': re.compile(r'Valor\s*da\s*Presta[çc][aã]o[\s:]*R?\$?\s*([\d.,]+)', re.IGNORECASE),
         }
         
         # Extrai campos básicos
         for field, pattern in patterns.items():
             match = pattern.search(text)
             if match:
-                if field == 'cnpj' and not doc['emitente'].get('cnpj'):
-                    doc['emitente']['cnpj'] = match.group(1).strip()
-                elif field == 'cpf' and not doc['destinatario'].get('cpf'):
-                    doc['destinatario']['cpf'] = match.group(1).strip()
-                elif field == 'ie' and not doc['emitente'].get('inscricao_estadual'):
-                    doc['emitente']['inscricao_estadual'] = match.group(1).strip()
-                elif field == 'data_emissao' and not doc.get('data_emissao'):
-                    date_str = match.group(1).strip()
-                    doc['data_emissao'] = self._format_date(date_str)
-                elif field == 'valor_total' and not doc.get('valor_total'):
-                    try:
-                        doc['valor_total'] = float(match.group(1).replace('.', '').replace(',', '.'))
-                    except (ValueError, TypeError):
-                        pass
-                elif field == 'numero' and not doc.get('numero'):
-                    doc['numero'] = match.group(1).strip()
-                elif field == 'chave_acesso' and not doc.get('chave_acesso'):
-                    doc['chave_acesso'] = match.group(1).strip()
-                elif field == 'protocolo' and not doc.get('protocolo_autorizacao'):
-                    doc['protocolo_autorizacao'] = match.group(1).strip()
-                elif field == 'razao_social' and not doc['emitente'].get('razao_social'):
-                    doc['emitente']['razao_social'] = match.group(1).strip()
+                try:
+                    if field == 'cnpj' and not doc['emitente'].get('cnpj'):
+                        doc['emitente']['cnpj'] = match.group(1).strip()
+                    elif field == 'cpf' and not doc['destinatario'].get('cpf'):
+                        doc['destinatario']['cpf'] = match.group(1).strip()
+                    elif field == 'ie' and not doc['emitente'].get('inscricao_estadual'):
+                        doc['emitente']['inscricao_estadual'] = match.group(1).strip()
+                    elif field == 'data_emissao' and not doc.get('data_emissao'):
+                        date_str = match.group(1).strip()
+                        doc['data_emissao'] = self._format_date(date_str)
+                    elif field in ['valor_total', 'cte_valor_prestacao'] and not doc.get('valor_total'):
+                        try:
+                            doc['valor_total'] = float(match.group(1).replace('.', '').replace(',', '.'))
+                        except (ValueError, TypeError):
+                            pass
+                    elif field in ['numero', 'cte_numero'] and not doc.get('numero'):
+                        doc['numero'] = match.group(1).strip()
+                    elif field == 'chave_acesso' and not doc.get('chave_acesso'):
+                        doc['chave_acesso'] = match.group(1).strip()
+                    elif field == 'protocolo' and not doc.get('protocolo_autorizacao'):
+                        doc['protocolo_autorizacao'] = match.group(1).strip()
+                    elif field == 'razao_social' and not doc['emitente'].get('razao_social'):
+                        doc['emitente']['razao_social'] = match.group(1).strip()
+                    elif field == 'nome_destinatario' and not doc['destinatario'].get('razao_social'):
+                        doc['destinatario']['razao_social'] = match.group(1).strip()
+                    elif field == 'endereco_emitente' and not doc['emitente'].get('endereco', {}).get('logradouro'):
+                        doc['emitente']['endereco'] = doc['emitente'].get('endereco', {})
+                        doc['emitente']['endereco']['logradouro'] = match.group(1).strip()
+                    elif field == 'municipio_emitente' and not doc['emitente'].get('endereco', {}).get('municipio'):
+                        doc['emitente']['endereco'] = doc['emitente'].get('endereco', {})
+                        doc['emitente']['endereco']['municipio'] = match.group(1).strip()
+                    elif field == 'uf_emitente' and not doc['emitente'].get('endereco', {}).get('uf'):
+                        doc['emitente']['endereco'] = doc['emitente'].get('endereco', {})
+                        doc['emitente']['endereco']['uf'] = match.group(1).strip().upper()
+                    # Campos específicos do CT-e
+                    elif field == 'cte_serie' and not doc.get('serie'):
+                        doc['serie'] = match.group(1).strip()
+                    elif field == 'cte_modal' and not doc.get('modal'):
+                        doc['modal'] = match.group(1).strip()
+                    elif field == 'cte_tipo_servico' and not doc.get('tipo_servico'):
+                        doc['tipo_servico'] = match.group(1).strip()
+                    elif field == 'cte_uf_inicio' and not doc.get('uf_inicio'):
+                        doc['uf_inicio'] = match.group(1).strip().upper()
+                    elif field == 'cte_uf_fim' and not doc.get('uf_fim'):
+                        doc['uf_fim'] = match.group(1).strip().upper()
+                    elif field == 'cte_municipio_inicio' and not doc.get('municipio_inicio'):
+                        doc['municipio_inicio'] = match.group(1).strip()
+                    elif field == 'cte_municipio_fim' and not doc.get('municipio_fim'):
+                        doc['municipio_fim'] = match.group(1).strip()
+                except Exception as e:
+                    logger.warning(f"Erro ao processar campo {field}: {str(e)}")
                 elif field == 'nome_destinatario' and not doc['destinatario'].get('razao_social'):
                     doc['destinatario']['razao_social'] = match.group(1).strip()
         

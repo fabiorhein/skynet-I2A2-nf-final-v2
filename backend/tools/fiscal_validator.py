@@ -538,11 +538,13 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
     doc_type = doc.get('document_type', '').upper()
     if not doc_type:
         # Tenta inferir o tipo de documento com base nos campos existentes
-        if 'nfeProc' in doc or 'NFe' in doc:
+        if doc.get('tipo_documento'):
+            doc_type = doc.get('tipo_documento').upper()
+        elif 'nfeProc' in doc or 'NFe' in doc or 'nfe' in str(doc).lower():
             doc_type = 'NFE'
-        elif 'cteProc' in doc or 'CTe' in doc:
+        elif 'cteProc' in doc or 'CTe' in doc or 'cte' in str(doc).lower():
             doc_type = 'CTE'
-        elif 'mdfeProc' in doc or 'MDFe' in doc:
+        elif 'mdfeProc' in doc or 'MDFe' in doc or 'mdfe' in str(doc).lower():
             doc_type = 'MDFE'
         elif 'nfe' in doc.get('chave', '').lower():
             doc_type = 'NFE'

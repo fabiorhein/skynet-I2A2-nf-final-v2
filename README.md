@@ -9,12 +9,14 @@ Sistema avançado para processamento de documentos fiscais com suporte a extraç
 
 ## ✨ **Novidades da Versão Atual**
 
+- ✅ **Tratamento de Datas Aprimorado**: Corrigido erro `'datetime.datetime' object is not subscriptable` em todas as páginas
+- ✅ **Padronização de Campos**: Substituição de `session_name` para `title` em todo o sistema
 - ✅ **PostgreSQL Nativo**: Substituição completa do sistema Supabase por PostgreSQL direto
 - ✅ **Campos Destinatário**: Suporte completo a `recipient_cnpj` e `recipient_name`
 - ✅ **Conversão de Data Automática**: Suporte a formato brasileiro (DD/MM/YYYY) → ISO
 - ✅ **Sistema de Migrações Avançado**: Script `run_migration.py` para todas as plataformas
 - ✅ **Testes Completos**: Cobertura de testes para todas as funcionalidades
-- ✅ **Correções de Bugs**: Resolução de todos os problemas de upload e validação
+- ✅ **Correções de Bugs**: Resolução de problemas críticos de upload, validação e exibição
 
 ## 🚀 **Início Rápido**
 
@@ -114,9 +116,26 @@ Toda a documentação foi consolidada neste README.md único. Este arquivo cont�
 - ✅ **Histórico de Correções** - Detalhes técnicos
 - ✅ **Contribuição** - Como ajudar o projeto
 
+### ✅ Melhorias Recentes
+
+#### **1. Tratamento de Datas Aprimorado**
+- **Problema:** Erro `'datetime.datetime' object is not subscriptable` ao exibir datas
+- **Solução:**
+  - Implementado tratamento robusto para objetos `datetime` em todas as páginas
+  - Adicionada conversão segura para strings formatadas
+  - Suporte a diferentes formatos de data/hora
+  - Páginas afetadas: Chat, Histórico e RAG
+
+#### **2. Padronização de Campos**
+- **Problema:** Inconsistência entre `session_name` e `title`
+- **Solução:**
+  - Padronizado para uso exclusivo do campo `title`
+  - Atualizadas todas as consultas e exibições
+  - Melhorada a consistência dos dados
+
 ### ✅ Problemas Resolvidos
 
-#### **1. Método Faltante no FallbackEmbeddingService**
+#### **3. Método Faltante no FallbackEmbeddingService**
 - **Erro:** `'FallbackEmbeddingService' object has no attribute 'process_document_for_embedding'`
 - **Solução:** Implementado método `process_document_for_embedding` com fallback automático
 
@@ -1043,200 +1062,6 @@ Este teste verifica:
    streamlit run app.py
    ```
 
-4. **Testar:**
-   ```bash
-   python scripts/test_complete_validation.py
-   ```
-
-### 🎯 **Arquitetura Final**
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    SkyNET-I2A2                          │
-│  Sistema Fiscal com RAG Inteligente                     │
-├─────────────────────────────────────────────────────────┤
-│  Frontend (Streamlit)                                   │
-│  • Pages: Home, Importador, Chat IA, Histórico, RAG     │
-│  • Components: Document Renderer                         │
-├─────────────────────────────────────────────────────────┤
-│  Backend Services                                       │
-│  • PostgreSQL Direto: TODAS as operações                │
-│  • pgvector: Busca semântica 768d                       │
-│  • RAG: Chunks + embeddings                             │
-│  • Configuração: secrets.toml                           │
-├─────────────────────────────────────────────────────────┤
-│  Database Layer                                         │
-│  • Tabelas: fiscal_documents, chunks, insights, chat    │
-│  • Índices: 15+ para performance                        │
-│  • Funções: search_similar_documents(), get_context()   │
-└─────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🎉 **CONFIGURAÇÃO DO SUPABASE ATUALIZADA!**
-
-### ✅ **Novas Credenciais PostgreSQL**
-
-As configurações do Supabase foram atualizadas no arquivo `secrets.toml`:
-
-```toml
-# Database Connection (for migrations) - new format
-HOST = "aws-1-us-east-2.pooler.supabase.com"
-PORT = "6543"
-DATABASE = "postgres"
-USER = "postgres.epeiawebuhyclyvvoaem"
-PASSWORD = "lqyqp7ClHDg9mkdK"
-POOL_MODE = "transaction"
-SSL_MODE = "require"
-CONNECT_TIMEOUT = "10"
-```
-
-### 🔧 **Config.py Atualizado**
-
-O arquivo `config.py` foi atualizado para:
-- ✅ Priorizar configurações do nível raiz do `secrets.toml`
-- ✅ Incluir todos os parâmetros PostgreSQL (ssl_mode, connect_timeout, pool_mode)
-- ✅ Gerar strings de conexão corretas
-- ✅ Compatibilidade com as novas credenciais do Supabase
-
-### 🚀 **Como Usar Agora**
-
-#### **1. Configuração Única do Banco:**
-```bash
-# Execute apenas uma vez com a migração corrigida
-python scripts/run_migration.py --single 101-complete_database_setup_fixed.sql
-```
-
-#### **2. Instalar Dependências:**
-```bash
-sudo apt-get install python3-psycopg2
-pip install -r requirements.txt
-```
-
-#### **3. Executar Sistema:**
-```bash
-streamlit run app.py
-```
-
-#### **4. Testar Configurações:**
-```bash
-python scripts/test_supabase_config.py
-python scripts/test_complete_validation.py
-```
-
-### 📊 **Status das Configurações**
-
-| Configuração | Status | Valor |
-|--------------|--------|-------|
-| **Host** | ✅ | `aws-1-us-east-2.pooler.supabase.com` |
-| **Port** | ✅ | `6543` |
-| **User** | ✅ | `postgres.epeiawebuhyclyvvoaem` |
-| **SSL Mode** | ✅ | `require` |
-| **Connect Timeout** | ✅ | `10` |
-| **Pool Mode** | ✅ | `transaction` |
-
-### 🎯 **Validação do Sistema**
-
-Execute os testes para confirmar que tudo está funcionando:
-
-```bash
-# Teste das configurações do Supabase
-python scripts/test_supabase_config.py
-
-# Validação completa do sistema
-python scripts/test_complete_validation.py
-
-# Teste da migração consolidada
-python scripts/run_migration.py --single 101-complete_database_setup_fixed.sql
-```
-
-### ✅ **Problemas Resolvidos**
-
-| Problema | Status | Solução |
-|----------|--------|---------|
-| ❌ `foreign key constraint` | ✅ **ELIMINADO** | PostgreSQL direto + migração consolidada |
-| ❌ `Document not found` | ✅ **ELIMINADO** | Migração corrigida |
-| ❌ `Configurações Supabase` | ✅ **ELIMINADO** | Config.py atualizado |
-| ❌ `Migração com erro` | ✅ **ELIMINADO** | Queries problemáticas removidas |
-
----
-
-## 🎉 **SISTEMA 100% FUNCIONAL!**
-
-### ✅ **Arquitetura Final:**
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    SkyNET-I2A2                          │
-│  Sistema Fiscal com RAG Inteligente                     │
-├─────────────────────────────────────────────────────────┤
-│  Frontend (Streamlit)                                   │
-│  • Pages: Home, Importador, Chat IA, Histórico, RAG     │
-│  • Components: Document Renderer                         │
-├─────────────────────────────────────────────────────────┤
-│  Backend Services                                       │
-│  • PostgreSQL Direto: aws-1-us-east-2.pooler.supabase.com│
-│  • pgvector: Busca semântica 768d                       │
-│  • RAG: Chunks + embeddings                             │
-│  • Configuração: secrets.toml atualizado                 │
-├─────────────────────────────────────────────────────────┤
-│  Database Layer                                         │
-│  • Tabelas: fiscal_documents, chunks, insights, chat    │
-│  • Índices: 15+ para performance                        │
-│  • Funções: search_similar_documents(), get_context()   │
-└─────────────────────────────────────────────────────────┘
-```
-
-### 🚀 **Para Começar:**
-
-1. **Configure o banco (uma vez):**
-   ```bash
-   python scripts/run_migration.py --single 101-complete_database_setup_fixed.sql
-   ```
-
-2. **Execute o sistema:**
-   ```bash
-   streamlit run app.py
-   ```
-
-3. **Teste tudo:**
-   ```bash
-   python scripts/test_supabase_config.py
-   python scripts/test_complete_validation.py
-   ```
-
-**🎉 Parabéns! O sistema SkyNET-I2A2 está 100% funcional com PostgreSQL direto do Supabase!**
-
-**💡 Todos os problemas de foreign key constraint foram eliminados e o sistema está pronto para processar documentos fiscais!** 🚀
-
-#### ❌ "violates foreign key constraint" (formato JSONB)
-**Solução**: save_fiscal_document retornando campos JSONB como strings em vez de dicionários.
-
-**Causa**: O método save_fiscal_document não estava convertendo campos JSONB de volta para dicionários Python, causando incompatibilidade com o embedding service.
-
-**Correção Implementada**:
-```python
-# No save_fiscal_document, adicionar conversão JSONB
-jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data']
-for field in jsonb_fields:
-    if field in saved_doc and saved_doc[field] is not None:
-        if isinstance(saved_doc[field], str):
-            saved_doc[field] = json.loads(saved_doc[field])
-```
-
-**Resultado**: Documento retornado com formato correto para RAG processing.
-
-### Verificação do Sistema
-
-```bash
-# Testar sistema de chat
-python scripts/test_chat_system.py
-
-# Verificar migrações
-python scripts/run_migration.py --help
-
-# Executar testes
 pytest tests/test_postgresql_storage.py -v
 pytest tests/test_date_conversion.py -v
 pytest tests/test_recipient_fields.py -v

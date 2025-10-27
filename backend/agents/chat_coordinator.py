@@ -67,6 +67,45 @@ class ChatCoordinator:
                 'metadata': {'error': True}
             }
 
+    async def save_message(
+        self,
+        session_id: str,
+        message_type: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Save a message to the chat session.
+        
+        Args:
+            session_id: The ID of the chat session
+            message_type: Type of message ('user' or 'assistant')
+            content: The message content
+            metadata: Optional metadata for the message
+        """
+        try:
+            await self.chat_agent.save_message(
+                session_id=session_id,
+                message_type=message_type,
+                content=content,
+                metadata=metadata or {}
+            )
+            logger.info(f"Message saved - Session: {session_id}, Type: {message_type}")
+        except Exception as e:
+            logger.error(f"Error saving message: {e}")
+            raise
+            
+    async def get_session_history(self, session_id: str) -> List[Dict[str, Any]]:
+        """Get chat history for a session."""
+        try:
+            # Get messages from storage
+            messages = await self.chat_agent.get_conversation_history(session_id)
+            logger.info(f"Retrieved {len(messages)} messages for session {session_id}")
+            return messages
+            
+        except Exception as e:
+            logger.error(f"Error getting session history: {e}")
+            return []
+
     async def _enhance_context(
         self,
         query: str,
