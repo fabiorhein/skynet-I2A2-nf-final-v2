@@ -48,7 +48,12 @@ _file_secrets = _read_secrets_file(_secrets_file)
 
 # Compose final secrets: env vars override Streamlit secrets override file secrets
 def _get(key: str, default=None):
-    return os.getenv(key) or _streamlit_secrets.get(key) or _file_secrets.get(key) or default
+    # For Supabase database configuration, prioritize file secrets over environment variables
+    # to avoid conflicts with system user variables
+    if key in ['USER', 'user', 'PASSWORD', 'password', 'HOST', 'host', 'PORT', 'port', 'DATABASE', 'database']:
+        return _file_secrets.get(key) or _streamlit_secrets.get(key) or os.getenv(key) or default
+    else:
+        return os.getenv(key) or _streamlit_secrets.get(key) or _file_secrets.get(key) or default
 
 
 # Common config entries
@@ -75,7 +80,7 @@ FISCAL_VALIDATOR_CONFIG = {
     'cache_enabled': _get('FISCAL_VALIDATOR.cache_enabled', 'true').lower() == 'true',
     'cache_dir': _get('FISCAL_VALIDATOR.cache_dir', '.fiscal_cache'),
     'cache_ttl_days': int(_get('FISCAL_VALIDATOR.cache_ttl_days', '30')),
-    'model_name': 'gemini-pro'  # Pode ser sobrescrito se necessário
+    'model_name': 'gemini-1.5-flash'  # Pode ser sobrescrito se necessário
 }
 
 # Database connection details for direct database access (migrations and direct queries)
@@ -136,7 +141,6 @@ if not TESSERACT_PATH:
 if TESSDATA_PREFIX and 'TESSDATA_PREFIX' not in os.environ:
     os.environ['TESSDATA_PREFIX'] = TESSDATA_PREFIX
 
-GOOGLE_API_KEY = _get('GOOGLE_API_KEY')
 LOG_LEVEL = _get('LOG_LEVEL', 'INFO')
 
 

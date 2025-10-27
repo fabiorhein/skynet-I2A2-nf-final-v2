@@ -3,7 +3,7 @@ import sys
 import pathlib
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from backend.storage import LocalJSONStorage
+from backend.database.local_storage import LocalJSONStorage
 import pytest
 from pathlib import Path
 from storage_compliance import StorageComplianceTests

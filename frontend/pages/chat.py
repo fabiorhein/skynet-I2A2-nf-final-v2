@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 def get_chat_coordinator():
     """Get or create chat coordinator instance."""
     try:
-        from backend.storage import storage_manager
+        from backend.database import storage_manager
         return ChatCoordinator(storage_manager.supabase_client)
     except Exception as e:
         st.error(f"Erro ao inicializar chat: {e}")

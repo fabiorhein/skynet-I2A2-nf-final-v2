@@ -12,7 +12,7 @@ from pathlib import Path
 import json
 
 # Import the storage manager
-from backend.storage import storage_manager, StorageManager
+from backend.database import storage_manager, StorageManager
 
 # Initialize storage backend
 storage = storage_manager.storage
