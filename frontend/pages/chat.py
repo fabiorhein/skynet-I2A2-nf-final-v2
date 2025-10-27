@@ -140,16 +140,7 @@ def render():
     with chat_container:
         if not st.session_state.chat_messages:
             st.info("Esta é uma nova sessão. Faça sua primeira pergunta!")
-
-        for message in st.session_state.chat_messages:
-            if hasattr(message, 'type') and message.type == 'user':
-                with st.chat_message("user"):
-                    st.write(message.content)
-            elif hasattr(message, 'type') and message.type == 'assistant':
-                with st.chat_message("assistant"):
-                    st.write(message.content)
         else:
-            # Fallback for dict messages
             for message in st.session_state.chat_messages:
                 if isinstance(message, dict):
                     msg_type = message.get('message_type', 'user')
@@ -175,12 +166,14 @@ def render():
         with st.chat_message("user"):
             st.write(prompt)
 
-        # Add to session state
-        st.session_state.chat_messages.append({
-            'message_type': 'user',
-            'content': prompt,
-            'timestamp': datetime.now().isoformat()
-        })
+        # Update session state with user message
+        try:
+            # The message will be saved by process_query
+            st.session_state.chat_messages = asyncio.run(chat_coordinator.get_session_history(st.session_state.chat_session_id))
+            
+        except Exception as e:
+            st.error(f"Erro ao salvar mensagem: {e}")
+            return
 
         # Show loading
         with st.chat_message("assistant"):
@@ -197,13 +190,13 @@ def render():
                         # Display response
                         st.write(response['response'])
 
-                        # Add assistant response to session state
-                        st.session_state.chat_messages.append({
-                            'message_type': 'assistant',
-                            'content': response['response'],
-                            'metadata': response.get('metadata', {}),
-                            'timestamp': datetime.now().isoformat()
-                        })
+                        # Update session state with assistant response
+                        try:
+                            # The response is already saved by process_query
+                            st.session_state.chat_messages = asyncio.run(chat_coordinator.get_session_history(st.session_state.chat_session_id))
+                            
+                        except Exception as e:
+                            st.error(f"Erro ao salvar resposta do assistente: {e}")
 
                     else:
                         st.error(f"Erro: {response.get('error', 'Erro desconhecido')}")
@@ -212,6 +205,8 @@ def render():
                     st.error(f"Erro ao processar pergunta: {e}")
                     logger.error(f"Chat error: {e}")
 
-    # Footer
+    # Footer - Apenas uma dica será exibida
     st.markdown("---")
-    st.caption("💡 Dica: Faça perguntas sobre documentos fiscais para obter informações detalhadas.")
+    if not st.session_state.get('dica_exibida', False):
+        st.caption("💡 Dica: Faça perguntas sobre documentos fiscais para obter informações detalhadas.")
+        st.session_state.dica_exibida = True

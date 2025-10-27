@@ -521,31 +521,62 @@ class PostgreSQLStorage(StorageInterface):
             query = """
                 INSERT INTO chat_messages (session_id, message_type, content, metadata)
                 VALUES (%s, %s, %s, %s)
+                RETURNING id, created_at
             """
-            self._execute_query(query, (session_id, message_type, content, Json(metadata or {})), fetch=None)
+            result = self._execute_query(
+                query, 
+                (session_id, message_type, content, Json(metadata or {})), 
+                fetch="one"
+            )
+            logger.info(f"✅ Mensagem salva - ID: {result['id']}, Tipo: {message_type}, Sessão: {session_id}")
+            logger.debug(f"Conteúdo: {content[:100]}...")
 
         except Exception as e:
             logger.error(f"Error saving chat message: {e}")
+            logger.error(f"Session ID: {session_id}, Type: {message_type}")
+            logger.error(f"Content: {content}")
+            logger.error(f"Metadata: {metadata}")
             raise
 
-    def get_chat_messages(self, session_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_chat_messages(self, session_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Get chat messages for a session."""
         try:
+            logger.info(f"🔍 Buscando mensagens para a sessão: {session_id}")
+            
+            # Primeiro, verifica se a sessão existe
+            session_check = self._execute_query(
+                "SELECT id FROM chat_sessions WHERE id = %s",
+                (session_id,),
+                fetch="one"
+            )
+            
+            if not session_check:
+                logger.error(f"Sessão não encontrada: {session_id}")
+                return []
+            
+            # Busca as mensagens
             query = """
-                SELECT * FROM chat_messages
+                SELECT id, session_id, message_type, content, created_at, metadata
+                FROM chat_messages
                 WHERE session_id = %s
-                ORDER BY created_at DESC
+                ORDER BY created_at ASC
                 LIMIT %s
             """
             results = self._execute_query(query, (session_id, limit), fetch="all")
+            logger.info(f"📨 Mensagens encontradas: {len(results)} para a sessão {session_id}")
 
-            # Convert JSONB metadata back to dict
+            # Converte os resultados
             messages = []
-            for result in results:
-                msg = dict(result)
-                if msg.get('metadata'):
-                    msg['metadata'] = msg['metadata'] if isinstance(msg['metadata'], dict) else {}
-                messages.append(msg)
+            for idx, result in enumerate(results, 1):
+                try:
+                    msg = dict(result)
+                    if msg.get('metadata') and not isinstance(msg['metadata'], dict):
+                        msg['metadata'] = {}
+                    messages.append(msg)
+                    logger.debug(f"Mensagem {idx}: {msg.get('message_type')} - {msg.get('content')[:50]}...")
+                except Exception as e:
+                    logger.error(f"Erro ao processar mensagem {idx}: {e}")
+                    continue
 
             return messages
 
