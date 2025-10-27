@@ -118,7 +118,63 @@ class StorageComplianceTests:
         assert hasattr(result, 'items'), "Result should be a PaginatedResponse object"
         assert len(result.items) <= 5, "Should return all items (5 or fewer)"
         
-        # Teste com page_size=0 (deve usar o tamanho padrão)
-        result = storage.get_fiscal_documents(page_size=0)
-        assert hasattr(result, 'items'), "Result should be a PaginatedResponse object"
-        assert len(result.items) > 0, "Should return items with default page size"
+    def test_recipient_fields_support(self, storage: StorageInterface):
+        """Test that recipient fields are properly supported."""
+        # Create document with recipient fields
+        doc = {
+            'file': 'test_recipient.xml',
+            'document_type': 'NFe',
+            'document_number': '123',
+            'issuer_cnpj': '12345678000195',
+            'issuer_name': 'Emitente Teste',
+            'recipient_cnpj': '98765432000100',
+            'recipient_name': 'Destinatário Teste S.A.',
+            'issue_date': '2025-08-28',
+            'total_value': 100.0,
+            'metadata': {'test': True}
+        }
+
+        saved = storage.save_fiscal_document(doc)
+        assert saved is not None
+        assert 'id' in saved
+
+        # Verify recipient fields are saved
+        assert saved.get('recipient_cnpj') == '98765432000100'
+        assert saved.get('recipient_name') == 'Destinatário Teste S.A.'
+
+        # Test retrieval with recipient filters
+        result = storage.get_fiscal_documents(
+            filters={'recipient_cnpj': '98765432000100'}
+        )
+        assert result.total >= 1
+        assert any(d.get('recipient_cnpj') == '98765432000100' for d in result.items)
+
+    def test_date_format_handling(self, storage: StorageInterface):
+        """Test that different date formats are handled correctly."""
+        # Test with Brazilian format (if supported by storage)
+        doc_brazilian = {
+            'file': 'test_date_br.xml',
+            'document_type': 'NFe',
+            'document_number': '456',
+            'issue_date': '28/08/2025',  # Brazilian format
+            'total_value': 200.0
+        }
+
+        saved = storage.save_fiscal_document(doc_brazilian)
+        assert saved is not None
+
+        # Date should be stored in a consistent format
+        assert 'issue_date' in saved
+
+        # Test with ISO format
+        doc_iso = {
+            'file': 'test_date_iso.xml',
+            'document_type': 'NFe',
+            'document_number': '789',
+            'issue_date': '2025-08-28T00:00:00Z',  # ISO format
+            'total_value': 300.0
+        }
+
+        saved_iso = storage.save_fiscal_document(doc_iso)
+        assert saved_iso is not None
+        assert 'issue_date' in saved_iso

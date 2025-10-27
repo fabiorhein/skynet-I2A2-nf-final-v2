@@ -215,18 +215,115 @@ def test_validate_document_empty():
     assert any('Documento não contém itens' in issue for issue in result['issues'])
     assert not result['validations']['itens']['has_items']
 
-def test_validate_document_missing_items():
-    """Test validation with missing items"""
-    doc = {
+def test_validate_document_with_recipient_fields():
+    """Test validation with recipient fields."""
+    doc_with_recipient = {
+        'emitente': {
+            'cnpj': '33.453.678/0001-00',
+            'razao_social': 'Empresa Teste LTDA',
+            'nome': 'Empresa Teste LTDA'
+        },
+        'destinatario': {
+            'cnpj': '12.345.678/0001-99',
+            'razao_social': 'Cliente Teste SA',
+            'nome': 'Cliente Teste SA'
+        },
+        'itens': [
+            {'descricao': 'Produto 1', 'quantidade': 2, 'valor_unitario': 50.0, 'valor_total': 100.0, 'ncm': '1234.56.78', 'cfop': '5102', 'quantity': 2},
+            {'descricao': 'Produto 2', 'quantidade': 1, 'valor_unitario': 200.0, 'valor_total': 200.0, 'ncm': '8765.43.21', 'cfop': '5102', 'quantity': 1}
+        ],
+        'total': 300.0,
+        'cfop': '5102',
+        'document_type': 'NFe',
+        'numero': '12345',
+        'data_emissao': '2025-10-24',
+        'impostos': {
+            'icms': {'cst': '00', 'aliquota': 18.0, 'valor': 54.0},
+            'pis': {'cst': '01', 'aliquota': 1.65, 'valor': 4.95},
+            'cofins': {'cst': '01', 'aliquota': 7.6, 'valor': 22.8},
+            'ipi': {'cst': '50', 'aliquota': 0.0, 'valor': 0.0}
+        }
+    }
+
+    result = validate_document(doc_with_recipient)
+
+    # Should validate successfully with recipient
+    assert result['status'] == 'warning'  # Warning due to test CNPJ/NCM
+
+    # Check recipient validation
+    assert 'destinatario' in result['validations']
+    assert result['validations']['destinatario']['cnpj'] is True  # Test CNPJ is valid
+    assert result['validations']['destinatario']['razao_social'] == 'Cliente Teste SA'
+
+    # Check that recipient fields are preserved in extracted data
+    assert result['validations']['destinatario']['razao_social'] == 'Cliente Teste SA'
+
+
+def test_validate_document_with_icms_st():
+    """Test validation with ICMS ST taxes."""
+    doc_with_icms_st = {
         'emitente': {
             'cnpj': '33.453.678/0001-00',
             'razao_social': 'Empresa Teste LTDA'
         },
-        'itens': [],
-        'total': 0.0
+        'itens': [
+            {'descricao': 'Produto 1', 'quantidade': 1, 'valor_unitario': 100.0, 'valor_total': 100.0, 'ncm': '1234.56.78', 'cfop': '5102'}
+        ],
+        'total': 100.0,
+        'cfop': '5102',
+        'document_type': 'NFe',
+        'numero': '12345',
+        'data_emissao': '2025-10-24',
+        'impostos': {
+            'icms': {'cst': '00', 'aliquota': 18.0, 'valor': 18.0},
+            'icms_st': {
+                'cst': '41',
+                'valor': 10.0,
+                'mva': 50.0,
+                'aliquota': 18.0
+            }
+        }
     }
-    
-    result = validate_document(doc)
-    assert result['status'] == 'error'
-    assert any('Documento não contém itens' in issue for issue in result['issues'])
-    assert not result['validations']['itens']['has_items']
+
+    result = validate_document(doc_with_icms_st)
+
+    # Should not crash with ICMS ST
+    assert result['status'] in ['success', 'warning', 'error']
+
+    # Check that ICMS ST validation details are present
+    assert 'impostos' in result['validations']
+    # The validation should not fail due to undefined icms_st variable
+
+    # Verify no internal errors occurred
+    assert not any('icms_st' in str(issue).lower() and 'not associated' in str(issue)
+                  for issue in result.get('issues', []))
+
+
+def test_validate_document_without_icms_st():
+    """Test validation without ICMS ST taxes."""
+    doc_without_icms_st = {
+        'emitente': {
+            'cnpj': '33.453.678/0001-00',
+            'razao_social': 'Empresa Teste LTDA'
+        },
+        'itens': [
+            {'descricao': 'Produto 1', 'quantidade': 1, 'valor_unitario': 100.0, 'valor_total': 100.0, 'ncm': '1234.56.78', 'cfop': '5102'}
+        ],
+        'total': 100.0,
+        'cfop': '5102',
+        'document_type': 'NFe',
+        'numero': '12345',
+        'data_emissao': '2025-10-24',
+        'impostos': {
+            'icms': {'cst': '00', 'aliquota': 18.0, 'valor': 18.0}
+            # No ICMS ST
+        }
+    }
+
+    result = validate_document(doc_without_icms_st)
+
+    # Should validate successfully without ICMS ST
+    assert result['status'] in ['success', 'warning', 'error']
+
+    # Should not have ICMS ST in validation details if not present
+    # But should not crash due to undefined variable
