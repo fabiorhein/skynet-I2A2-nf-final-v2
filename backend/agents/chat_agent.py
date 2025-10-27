@@ -20,7 +20,27 @@ import re
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from config import GOOGLE_API_KEY, SUPABASE_URL, SUPABASE_KEY
+import os
+import sys
+
+# Adiciona o diretório raiz ao path para garantir que as importações funcionem
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+try:
+    from config import GOOGLE_API_KEY, SUPABASE_URL, SUPABASE_KEY
+except ImportError:
+    # Tenta carregar do ambiente ou secrets do Streamlit
+    import os
+    import streamlit as st
+    
+    # Tenta obter do ambiente ou do secrets do Streamlit
+    def get_config_value(key, default=None):
+        return os.getenv(key) or getattr(st.secrets, key, default) if hasattr(st, 'secrets') else os.getenv(key, default)
+    
+    GOOGLE_API_KEY = get_config_value('GOOGLE_API_KEY')
+    SUPABASE_URL = get_config_value('SUPABASE_URL') or get_config_value('connections.supabase.URL')
+    SUPABASE_KEY = get_config_value('SUPABASE_KEY') or get_config_value('connections.supabase.KEY')
+
 from backend.services.document_analyzer import DocumentAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -59,7 +79,7 @@ class DocumentSearchEngine:
 
         try:
             # Use storage to get all documents and filter by query
-            all_docs = self.storage.get_fiscal_documents(page=1, page_size=1000)
+            all_docs = await self.storage.get_fiscal_documents(page=1, page_size=1000)
 
             # Filter documents containing the query
             filtered_docs = []
@@ -76,7 +96,7 @@ class DocumentSearchEngine:
 
             for doc in documents:
                 # Get document summaries if available
-                doc_summaries = self.storage.get_fiscal_documents(
+                doc_summaries = await self.storage.get_fiscal_documents(
                     id=doc['id'], page=1, page_size=1
                 )
                 if doc_summaries.items:
@@ -84,7 +104,7 @@ class DocumentSearchEngine:
                     pass
 
                 # Get analysis insights for this document
-                doc_insights = self.storage.get_fiscal_documents(
+                doc_insights = await self.storage.get_fiscal_documents(
                     id=doc['id'], page=1, page_size=1
                 )
                 if doc_insights.items and doc_insights.items[0].get('classification'):
@@ -335,20 +355,31 @@ class ChatAgent:
         """Obtém um resumo dos documentos com base nos filtros fornecidos."""
         return await self.document_analyzer.get_documents_summary(filters)
 
-    async def _get_all_documents_summary(self) -> Dict[str, Any]:
-        """Obtém um resumo de TODOS os documentos para análise de categorias."""
-        return await self.document_analyzer.get_all_documents_summary()
+    async def _get_all_documents_summary(self, time_filter=None) -> Dict[str, Any]:
+        """
+        Obtém um resumo dos documentos para análise de categorias.
+        
+        Args:
+            time_filter: Filtra documentos criados após esta data/hora.
+                        Se None, retorna todos os documentos.
+        """
+        return await self.document_analyzer.get_all_documents_summary(time_filter=time_filter)
 
     def _is_summary_request(self, query: str) -> bool:
         """Verifica se a pergunta é sobre resumo/categorias de documentos."""
         query_lower = query.lower()
         summary_keywords = [
-            'resumo', 'sumário', 'categoria', 'tipos de', 'categorias',
-            'resumir', 'distribuição', 'mostrar categorias', 'categorias dos documentos'
+            'resumo', 'categorias', 'tipos de documentos', 'distribuição',
+            'quantos documentos', 'quais categorias', 'quais tipos',
+            'visão geral', 'análise geral', 'estatísticas', 'estatistica',
+            'estatísticas dos documentos', 'estatistica dos documentos',
+            'resumo dos documentos', 'categorias de documentos', 'tipos de nota',
+            'quais são as categorias', 'quantos de cada tipo', 'distribuição de documentos'
         ]
-
-        # Não é resumo se for claramente sobre contagem total ou lista
-        count_keywords = ['quantidade total', 'quantos documentos', 'total de', 'contagem']
+        count_keywords = [
+            'quantidade total', 'quantos documentos', 'quantas notas',
+            'total de notas', 'número total', 'contagem total'
+        ]
         list_keywords = ['lista', 'listar', 'todos os documentos', 'todas as notas', 'me traga uma lista']
 
         has_summary = any(keyword in query_lower for keyword in summary_keywords)
@@ -358,16 +389,20 @@ class ChatAgent:
         return has_summary and not has_count and not has_list
 
     def _is_list_request(self, query: str) -> bool:
-        """Verifica se a pergunta é sobre lista específica de documentos."""
+        """Verifica se a consulta é um pedido de listagem de documentos."""
         query_lower = query.lower()
+        
+        # Lista de palavras-chave que indicam um pedido de listagem
         list_keywords = [
-            'lista', 'listar', 'todos os documentos', 'todas as notas',
-            'me traga uma lista', 'mostrar todos', 'exibir todos',
-            'documentos fiscais que foram inseridas',
-            'notas que foram cadastradas', 'inseridas no banco',
-            'com cnpj', 'com valor', 'com descrição'
+            'listar', 'mostrar', 'quais são', 'quais foram', 'quais são as',
+            'mostre', 'mostrar', 'todos os', 'todas as', 'últimas', 'recentes',
+            'notas fiscais', 'documentos fiscais', 'notas', 'documentos',
+            'lista de', 'listagem de', 'relatório de', 'relatorio de',
+            'últimos', 'últimas', 'último', 'última', 'importados', 'importadas',
+            'minutos', 'hora', 'horas', 'dia', 'dias', 'semana', 'semanas'
         ]
-
+        
+        # Verifica se a consulta contém pelo menos uma palavra-chave de listagem
         return any(keyword in query_lower for keyword in list_keywords)
 
     def _is_count_request(self, query: str) -> bool:
@@ -571,63 +606,156 @@ Responda em português."""
     async def _handle_list_request(self, session_id: str, query: str) -> ChatResponse:
         """Handle requests for document lists using LLM for natural response."""
         try:
-            summary_data = await self._get_all_documents_summary()
-
+            query_lower = query.lower()
+            time_filter = None
+            
+            # Verifica se é um pedido de últimas notas/dados recentes
+            is_recent_query = any(word in query_lower for word in [
+                'últimas notas', 'notas recentes', 'últimos documentos', 
+                'documentos recentes', 'notas fiscais recentes', 'últimas notas fiscais',
+                'mais recentes', 'notas mais recentes', 'documentos mais recentes',
+                'últimos lançamentos', '10 últimas notas', 'dez últimas notas',
+                'últimos registros', 'registros recentes'
+            ])
+            
+            # Verifica se há um filtro de tempo específico na consulta
+            import re
+            from datetime import datetime, timedelta
+            
+            time_patterns = [
+                (r'(\d+)\s*minutos?\s*atrás', 'minutes'),
+                (r'(\d+)\s*horas?\s*atrás', 'hours'),
+                (r'(\d+)\s*dias?\s*atrás', 'days'),
+                (r'(\d+)\s*semanas?\s*atrás', 'weeks'),
+                (r'últimos?\s*(\d+)\s*minutos?', 'minutes'),
+                (r'últimas?\s*(\d+)\s*horas?', 'hours'),
+                (r'últimos?\s*(\d+)\s*dias?', 'days'),
+                (r'últimas?\s*(\d+)\s*semanas?', 'weeks'),
+                (r'nos\s*últimos?\s*(\d+)\s*minutos?', 'minutes'),
+                (r'nas\s*últimas?\s*(\d+)\s*horas?', 'hours'),
+                (r'nos\s*últimos?\s*(\d+)\s*dias?', 'days'),
+                (r'nas\s*últimas?\s*(\d+)\s*semanas?', 'weeks'),
+            ]
+            
+            for pattern, unit in time_patterns:
+                match = re.search(pattern, query_lower)
+                if match:
+                    value = int(match.group(1))
+                    delta = timedelta(**{unit: value})
+                    time_filter = datetime.now() - delta
+                    is_recent_query = True
+                    break
+            
+            # Busca os documentos com ordenação por data e filtro de tempo
+            summary_data = await self._get_all_documents_summary(time_filter=time_filter)
+            
             if not summary_data or summary_data['total_documents'] == 0:
                 # Use Gemini for natural response even when no documents
-                prompt = f"""O usuário pediu uma lista de documentos fiscais, mas não foram encontrados documentos no banco de dados.
+                prompt = """O usuário pediu uma lista de documentos fiscais, mas não foram encontrados documentos no banco de dados.
 
 Por favor, responda de forma natural explicando que não há documentos disponíveis no sistema."""
             else:
-                # Prepare raw data for Gemini
+                # Prepara os dados brutos para o Gemini
                 total = summary_data['total_documents']
                 documents = summary_data['documents']
-
-                prompt = f"""O usuário pediu uma lista com todos os documentos fiscais do banco de dados.
+                
+                # Ordena os documentos por data de criação (mais recentes primeiro)
+                documents_sorted = sorted(
+                    documents, 
+                    key=lambda x: x.get('created_at', ''), 
+                    reverse=True
+                )
+                
+                # Para consultas de 'últimas notas', limita a 10 itens
+                limit = 10 if is_recent_query else 15
+                documents_to_show = documents_sorted[:limit]
+                
+                # Prepara o prompt baseado no tipo de consulta
+                if is_recent_query:
+                    prompt = """O usuário pediu uma lista com as notas fiscais mais recentes do banco de dados.
 
 **Dados brutos encontrados:**
-- Total de documentos: {total}
-- Valor total: R$ {summary_data['total_value']:,.2f}
+- Total de documentos: {}
+- Valor total: R$ {:.2f}
+- Mostrando as {} notas mais recentes:
 
-**Lista de documentos (primeiros 15 para não sobrecarregar):**
-"""
+""".format(total, summary_data['total_value'], len(documents_to_show))
+                else:
+                    prompt = """O usuário pediu uma lista com todos os documentos fiscais do banco de dados.
 
-                # Limit to first 15 documents to avoid token limits
-                for i, doc in enumerate(documents[:15], 1):
+**Dados brutos encontrados:**
+- Total de documentos: {}
+- Valor total: R$ {:.2f}
+- Mostrando {} de {} documentos:
+
+""".format(total, summary_data['total_value'], len(documents_to_show), total)
+                
+                # Adiciona detalhes de cada documento
+                for i, doc in enumerate(documents_to_show, 1):
                     doc_type = doc.get('categorized_type', 'N/A')
                     file_name = doc.get('file_name', 'N/A')
                     cnpj = doc.get('issuer_cnpj', 'N/A')
-                    created_at = doc.get('created_at', 'N/A')[:10] if doc.get('created_at') else 'N/A'
-
-                    # Extract value
+                    
+                    # Formata a data e hora de forma mais amigável
+                    created_at = doc.get('created_at')
+                    if created_at:
+                        try:
+                            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                            # Formata como "DD/MM/YYYY às HH:MM"
+                            formatted_date = dt.strftime('%d/%m/%Y às %H:%M')
+                        except (ValueError, AttributeError):
+                            formatted_date = created_at[:10]  # Pega apenas a data se não conseguir converter
+                    else:
+                        formatted_date = 'Data não disponível'
+                    
+                    # Extrai o valor
                     value = 'N/A'
                     if doc.get('extracted_data'):
                         try:
                             data = doc['extracted_data']
                             if isinstance(data, str):
-                                import json
                                 data = json.loads(data)
                             if isinstance(data, dict):
                                 value = data.get('total', data.get('valor_total', data.get('value', 'N/A')))
-                        except:
-                            value = 'N/A'
+                                # Formata o valor monetário
+                                if value not in ['N/A', None]:
+                                    try:
+                                        value = float(value)
+                                        value = f'R$ {value:,.2f}'.replace('.', 'v').replace(',', '.').replace('v', ',')
+                                    except (ValueError, TypeError):
+                                        pass
+                        except Exception as e:
+                            logger.warning(f"Erro ao extrair valor do documento: {e}")
+                    
+                    # Adiciona detalhes do documento ao prompt
+                    prompt += f"{i}. **{doc_type}**\n"
+                    prompt += f"   📄 **Arquivo:** {file_name}\n"
+                    prompt += f"   🏢 **CNPJ Emissor:** {cnpj}\n"
+                    prompt += f"   💰 **Valor:** {value}\n"
+                    prompt += f"   📅 **Data/Hora:** {formatted_date}\n"
+                    # Adiciona status de validação se disponível
+                    if doc.get('validation_status'):
+                        status_emoji = '✅' if doc['validation_status'] == 'valid' else '⚠️' if doc['validation_status'] == 'warning' else '❌'
+                        prompt += f"   {status_emoji} **Status:** {doc['validation_status'].capitalize()}\n"
+                    prompt += "\n"
 
-                    prompt += f"{i}. **{doc_type}** - {file_name}\n"
-                    prompt += f"   CNPJ: {cnpj} | Valor: R$ {value} | Data: {created_at}\n\n"
+                if not is_recent_query and total > limit:
+                    prompt += f"*(Mostrando apenas os primeiros {limit} documentos. Total no banco: {total})*\n\n"
+                elif is_recent_query and len(documents_to_show) < total:
+                    prompt += f"*(Mostrando as {len(documents_to_show)} notas mais recentes. Total no banco: {total})*\n\n"
 
-                if total > 15:
-                    prompt += f"*(Mostrando apenas os primeiros 15 documentos. Total no banco: {total})*\n\n"
-
-                prompt += f"""
-**Instruções:**
+                # Instruções para a IA
+                prompt += """**Instruções:**
 Responda de forma natural e conversacional, como se estivesse apresentando os documentos para o usuário.
-Use os dados fornecidos para criar uma lista clara e organizada.
-Inclua informações importantes como tipo, emissor, valor e data.
-Use formatação markdown para melhorar a legibilidade (tabelas, negrito, etc.).
-Seja específico sobre quantos documentos foram encontrados.
-Responda em português."""
+- Se for uma consulta por notas recentes, destaque que são as mais atuais
+- Inclua informações importantes como tipo, emissor, valor e data/hora
+- Formate os valores monetários corretamente (R$ X.XXX,XX)
+- Use formatação markdown para melhorar a legibilidade (negrito, itálico, listas)
+- Seja específico sobre quantos documentos estão sendo mostrados
+- Inclua o total de documentos no banco para referência
+- Responda em português"""
 
-            # Send to Gemini for natural formatting
+            # Envia para o Gemini para formatação natural
             messages = [
                 SystemMessage(content=self.system_prompt),
                 HumanMessage(content=prompt)
@@ -635,7 +763,7 @@ Responda em português."""
 
             response = self.model.invoke(messages, config={
                 'temperature': 0.2,
-                'max_tokens': 1500,
+                'max_tokens': 2000,  # Aumentado para permitir respostas mais completas
                 'top_p': 0.9,
                 'frequency_penalty': 0.3,
                 'presence_penalty': 0.3
@@ -644,13 +772,15 @@ Responda em português."""
             content = response.content if hasattr(response, 'content') else str(response)
             content = self._clean_response_content(content)
 
-            # Create metadata
+            # Cria metadados para rastreamento
             metadata = {
                 'model': self.model_name or 'unknown',
                 'timestamp': datetime.now().isoformat(),
                 'tokens_used': len(content.split()),
-                'query_type': 'list',
-                'raw_data': summary_data
+                'query_type': 'recent_documents' if is_recent_query else 'list',
+                'document_count': len(documents_to_show),
+                'total_documents': total,
+                'is_recent_query': is_recent_query
             }
 
             await self.save_message(session_id, 'assistant', content, metadata)
@@ -664,6 +794,7 @@ Responda em português."""
 
         except Exception as e:
             error_message = f"Erro ao buscar lista de documentos: {str(e)}"
+            logger.error(f"Error in _handle_list_request: {str(e)}", exc_info=True)
             await self.save_message(session_id, 'assistant', error_message, {'error': True})
             return ChatResponse(content=error_message, metadata={'error': True}, cached=False)
 

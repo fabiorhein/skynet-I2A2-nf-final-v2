@@ -5,8 +5,13 @@ import streamlit as st
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from typing import List, Dict, Any, Optional
+import concurrent.futures
+
+# Importações locais
 from backend.agents import coordinator
 from backend.tools.ocr_processor import ocr_text_to_document
+from .importador_utils import process_single_file, display_import_results, process_directory
 
 # Configuração do logger
 logger = logging.getLogger(__name__)
@@ -161,17 +166,44 @@ def render(storage):
 
     # Área de upload com melhor visual
     st.markdown("---")
-    st.markdown("### 📄 Upload do Documento")
+    st.markdown("### 📄 Upload de Documentos")
 
-    uploaded = st.file_uploader(
-        'Arraste ou selecione um arquivo',
+    # Upload múltiplo de arquivos
+    uploaded_files = st.file_uploader(
+        'Arraste ou selecione um ou mais arquivos',
         type=['xml', 'pdf', 'png', 'jpg', 'jpeg'],
-        help='Envie um documento fiscal para processamento automático com IA.',
+        help='Selecione um ou mais documentos fiscais para processamento em lote.',
+        accept_multiple_files=True,
         key='document_uploader'
     )
-
-    if not uploaded:
-        st.info('👆 Selecione um arquivo para começar o processamento automático.')
+    
+    # Opção para selecionar diretório (apenas para execução local)
+    process_dir = st.checkbox('Processar diretório local (apenas para desenvolvimento)')
+    dir_path = ''
+    
+    if process_dir:
+        dir_path = st.text_input('Caminho do diretório (ex: /caminho/para/documentos)')
+    
+    # Botão para processar diretório
+    process_dir_btn = st.button('Processar Diretório') if process_dir and dir_path else False
+    
+    # Se não há arquivos carregados e não foi solicitado processamento de diretório
+    if not uploaded_files and not process_dir_btn:
+        st.info('👆 Selecione um ou mais arquivos ou um diretório para começar o processamento automático.')
+        
+        # Mostrar dicas sobre o processamento em lote
+        with st.expander("💡 Dicas para processamento em lote", expanded=False):
+            st.markdown("""
+            - **Arquivos suportados**: XML, PDF, JPG, PNG
+            - **Tamanho máximo por arquivo**: 200MB
+            - **Processamento em paralelo**: Até 4 arquivos simultaneamente
+            - **Relatório de erros**: Um resumo é exibido ao final
+            - **Arquivos com problemas**: São ignorados, permitindo que os demais sejam processados
+            """)
+            
+        # Seção para processar documentos existentes
+        st.markdown("---")
+        st.markdown("### 🧠 Processar Documentos Existentes")
         st.markdown("""
         **O que acontece após o upload:**
         1. 🔍 **Extração**: IA extrai dados automaticamente
@@ -288,11 +320,134 @@ def render(storage):
 
         return
 
-        # Save uploaded file to temporary location
-    tmp = Path('tmp_upload')
-    tmp.mkdir(exist_ok=True, parents=True)
-    dest = tmp / uploaded.name
-
+        # Processar diretório se solicitado
+    if process_dir_btn and dir_path:
+        try:
+            uploaded_files = process_directory(dir_path)
+            if not uploaded_files:
+                st.warning("Nenhum arquivo compatível encontrado no diretório.")
+                return
+            st.success(f"{len(uploaded_files)} arquivos encontrados no diretório.")
+        except Exception as e:
+            st.error(f"Erro ao acessar diretório: {str(e)}")
+            return
+    
+    # Se não há arquivos para processar, retorna
+    if not uploaded_files:
+        return
+        
+    # Criar diretório temporário
+    tmp_dir = Path('tmp_upload')
+    tmp_dir.mkdir(exist_ok=True, parents=True)
+    
+    # Processar múltiplos arquivos
+    if len(uploaded_files) > 1:
+        with st.spinner(f'Processando {len(uploaded_files)} arquivos...'):
+            # Usar ThreadPoolExecutor para processar arquivos em paralelo
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                # Iniciar processamento de todos os arquivos
+                future_to_file = {
+                    executor.submit(
+                        process_single_file, 
+                        file, 
+                        storage, 
+                        tmp_dir,
+                        _prepare_document_record,  # Passando a função como parâmetro
+                        _validate_document_data    # Passando a função como parâmetro
+                    ): file 
+                    for file in uploaded_files
+                }
+                
+                # Coletar resultados conforme são concluídos
+                results = []
+                rag_tasks = []
+                progress_bar = st.progress(0)
+                
+                for i, future in enumerate(concurrent.futures.as_completed(future_to_file)):
+                    try:
+                        result = future.result()
+                        results.append(result)
+                        
+                        # Se o documento foi salvo com sucesso e o RAG está disponível
+                        if result.get('success') and 'rag_service' in st.session_state and st.session_state.rag_service:
+                            document_id = result.get('document_id')
+                            if document_id:
+                                # Criar uma tarefa RAG para ser executada após o processamento
+                                async def process_rag_task(doc_id):
+                                    try:
+                                        doc_for_rag = storage.get_fiscal_documents(id=doc_id, page=1, page_size=1)
+                                        if doc_for_rag and hasattr(doc_for_rag, 'items') and doc_for_rag.items:
+                                            return await st.session_state.rag_service.process_document_for_rag(doc_for_rag.items[0])
+                                        return {'success': False, 'error': 'Documento não encontrado para processamento RAG'}
+                                    except Exception as e:
+                                        logger.error(f"Erro no processamento RAG para documento {doc_id}: {e}")
+                                        return {'success': False, 'error': str(e)}
+                                
+                                # Adicionar a tarefa à lista
+                                rag_tasks.append(process_rag_task(document_id))
+                                
+                    except Exception as e:
+                        file = future_to_file[future]
+                        results.append({
+                            'file_name': file.name,
+                            'success': False,
+                            'error': str(e),
+                            'document_id': None,
+                            'document_type': None,
+                            'validation_status': 'error'
+                        })
+                    
+                    # Atualizar barra de progresso
+                    progress = (i + 1) / len(uploaded_files)
+                    progress_bar.progress(progress)
+            
+                # Executar tarefas RAG em paralelo, se houver
+                if rag_tasks:
+                    with st.spinner('Processando documentos para busca semântica...'):
+                        import asyncio
+                        
+                        # Criar um novo loop de eventos para executar as tarefas RAG
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        
+                        try:
+                            # Executar todas as tarefas RAG em paralelo
+                            rag_results = loop.run_until_complete(asyncio.gather(*rag_tasks, return_exceptions=True))
+                            
+                            # Atualizar status dos documentos processados pelo RAG
+                            for i, rag_result in enumerate(rag_results):
+                                if isinstance(rag_result, dict) and 'success' in rag_result:
+                                    if rag_result['success']:
+                                        logger.info(f"Documento {i+1} processado com sucesso pelo RAG")
+                                    else:
+                                        logger.warning(f"Falha ao processar documento {i+1} no RAG: {rag_result.get('error', 'Erro desconhecido')}")
+                                else:
+                                    logger.error(f"Erro inesperado ao processar documento {i+1} no RAG: {rag_result}")
+                            
+                        except Exception as e:
+                            logger.error(f"Erro ao executar processamento RAG em lote: {e}")
+                        finally:
+                            loop.close()
+            
+            # Exibir resultados
+            display_import_results(results)
+            
+            # Limpar diretório temporário
+            try:
+                for file in tmp_dir.glob('*'):
+                    file.unlink()
+                tmp_dir.rmdir()
+            except Exception as e:
+                logger.warning(f"Não foi possível limpar diretório temporário: {e}")
+                
+            return
+    
+    # Processar arquivo único (comportamento original)
+    uploaded = uploaded_files[0]
+    
+    # Salvar arquivo temporariamente
+    dest = tmp_dir / uploaded.name
+    
     try:
         with open(dest, 'wb') as f:
             f.write(uploaded.getbuffer())
@@ -760,6 +915,12 @@ def render(storage):
             result = storage.get_fiscal_documents(page=1, page_size=1000)
             # Acessa items diretamente do objeto PaginatedResponse
             st.session_state.processed_documents = result.items if hasattr(result, 'items') else []
+            
+            # Se estamos processando um único arquivo, rolar para a seção de resultados
+            if len(uploaded_files) == 1:
+                st.markdown("---")
+                st.markdown("### 📝 Resultado do Processamento")
+                
         except Exception as e:
             st.warning('Não foi possível atualizar a lista de documentos.')
             st.exception(e)  # Show full traceback in logs

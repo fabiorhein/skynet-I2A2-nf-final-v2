@@ -5,7 +5,8 @@ Fornece funcionalidades avançadas de análise de documentos fiscais
 usando PostgreSQL direto para melhor performance e consistência.
 """
 import json
-from typing import List, Dict, Any, Optional
+from datetime import datetime
+from typing import List, Dict, Any, Optional, Union
 import logging
 
 from config import DATABASE_CONFIG
@@ -27,7 +28,7 @@ class DocumentAnalyzer:
         """Obtém um resumo dos documentos com base nos filtros fornecidos."""
         try:
             # Use PostgreSQL direct instead of Supabase API
-            result = self.db.get_fiscal_documents(page=1, page_size=10000, **filters)
+            result = await self.db.get_fiscal_documents(page=1, page_size=10000, **filters)
             documents = result.items
 
             # Processar e resumir os documentos
@@ -73,11 +74,25 @@ class DocumentAnalyzer:
             logger.error(f"Erro ao resumir documentos: {e}")
             raise
 
-    async def get_all_documents_summary(self) -> Dict[str, Any]:
-        """Obtém um resumo de TODOS os documentos para análise de categorias."""
+    async def get_all_documents_summary(self, time_filter: Union[datetime, str, None] = None) -> Dict[str, Any]:
+        """
+        Obtém um resumo dos documentos para análise de categorias.
+        
+        Args:
+            time_filter: Filtra documentos criados após esta data/hora.
+                        Se None, retorna todos os documentos.
+        """
         try:
-            # Buscar todos os documentos sem limite
-            result = self.db.get_fiscal_documents(page=1, page_size=10000)
+            # Parâmetros de filtro para o banco de dados
+            filters = {}
+            if time_filter:
+                # Formata a data para o formato ISO esperado pelo banco de dados
+                if isinstance(time_filter, datetime):
+                    time_filter = time_filter.isoformat()
+                filters['created_after'] = time_filter
+            
+            # Buscar documentos com filtro de tempo, se aplicável
+            result = await self.db.get_fiscal_documents(page=1, page_size=10000, **filters)
             documents = result.items
 
             # Processar e resumir os documentos
@@ -211,7 +226,7 @@ class DocumentAnalyzer:
         try:
             # Use PostgreSQL direct search instead of Supabase API
             # This is a simplified version - for full text search, consider using PostgreSQL full-text search
-            result = self.db.get_fiscal_documents(page=1, page_size=limit)
+            result = await self.db.get_fiscal_documents(page=1, page_size=limit)
             documents = result.items
 
             # Filter documents based on query

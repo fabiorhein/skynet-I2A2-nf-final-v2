@@ -15,7 +15,7 @@ from .base_storage import (
 
 from .postgresql_storage import PostgreSQLStorage, PostgreSQLStorageError
 from .local_storage import LocalJSONStorage, LocalStorageError
-from .storage_manager import StorageManager, storage_manager, get_storage
+from .storage_manager import StorageManager, storage_manager, get_storage, get_storage_type
 
 __all__ = [
     # Base types and interfaces
@@ -36,4 +36,5 @@ __all__ = [
     'StorageManager',
     'storage_manager',
     'get_storage',
+    'get_storage_type',
 ]

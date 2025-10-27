@@ -214,7 +214,7 @@ class ChatCoordinator:
             # Add text search to criteria
             if query:
                 # Use storage to search documents
-                all_docs = self.storage.get_fiscal_documents(page=1, page_size=1000)
+                all_docs = await self.storage.get_fiscal_documents(page=1, page_size=1000)
 
                 # Filter documents containing the query
                 filtered_docs = []

@@ -10,6 +10,7 @@ Esta página demonstra o sistema RAG implementado, permitindo:
 import streamlit as st
 import asyncio
 import logging
+import time
 from datetime import datetime
 import pandas as pd
 from typing import Dict, Any, List
@@ -207,26 +208,63 @@ def show_rag_monitoring():
 
 
 def process_documents_for_rag(documents):
-    """Processa uma lista de documentos para RAG."""
+    """Processa uma lista de documentos para RAG com feedback em tempo real."""
     if not documents:
         st.warning("Nenhum documento para processar.")
         return
 
-    st.markdown(f"### 🚀 Processando {len(documents)} Documentos...")
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
+    total_docs = len(documents)
+    
+    # Configuração do layout
+    st.markdown(f"### 🚀 Processando {total_docs} Documentos...")
+    
+    # Criar colunas para o contador e barra de progresso
+    col_counter, col_progress = st.columns([1, 4])
+    
+    with col_counter:
+        st.markdown("#### Progresso")
+        progress_text = st.empty()
+        progress_text.markdown(f"**0 de {total_docs}** documentos processados")
+    
+    with col_progress:
+        st.markdown("#### &nbsp;")  # Espaçador para alinhar com o contador
+        progress_bar = st.progress(0)
+    
+    # Área para status detalhado
+    status_container = st.container()
+    status_text = status_container.empty()
+    
+    # Inicializar contadores
     success_count = 0
     error_count = 0
     results = []
-
-    for i, doc in enumerate(documents):
+    
+    # Criar colunas para métricas em tempo real
+    metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+    
+    with metrics_col1:
+        st.metric("Total de Documentos", total_docs)
+    
+    with metrics_col2:
+        success_metric = st.metric("Processados com Sucesso", "0")
+    
+    with metrics_col3:
+        error_metric = st.metric("Com Erros", "0")
+    
+    # Processar cada documento
+    for i, doc in enumerate(documents, 1):
+        doc_id_short = str(doc.get('id', 'N/A'))[:8] + '...' if doc.get('id') else 'N/A'
+        doc_name = doc.get('file_name', doc_id_short)
+        
         try:
-            status_text.text(f"Processando documento {i+1}/{len(documents)}: {doc.get('file_name', doc.get('id', 'N/A'))}")
-
+            # Atualizar status
+            status_text.markdown(f"""
+            **Documento {i} de {total_docs}**  
+            📄 **Arquivo:** {doc_name}  
+            🔄 **Status:** Processando...
+            """)
+            
             # Garantir que o documento tem formato correto para RAG
-            # Documentos do banco podem não ter todos os campos necessários
             rag_document = {
                 'id': doc.get('id'),
                 'file_name': doc.get('file_name'),
@@ -256,41 +294,102 @@ def process_documents_for_rag(documents):
                 success_count += 1
                 chunks_count = result.get('chunks_processed', 0)
                 results.append((doc['id'], True, chunks_count, None))
+                
+                # Atualizar métricas
+                success_metric.metric("Processados com Sucesso", success_count)
+                
+                # Atualizar status
+                status_text.markdown(f"""
+                **Documento {i} de {total_docs}**  
+                📄 **Arquivo:** {doc_name}  
+                ✅ **Status:** Processado com sucesso!  
+                🔢 **Chunks criados:** {chunks_count}
+                """)
             else:
                 error_count += 1
                 error_msg = result.get('error', 'Erro desconhecido')
                 results.append((doc['id'], False, 0, error_msg))
+                
+                # Atualizar métricas
+                error_metric.metric("Com Erros", error_count)
+                
+                # Atualizar status
+                status_text.markdown(f"""
+                **Documento {i} de {total_docs}**  
+                📄 **Arquivo:** {doc_name}  
+                ❌ **Status:** Falha no processamento  
+                📝 **Erro:** {error_msg[:100]}{'...' if len(str(error_msg)) > 100 else ''}
+                """)
 
         except Exception as e:
             error_count += 1
-            results.append((doc['id'], False, 0, str(e)))
+            error_msg = str(e)
+            results.append((doc.get('id', 'N/A'), False, 0, error_msg))
+            
+            # Atualizar métricas
+            error_metric.metric("Com Erros", error_count)
+            
+            # Atualizar status
+            status_text.markdown(f"""
+            **Documento {i} de {total_docs}**  
+            📄 **Arquivo:** {doc_name}  
+            ❌ **Status:** Erro inesperado  
+            🐞 **Detalhes:** {error_msg[:150]}{'...' if len(error_msg) > 150 else ''}
+            """)
 
-        # Atualizar barra de progresso
-        progress_bar.progress((i + 1) / len(documents))
+        # Atualizar barra de progresso e contador
+        progress = i / total_docs
+        progress_bar.progress(progress)
+        progress_text.markdown(f"**{i} de {total_docs}** documentos processados")
+        
+        # Pequena pausa para atualizar a UI
+        time.sleep(0.1)
 
     # Concluir processamento
     progress_bar.progress(1.0)
-    status_text.text("Processamento concluído!")
+    progress_text.markdown(f"**{total_docs} de {total_docs}** documentos processados")
+    status_text.markdown("### ✅ Processamento concluído!")
 
-    # Mostrar resultados finais
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if success_count > 0:
-            st.success(f'✅ {success_count} documentos processados com sucesso!')
-
-    with col2:
-        if error_count > 0:
-            st.error(f'❌ {error_count} documentos tiveram problemas')
+    # Mostrar resumo final
+    st.balloons()  # Efeito de confetes
+    
+    # Criar colunas para o resumo
+    summary_col1, summary_col2, summary_col3 = st.columns(3)
+    
+    with summary_col1:
+        st.metric("Total Processado", total_docs)
+    
+    with summary_col2:
+        st.metric("Sucesso", f"{success_count} ({success_count/max(total_docs, 1)*100:.1f}%)", 
+                 delta=f"{success_count} documentos" if success_count > 0 else None)
+    
+    with summary_col3:
+        st.metric("Falhas", f"{error_count} ({error_count/max(total_docs, 1)*100:.1f}%)", 
+                 delta=f"{error_count} documentos" if error_count > 0 else None,
+                 delta_color="inverse")
 
     # Detalhes dos resultados
     if results:
-        with st.expander('📊 Detalhes do Processamento', expanded=True):
+        with st.expander('📊 Detalhes do Processamento', expanded=error_count > 0):
             for doc_id, success, chunks, error in results:
+                doc_id_display = str(doc_id)[:8] + '...' if doc_id else 'N/A'
                 if success:
-                    st.success(f'✅ Documento {doc_id}: {chunks} chunks criados')
+                    st.success(f'✅ Documento {doc_id_display}: {chunks} chunks criados')
                 else:
-                    st.error(f'❌ Documento {doc_id}: {error}')
+                    st.error(f'❌ Documento {doc_id_display}: {error}')
+                    
+        # Botão para baixar relatório
+        csv = 'ID,Status,Chunks Criados,Detalhes\n' + '\n'.join(
+            f'{doc_id},{success},{chunks if success else "N/A"},"{error if not success else ""}"'
+            for doc_id, success, chunks, error in results
+        )
+        
+        st.download_button(
+            label="📥 Baixar Relatório em CSV",
+            data=csv,
+            file_name=f'relatorio_rag_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
+            mime='text/csv',
+        )
 
     # Atualizar estatísticas
     st.rerun()

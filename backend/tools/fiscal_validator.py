@@ -651,14 +651,22 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
         'detalhes': []
     }
     
-    # Pula validação de itens para CT-e, pois não possuem itens no mesmo formato que NFe
-    if doc_type == 'CTE':
-        validacoes['itens']['observacao'] = 'CT-e não possui itens no mesmo formato que NFe'
+    # Garante que items seja uma lista
+    if items is None:
+        items = []
+    
+    # Verifica se o documento é do tipo que não possui itens (CT-e, MDF-e, etc)
+    if doc_type in ['CTE', 'MDFE', 'MDF']:
+        validacoes['itens']['observacao'] = f'{doc_type} não possui itens no mesmo formato que NFe'
+        validacoes['itens']['valido'] = True
+        validacoes['itens']['all_valid'] = True
+    # Verifica se items está vazio
     elif not items:
-        erros.append('Documento não contém itens')
-        _log_validation('error', 'Documento não contém itens')
-        validacoes['itens']['valido'] = False
-        validacoes['itens']['all_valid'] = False
+        # Apenas adiciona um aviso, não um erro, já que alguns documentos podem não ter itens
+        avisos.append('Documento não contém itens')
+        _log_validation('warning', 'Documento não contém itens')
+        validacoes['itens']['valido'] = True
+        validacoes['itens']['all_valid'] = True
         validacoes['itens']['has_items'] = False
     else:
         # 4.1 Valida cada item individualmente
