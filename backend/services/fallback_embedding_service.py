@@ -24,65 +24,49 @@ class FallbackEmbeddingService:
         Initialize fallback embedding service.
 
         Args:
-            preferred_provider: "free" (default) or "paid"
-            gemini_model: Gemini model name for paid embeddings
+            preferred_provider: "free" (default) or "paid" - Only "free" is supported now
+            gemini_model: Gemini model name for paid embeddings (not used)
         """
-        self.preferred_provider = preferred_provider
+        self.preferred_provider = "free"  # Force free provider only
         self.gemini_model = gemini_model
 
-        # Initialize both services
+        # Initialize services
         self.free_service = None
         self.paid_service = None
 
         # Try to import and initialize services
         self._initialize_services()
 
-        # Choose primary service based on preference and availability
+        # Set primary service (always free now)
         self._setup_primary_service()
 
     def _initialize_services(self):
-        """Initialize both free and paid services."""
-        # Initialize free service (Sentence Transformers)
+        """Initialize only free service."""
+        # Initialize free service (Sentence Transformers) with 768-dimensions model
         try:
-            self.free_service = FreeEmbeddingService()
-            logger.info("✅ Free embedding service (Sentence Transformers) ready")
+            self.free_service = FreeEmbeddingService(model_name="all-mpnet-base-v2")
+            logger.info("✅ Free embedding service (Sentence Transformers) ready with 768-dimensional model")
         except Exception as e:
-            logger.warning(f"Free embedding service failed to initialize: {e}")
+            logger.error(f"Free embedding service failed to initialize: {e}")
             logger.info("💡 Install with: pip install sentence-transformers torch")
+            raise RuntimeError("Free embedding service is required but failed to initialize")
 
-        # Initialize paid service (Gemini)
-        try:
-            # Import here to avoid errors if not available
-            from backend.services.embedding_service import GeminiEmbeddingService
-            self.paid_service = GeminiEmbeddingService(model_name=self.gemini_model)
-            logger.info(f"✅ Paid embedding service (Gemini) ready: {self.gemini_model}")
-        except Exception as e:
-            logger.warning(f"Paid embedding service failed to initialize: {e}")
-            logger.info("💡 Check your GOOGLE_API_KEY in .streamlit/secrets.toml")
+        # Don't initialize paid service anymore
+        logger.info("📝 Paid embedding service (Gemini) disabled - using only free embeddings")
 
     def _setup_primary_service(self):
-        """Set up primary and fallback services based on preference."""
-        if self.preferred_provider == "free" and self.free_service:
+        """Set up primary service (only free service available now)."""
+        if self.free_service:
             self.primary_service = self.free_service
-            self.fallback_service = self.paid_service
-            logger.info("🚀 Primary: Free embeddings (Sentence Transformers)")
-        elif self.paid_service:
-            self.primary_service = self.paid_service
-            self.fallback_service = self.free_service
-            logger.info("🚀 Primary: Paid embeddings (Gemini)")
+            self.fallback_service = None  # No fallback needed
+            logger.info("🚀 Primary: Free embeddings (Sentence Transformers) - No fallback available")
         else:
             logger.error("❌ No embedding service available!")
             raise RuntimeError("No embedding service could be initialized")
 
-        if self.fallback_service:
-            fallback_type = "Free" if self.fallback_service == self.free_service else "Paid"
-            logger.info(f"🔄 Fallback: {fallback_type} embeddings available")
-
     def generate_embedding(self, text: str) -> List[float]:
         """
-        Generate embedding with automatic fallback.
-
-        Tries primary service first, then fallback if it fails.
+        Generate embedding using only free service.
 
         Args:
             text: Input text to embed
@@ -91,39 +75,22 @@ class FallbackEmbeddingService:
             List of floats representing the embedding vector
 
         Raises:
-            RuntimeError: If both services fail
+            RuntimeError: If service fails
         """
-        errors = []
-
-        # Try primary service first
         if self.primary_service:
             try:
-                logger.debug(f"Using primary service: {'Free (Sentence Transformers)' if self.primary_service == self.free_service else 'Paid (Gemini)'}")
+                logger.debug("Using free embedding service (Sentence Transformers)")
                 return self.primary_service.generate_embedding(text)
             except Exception as e:
-                error_msg = f"Primary service failed: {str(e)}"
-                logger.warning(error_msg)
-                errors.append(error_msg)
-
-        # Try fallback service
-        if self.fallback_service:
-            try:
-                fallback_type = "Free (Sentence Transformers)" if self.fallback_service == self.free_service else "Paid (Gemini)"
-                logger.info(f"Switching to fallback service: {fallback_type}")
-                return self.fallback_service.generate_embedding(text)
-            except Exception as e:
-                error_msg = f"Fallback service failed: {str(e)}"
+                error_msg = f"Free embedding service failed: {str(e)}"
                 logger.error(error_msg)
-                errors.append(error_msg)
-
-        # If both failed, raise comprehensive error
-        error_summary = "All embedding services failed:\n" + "\n".join(f"  - {err}" for err in errors)
-        logger.error(error_summary)
-        raise RuntimeError(error_summary)
+                raise RuntimeError(error_msg)
+        else:
+            raise RuntimeError("No embedding service available")
 
     def generate_query_embedding(self, query: str) -> List[float]:
         """
-        Generate query embedding with fallback.
+        Generate query embedding using only free service.
 
         Same logic as generate_embedding, but optimized for search queries.
 
@@ -144,33 +111,23 @@ class FallbackEmbeddingService:
         """
         return {
             'preferred_provider': self.preferred_provider,
-            'primary_service': 'free' if self.primary_service == self.free_service else 'paid',
-            'fallback_service': 'free' if self.fallback_service == self.free_service else 'paid',
+            'primary_service': 'free',  # Always free now
+            'fallback_service': None,   # No fallback
             'free_available': self.free_service is not None,
-            'paid_available': self.paid_service is not None,
-            'total_services': sum([self.free_service is not None, self.paid_service is not None]),
-            'gemini_model': self.gemini_model if self.paid_service else None
+            'paid_available': False,    # Always false now
+            'total_services': 1 if self.free_service else 0,
+            'gemini_model': None        # Not used anymore
         }
 
     def switch_to_free(self):
         """Switch primary service to free embeddings."""
-        if self.free_service:
-            self.preferred_provider = "free"
-            self.primary_service = self.free_service
-            self.fallback_service = self.paid_service
-            logger.info("🔄 Switched to free embeddings as primary")
-        else:
-            logger.warning("Cannot switch to free embeddings - service not available")
+        # Always using free service now
+        logger.info("🔄 Already using free embeddings as primary")
 
     def switch_to_paid(self):
         """Switch primary service to paid embeddings."""
-        if self.paid_service:
-            self.preferred_provider = "paid"
-            self.primary_service = self.paid_service
-            self.fallback_service = self.free_service
-            logger.info("🔄 Switched to paid embeddings as primary")
-        else:
-            logger.warning("Cannot switch to paid embeddings - service not available")
+        logger.warning("❌ Paid embeddings are not available - only free embeddings are supported")
+        logger.info("💡 Install sentence-transformers for free local embeddings")
 
     def is_free_available(self) -> bool:
         """Check if free embeddings are available."""
@@ -178,7 +135,7 @@ class FallbackEmbeddingService:
 
     def is_paid_available(self) -> bool:
         """Check if paid embeddings are available."""
-        return self.paid_service is not None
+        return False  # Paid service is not available anymore
 
     def get_embedding_dimension(self) -> int:
         """
@@ -193,4 +150,26 @@ class FallbackEmbeddingService:
             elif hasattr(self.primary_service, 'get_model_info'):
                 return self.primary_service.get_model_info().get('embedding_dimension', 0)
 
-        return 0
+    def process_document_for_embedding(self, document: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Process document for embedding using only free service.
+
+        Args:
+            document: Fiscal document data
+
+        Returns:
+            List of chunks with embeddings ready for database storage
+
+        Raises:
+            RuntimeError: If service fails
+        """
+        if self.primary_service:
+            try:
+                logger.debug("Using free embedding service for document processing (Sentence Transformers)")
+                return self.primary_service.process_document_for_embedding(document)
+            except Exception as e:
+                error_msg = f"Free embedding service failed: {str(e)}"
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
+        else:
+            raise RuntimeError("No embedding service available")

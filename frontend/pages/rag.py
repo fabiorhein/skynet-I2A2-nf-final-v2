@@ -34,45 +34,258 @@ def initialize_rag_service():
     return True
 
 
-def show_rag_statistics():
-    """Exibe estatísticas do sistema RAG."""
-    st.subheader("📊 Estatísticas do Sistema RAG")
+def show_rag_monitoring():
+    """Monitoramento em tempo real do processamento RAG."""
+    st.subheader("🔄 Monitoramento RAG em Tempo Real")
 
     if not initialize_rag_service():
         return
 
     try:
-        with st.spinner("Carregando estatísticas..."):
-            stats = st.session_state.rag_service.get_embedding_statistics()
+        # Buscar documentos do banco de dados
+        from backend.database import storage_manager
+        storage = storage_manager.storage
 
-        if 'error' not in stats:
-            # Métricas principais
+        # Buscar todos os documentos
+        all_docs = storage.get_fiscal_documents(page=1, page_size=1000)
+
+        if hasattr(all_docs, 'items') and all_docs.items:
+            documents = all_docs.items
+
+            # Análise do status dos embeddings
+            embedding_stats = {
+                'completed': 0,
+                'pending': 0,
+                'failed': 0,
+                'processing': 0,
+                'not_started': 0
+            }
+
+            docs_with_embeddings = []
+            docs_without_embeddings = []
+
+            for doc in documents:
+                status = doc.get('embedding_status', 'not_started')
+                if status in embedding_stats:
+                    embedding_stats[status] += 1
+                else:
+                    embedding_stats.setdefault(status, 0)
+                    embedding_stats[status] += 1
+
+                if status == 'completed':
+                    docs_with_embeddings.append(doc)
+                else:
+                    docs_without_embeddings.append(doc)
+
+            # Exibir estatísticas
+            st.markdown("### 📊 Status dos Documentos")
+
             col1, col2, col3, col4 = st.columns(4)
 
             with col1:
-                st.metric("Total de Chunks", f"{stats.get('total_chunks', 0):,}")
+                st.metric("Total de Documentos", len(documents))
             with col2:
-                st.metric("Documentos com Embeddings", f"{stats.get('documents_with_embeddings', 0):,}")
+                st.metric("Com Embeddings", embedding_stats.get('completed', 0),
+                         delta=f"{embedding_stats.get('completed', 0)/len(documents)*100:.1f}%" if documents else "0%")
             with col3:
-                st.metric("Total de Insights", f"{stats.get('total_insights', 0):,}")
+                st.metric("Sem Embeddings", embedding_stats.get('pending', 0) + embedding_stats.get('not_started', 0))
             with col4:
-                st.metric("Dimensão dos Vetores", stats.get('vector_dimension', 768))
+                st.metric("Com Falha", embedding_stats.get('failed', 0))
 
-            # Status dos embeddings
-            status_dist = stats.get('embedding_status_distribution', {})
-            if status_dist:
-                st.subheader("Status dos Embeddings")
+            # Gráfico de status
+            if embedding_stats:
+                st.markdown("### 📈 Distribuição por Status")
                 status_df = pd.DataFrame(
-                    list(status_dist.items()),
+                    [(k, v) for k, v in embedding_stats.items() if v > 0],
                     columns=['Status', 'Quantidade']
                 )
-                st.bar_chart(status_df.set_index('Status'))
+
+                if not status_df.empty:
+                    # Mapear status para cores
+                    color_map = {
+                        'completed': '🟢',
+                        'pending': '🟡',
+                        'failed': '🔴',
+                        'processing': '🟠',
+                        'not_started': '⚪'
+                    }
+
+                    status_df['Status_Display'] = status_df['Status'].map(
+                        lambda x: f"{color_map.get(x, '⚪')} {x.replace('_', ' ').title()}"
+                    )
+
+                    st.bar_chart(status_df.set_index('Status_Display'))
+
+            # Lista de documentos que precisam de processamento
+            if docs_without_embeddings:
+                st.markdown("### 📋 Documentos que Precisam de Processamento")
+
+                # Tabela de documentos sem embeddings
+                docs_data = []
+                for doc in docs_without_embeddings[:10]:  # Mostrar apenas os 10 primeiros
+                    docs_data.append({
+                        'ID': doc.get('id', 'N/A')[:8] + '...',
+                        'Tipo': doc.get('document_type', 'N/A'),
+                        'Número': doc.get('document_number', 'N/A'),
+                        'Emissor': doc.get('issuer_cnpj', 'N/A'),
+                        'Status': doc.get('embedding_status', 'not_started'),
+                        'Data': doc.get('created_at', 'N/A')[:10] if doc.get('created_at') else 'N/A'
+                    })
+
+                if docs_data:
+                    docs_df = pd.DataFrame(docs_data)
+                    st.dataframe(
+                        docs_df,
+                        column_config={
+                            "ID": st.column_config.TextColumn("ID", width="small"),
+                            "Tipo": st.column_config.TextColumn("Tipo", width="small"),
+                            "Número": st.column_config.TextColumn("Número", width="medium"),
+                            "Emissor": st.column_config.TextColumn("Emissor", width="medium"),
+                            "Status": st.column_config.TextColumn("Status", width="small"),
+                            "Data": st.column_config.TextColumn("Data", width="small")
+                        },
+                        hide_index=True,
+                        width='stretch'
+                    )
+
+                    # Botão para processar documentos selecionados
+                    if st.button(f'🚀 Processar {len(docs_without_embeddings)} Documentos para RAG',
+                               type='primary', width='stretch'):
+                        process_documents_for_rag(docs_without_embeddings)
+
+            # Lista de documentos já processados
+            if docs_with_embeddings:
+                st.markdown("### ✅ Documentos com Embeddings Prontos")
+
+                # Tabela de documentos com embeddings
+                processed_data = []
+                for doc in docs_with_embeddings[:10]:  # Mostrar apenas os 10 primeiros
+                    processed_data.append({
+                        'ID': doc.get('id', 'N/A')[:8] + '...',
+                        'Tipo': doc.get('document_type', 'N/A'),
+                        'Número': doc.get('document_number', 'N/A'),
+                        'Chunks': doc.get('chunks_count', 0),
+                        'Status': doc.get('embedding_status', 'completed'),
+                        'Data': doc.get('created_at', 'N/A')[:10] if doc.get('created_at') else 'N/A'
+                    })
+
+                if processed_data:
+                    processed_df = pd.DataFrame(processed_data)
+                    st.dataframe(
+                        processed_df,
+                        column_config={
+                            "ID": st.column_config.TextColumn("ID", width="small"),
+                            "Tipo": st.column_config.TextColumn("Tipo", width="small"),
+                            "Número": st.column_config.TextColumn("Número", width="medium"),
+                            "Chunks": st.column_config.NumberColumn("Chunks", width="small"),
+                            "Status": st.column_config.TextColumn("Status", width="small"),
+                            "Data": st.column_config.TextColumn("Data", width="small")
+                        },
+                        hide_index=True,
+                        width='stretch'
+                    )
 
         else:
-            st.error(f"Erro ao carregar estatísticas: {stats['error']}")
+            st.info("ℹ️ Nenhum documento encontrado no banco de dados.")
+            st.info("💡 **Para usar o monitoramento RAG:**")
+            st.markdown("""
+            1. **Importe documentos** usando a aba "Importador"
+            2. **Aguarde o processamento** - embeddings são gerados automaticamente
+            3. **Monitore aqui** o progresso do processamento RAG
+            """)
 
     except Exception as e:
-        st.error(f"Erro ao carregar estatísticas: {str(e)}")
+        st.error(f"Erro ao carregar monitoramento: {str(e)}")
+
+
+def process_documents_for_rag(documents):
+    """Processa uma lista de documentos para RAG."""
+    if not documents:
+        st.warning("Nenhum documento para processar.")
+        return
+
+    st.markdown(f"### 🚀 Processando {len(documents)} Documentos...")
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    success_count = 0
+    error_count = 0
+    results = []
+
+    for i, doc in enumerate(documents):
+        try:
+            status_text.text(f"Processando documento {i+1}/{len(documents)}: {doc.get('file_name', doc.get('id', 'N/A'))}")
+
+            # Garantir que o documento tem formato correto para RAG
+            # Documentos do banco podem não ter todos os campos necessários
+            rag_document = {
+                'id': doc.get('id'),
+                'file_name': doc.get('file_name'),
+                'document_type': doc.get('document_type'),
+                'document_number': doc.get('document_number'),
+                'issuer_cnpj': doc.get('issuer_cnpj'),
+                'recipient_cnpj': doc.get('recipient_cnpj'),
+                'issue_date': doc.get('issue_date'),
+                'total_value': doc.get('total_value'),
+                'cfop': doc.get('cfop'),
+                'extracted_data': doc.get('extracted_data', {}),
+                'validation_status': doc.get('validation_status'),
+                'classification': doc.get('classification', {}),
+                'raw_text': doc.get('raw_text', ''),
+                'validation_details': doc.get('validation_details', {}),
+                'metadata': doc.get('metadata', {}),
+                'document_data': doc.get('document_data', {})
+            }
+
+            # Remover campos None/empty
+            rag_document = {k: v for k, v in rag_document.items() if v is not None}
+
+            # Processar documento
+            result = asyncio.run(st.session_state.rag_service.process_document_for_rag(rag_document))
+
+            if result.get('success', False):
+                success_count += 1
+                chunks_count = result.get('chunks_processed', 0)
+                results.append((doc['id'], True, chunks_count, None))
+            else:
+                error_count += 1
+                error_msg = result.get('error', 'Erro desconhecido')
+                results.append((doc['id'], False, 0, error_msg))
+
+        except Exception as e:
+            error_count += 1
+            results.append((doc['id'], False, 0, str(e)))
+
+        # Atualizar barra de progresso
+        progress_bar.progress((i + 1) / len(documents))
+
+    # Concluir processamento
+    progress_bar.progress(1.0)
+    status_text.text("Processamento concluído!")
+
+    # Mostrar resultados finais
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if success_count > 0:
+            st.success(f'✅ {success_count} documentos processados com sucesso!')
+
+    with col2:
+        if error_count > 0:
+            st.error(f'❌ {error_count} documentos tiveram problemas')
+
+    # Detalhes dos resultados
+    if results:
+        with st.expander('📊 Detalhes do Processamento', expanded=True):
+            for doc_id, success, chunks, error in results:
+                if success:
+                    st.success(f'✅ Documento {doc_id}: {chunks} chunks criados')
+                else:
+                    st.error(f'❌ Documento {doc_id}: {error}')
+
+    # Atualizar estatísticas
+    st.rerun()
 
 
 def show_semantic_search():
@@ -114,7 +327,7 @@ def show_semantic_search():
     )
 
     # Botão de busca
-    if st.button("🔍 Buscar", type="primary", use_container_width=True):
+    if st.button("🔍 Buscar", type="primary", width='stretch'):
         if not query.strip():
             st.warning("Por favor, digite uma consulta.")
             return
@@ -302,7 +515,7 @@ def show_document_processing():
 }"""
         )
 
-        submitted = st.form_submit_button("🚀 Processar Documento", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("🚀 Processar Documento", type="primary", width='stretch')
 
         if submitted:
             try:
@@ -377,7 +590,7 @@ def show_document_validation():
             default=["document_format", "value_ranges", "issuer_validation"]
         )
 
-        validate_submitted = st.form_submit_button("🔍 Validar Documento", type="primary", use_container_width=True)
+        validate_submitted = st.form_submit_button("🔍 Validar Documento", type="primary", width='stretch')
 
         if validate_submitted:
             try:
@@ -491,7 +704,8 @@ def main():
         return
 
     # Menu de navegação
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "🔄 Monitoramento",
         "🔍 Busca Semântica",
         "📝 Processar Documento",
         "✅ Validação",
@@ -500,18 +714,21 @@ def main():
     ])
 
     with tab1:
-        show_semantic_search()
+        show_rag_monitoring()
 
     with tab2:
-        show_document_processing()
+        show_semantic_search()
 
     with tab3:
-        show_document_validation()
+        show_document_processing()
 
     with tab4:
-        show_rag_statistics()
+        show_document_validation()
 
     with tab5:
+        show_rag_statistics()
+
+    with tab6:
         show_rag_examples()
 
     # Rodapé com informações técnicas
@@ -521,7 +738,7 @@ def main():
 
     - **Embeddings:** Google Gemini (768 dimensões)
     - **Vector Store:** Supabase com pgvector
-    - **LLM:** Google Gemini Flash
+    - **LLM:** Google Gemini 2.0-Flash / 1.5-Flash
     - **Busca:** Similaridade de cosseno com HNSW
     """)
 

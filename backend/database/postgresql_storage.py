@@ -4,6 +4,7 @@ This replaces the HTTP-based SupabaseStorage for better performance.
 """
 import json
 import logging
+import re
 import traceback
 from typing import Dict, Any, List, Optional, Union
 
@@ -51,7 +52,9 @@ class PostgreSQLStorage(StorageInterface):
         if self._connection is None or self._connection.closed:
             try:
                 self._connection = psycopg2.connect(**self.db_config)
-                logger.info("Database connection established")
+                # Enable autocommit to avoid manual transaction management
+                self._connection.autocommit = True
+                logger.info("Database connection established with autocommit enabled")
             except Exception as e:
                 logger.error(f"Failed to connect to database: {e}")
                 raise PostgreSQLStorageError(f"Database connection failed: {e}")
@@ -140,12 +143,11 @@ class PostgreSQLStorage(StorageInterface):
         logger.debug("=== END DEBUG ===")
 
         # Convert dict/list objects to JSON strings for JSONB columns
-        jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data']
+        jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data', 'analyses']
         for i, (col, value) in enumerate(zip(columns, values)):
             if col in jsonb_fields and value is not None:
                 if not isinstance(value, (str, bytes, bytearray)):
                     logger.debug(f"Converting {col} to JSON: {type(value)}")
-                    import json
                     try:
                         values[i] = json.dumps(value, ensure_ascii=False)
                         logger.debug(f"Successfully converted {col} to JSON")
@@ -154,6 +156,28 @@ class PostgreSQLStorage(StorageInterface):
                         logger.error(f"Field value: {value}")
                         logger.error(f"Field value type: {type(value)}")
                         raise
+
+        # Convert numeric fields from Brazilian format to American format
+        numeric_fields = ['total_value', 'base_calculo_icms', 'valor_icms', 'base_calculo_icms_st', 'valor_icms_st']
+        for i, (col, value) in enumerate(zip(columns, values)):
+            if col in numeric_fields and value is not None:
+                try:
+                    # Convert Brazilian number format to float
+                    if isinstance(value, str):
+                        # Remove currency symbols and spaces
+                        clean_value = re.sub(r'[R$\s]', '', value)
+                        # Convert Brazilian format (1.234,56) to American format (1234.56)
+                        if ',' in clean_value and '.' in clean_value:
+                            clean_value = clean_value.replace('.', '').replace(',', '.')
+                        elif ',' in clean_value:
+                            clean_value = clean_value.replace(',', '.')
+                        values[i] = float(clean_value)
+                        logger.debug(f"Converted {col} from '{value}' to {values[i]}")
+                    else:
+                        values[i] = float(value)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Could not convert {col} value '{value}' to number: {e}")
+                    values[i] = 0.0
 
         # Check if columns exist in the table before executing query
         try:
@@ -202,6 +226,18 @@ class PostgreSQLStorage(StorageInterface):
             if result:
                 # Convert result back to dict format expected by the interface
                 saved_doc = dict(result)
+
+                # Convert JSONB fields back from string to dict/list (same as get_fiscal_document)
+                jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data', 'analyses']
+                for field in jsonb_fields:
+                    if field in saved_doc and saved_doc[field] is not None:
+                        if isinstance(saved_doc[field], str):
+                            try:
+                                saved_doc[field] = json.loads(saved_doc[field])
+                            except (json.JSONDecodeError, TypeError):
+                                # Keep as string if cannot decode
+                                pass
+
                 logger.info(f"Document saved successfully. ID: {saved_doc['id']}")
                 return saved_doc
             else:
@@ -217,24 +253,27 @@ class PostgreSQLStorage(StorageInterface):
     def get_fiscal_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
         """Get a single fiscal document by ID."""
         query = "SELECT * FROM fiscal_documents WHERE id = %s"
+        logger.debug(f"Searching for document with ID: {doc_id}")
         result = self._execute_query(query, (doc_id,), "one")
         if result:
+            logger.debug(f"Document found: {result['id']}")
             # Convert result back to dict format expected by the interface
             doc = dict(result)
 
             # Convert JSONB fields back from string to dict/list
-            jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data']
+            jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data', 'analyses']
             for field in jsonb_fields:
                 if field in doc and doc[field] is not None:
                     if isinstance(doc[field], str):
                         try:
-                            import json
                             doc[field] = json.loads(doc[field])
                         except (json.JSONDecodeError, TypeError):
                             # Keep as string if cannot decode
                             pass
 
             return doc
+        else:
+            logger.debug(f"Document not found with ID: {doc_id}")
         return None
 
     def get_fiscal_documents(
@@ -256,13 +295,19 @@ class PostgreSQLStorage(StorageInterface):
 
         for key, value in filters.items():
             if value is not None and value != "":
-                if key in ['issuer_cnpj', 'recipient_cnpj']:
+                # Campos UUID devem usar igualdade exata, não ILIKE
+                uuid_fields = ['id', 'fiscal_document_id', 'session_id']  # Campos UUID em várias tabelas
+                if key in uuid_fields:
+                    where_conditions.append(f"{key} = %s")
+                    params.append(value)
+                elif key in ['issuer_cnpj', 'recipient_cnpj']:
                     # Remove formatting for CNPJ search
                     value = ''.join(filter(str.isdigit, str(value)))
                     where_conditions.append(f"REPLACE({key}, '.', '') ILIKE %s")
+                    params.append(f"%{value}%")
                 else:
                     where_conditions.append(f"{key} ILIKE %s")
-                params.append(f"%{value}%")
+                    params.append(f"%{value}%")
                 param_index += 1
 
         where_clause = " WHERE " + " AND ".join(where_conditions) if where_conditions else ""
@@ -283,13 +328,12 @@ class PostgreSQLStorage(StorageInterface):
         items = [dict(item) for item in items] if items else []
 
         # Convert JSONB fields back from string to dict/list for each item
-        jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data']
+        jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data', 'analyses']
         for item in items:
             for field in jsonb_fields:
                 if field in item and item[field] is not None:
                     if isinstance(item[field], str):
                         try:
-                            import json
                             item[field] = json.loads(item[field])
                         except (json.JSONDecodeError, TypeError):
                             # Keep as string if cannot decode
@@ -369,7 +413,6 @@ class PostgreSQLStorage(StorageInterface):
 
         # Converter event_data para JSON se for um dicionário
         if "event_data" in event and event["event_data"] is not None:
-            import json
             if not isinstance(event["event_data"], (str, bytes, bytearray)):
                 event["event_data"] = json.dumps(event["event_data"], ensure_ascii=False)
 
@@ -391,7 +434,6 @@ class PostgreSQLStorage(StorageInterface):
                 # Converter event_data de volta para dicionário se for uma string JSON
                 if 'event_data' in saved_event and isinstance(saved_event['event_data'], str):
                     try:
-                        import json
                         saved_event['event_data'] = json.loads(saved_event['event_data'])
                     except (json.JSONDecodeError, TypeError):
                         # Maném como string se não for possível decodificar
@@ -437,7 +479,6 @@ class PostgreSQLStorage(StorageInterface):
                 if 'event_data' in event and event['event_data'] is not None:
                     if isinstance(event['event_data'], str):
                         try:
-                            import json
                             event['event_data'] = json.loads(event['event_data'])
                         except (json.JSONDecodeError, TypeError):
                             # Manter como está se não for possível decodificar

@@ -9,7 +9,6 @@ from typing import List, Dict, Any, Optional, Tuple
 import asyncio
 from datetime import datetime
 import streamlit as st
-from backend.services.embedding_service import GeminiEmbeddingService
 from backend.services.vector_store_service import VectorStoreService
 
 logger = logging.getLogger(__name__)
@@ -39,21 +38,26 @@ class RAGService:
     def _initialize_embedding_service(self):
         """Initialize embedding service with fallback logic."""
         try:
-            # Try to import and use fallback service
-            from backend.services.fallback_embedding_service import FallbackEmbeddingService
+            # Try to import and use fallback service with free embeddings first
+            try:
+                from .fallback_embedding_service import FallbackEmbeddingService
 
-            # Prefer free embeddings first (Sentence Transformers)
-            self.embedding_service = FallbackEmbeddingService(preferred_provider="free")
+                # Prefer free embeddings first (Sentence Transformers)
+                self.embedding_service = FallbackEmbeddingService(preferred_provider="free")
 
-            service_info = self.embedding_service.get_service_info()
-            logger.info(f"✅ RAG embedding service ready: {service_info['primary_service']} (fallback: {service_info['fallback_service']})")
+                service_info = self.embedding_service.get_service_info()
+                logger.info(f"✅ RAG embedding service ready: {service_info['primary_service']} (fallback: {service_info['fallback_service']})")
 
-        except ImportError as e:
-            logger.warning(f"Fallback embedding service not available: {e}")
-            logger.info("💡 Run: python scripts/setup_free_embeddings.py")
-            # Fallback to direct Gemini service
-            self.embedding_service = GeminiEmbeddingService()
-            logger.info("✅ Using direct Gemini embedding service")
+            except ImportError:
+                logger.warning("Fallback embedding service not available, trying Gemini...")
+                # Fallback to Gemini service
+                try:
+                    from .embedding_service import GeminiEmbeddingService
+                    self.embedding_service = GeminiEmbeddingService()
+                    logger.info("✅ Using Gemini embedding service")
+                except ImportError:
+                    logger.error("No embedding service available")
+                    raise ImportError("No embedding service available")
 
         except Exception as e:
             logger.error(f"Failed to initialize any embedding service: {e}")
@@ -176,23 +180,29 @@ class RAGService:
         """
         try:
             logger.info(f"Processing document {document.get('id')} for RAG")
+            logger.debug(f"Document data: {document}")
 
-            # Update status to processing
-            self.vector_store.update_document_embedding_status(document['id'], 'processing')
-
-            # Process document: split and generate embeddings
+            # Process document: split and generate embeddings FIRST
             chunks_with_embeddings = self.embedding_service.process_document_for_embedding(document)
 
             if not chunks_with_embeddings:
-                self.vector_store.update_document_embedding_status(document['id'], 'failed')
+                logger.error("No chunks generated from document")
                 return {
                     'success': False,
                     'error': 'No chunks generated or embedding failed',
                     'chunks_processed': 0,
-                    'document_id': document['id']
+                    'document_id': document.get('id')
                 }
 
+            # Only update status AFTER chunks are ready to be saved
+            logger.info(f"Generated {len(chunks_with_embeddings)} chunks, now updating status")
+            update_success = self.vector_store.update_document_embedding_status(document['id'], 'processing')
+
+            if not update_success:
+                logger.warning(f"Failed to update document status to processing for {document['id']}")
+
             # Save chunks to database
+            logger.info("Saving chunks to database...")
             saved_chunk_ids = self.vector_store.save_document_chunks(chunks_with_embeddings)
 
             # Update status to completed
@@ -210,12 +220,16 @@ class RAGService:
 
         except Exception as e:
             logger.error(f"Error processing document for RAG: {str(e)}")
-            self.vector_store.update_document_embedding_status(document['id'], 'failed')
+            logger.error(f"Document ID in error: {document.get('id', 'NO_ID')}")
+            try:
+                self.vector_store.update_document_embedding_status(document['id'], 'failed')
+            except:
+                logger.error("Failed to update status to failed")
             return {
                 'success': False,
                 'error': str(e),
                 'chunks_processed': 0,
-                'document_id': document['id']
+                'document_id': document.get('id')
             }
 
     def get_embedding_statistics(self) -> Dict[str, Any]:
@@ -289,9 +303,27 @@ class RAGService:
             import google.generativeai as genai
             from config import GOOGLE_API_KEY
 
-            # Configure Gemini
+            # Configure Gemini - tentar 2.0-flash primeiro, depois 1.5-flash
             genai.configure(api_key=GOOGLE_API_KEY)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+
+            # Tentar modelo mais avançado primeiro
+            model_name = 'gemini-2.0-flash-exp'
+            try:
+                model = genai.GenerativeModel(model_name)
+                logger.info(f"✅ Using Gemini model: {model_name}")
+            except Exception as e:
+                logger.warning(f"Gemini 2.0-flash not available: {e}")
+                # Fallback para 1.5-flash
+                model_name = 'gemini-1.5-flash'
+                try:
+                    model = genai.GenerativeModel(model_name)
+                    logger.info(f"✅ Using Gemini model: {model_name}")
+                except Exception as e2:
+                    logger.error(f"Gemini 1.5-flash also not available: {e2}")
+                    # Último fallback para pro
+                    model_name = 'gemini-pro'
+                    model = genai.GenerativeModel(model_name)
+                    logger.info(f"✅ Using fallback Gemini model: {model_name}")
 
             # Create RAG prompt
             rag_prompt = f"""

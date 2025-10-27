@@ -236,9 +236,9 @@ class FreeEmbeddingService:
             result_chunks = []
             for i, chunk_text in enumerate(chunks):
                 chunk_metadata = {
-                    'chunk_number': i,
                     'content_text': chunk_text,
                     'metadata': {
+                        'chunk_number': i,
                         'document_id': document_content.get('id', ''),
                         'document_type': document_content.get('document_type', ''),
                         'file_name': document_content.get('file_name', ''),
@@ -251,6 +251,7 @@ class FreeEmbeddingService:
                 result_chunks.append(chunk_metadata)
 
             logger.info(f"Split document into {len(result_chunks)} chunks")
+            logger.debug(f"Document ID used for chunks: {document_content.get('id', 'NO_ID')}")
             return result_chunks
 
         except Exception as e:

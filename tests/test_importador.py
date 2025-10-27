@@ -1,4 +1,4 @@
-"""Tests for the upload document functionality."""
+"""Tests for the importador (formerly upload document) functionality."""
 import pytest
 import sys
 import pathlib
@@ -9,11 +9,11 @@ from zoneinfo import ZoneInfo
 # Add parent directory to path
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from frontend.pages.upload_document import _prepare_document_record, _validate_document_data
+from frontend.pages.importador import _prepare_document_record, _validate_document_data
 
 
 class TestDocumentPreparation:
-    """Test document preparation for upload."""
+    """Test document preparation for importador."""
 
     def test_prepare_document_record_with_brazilian_date(self):
         """Test document preparation with Brazilian date format."""
@@ -202,12 +202,12 @@ class TestDocumentPreparation:
 
 
 class TestDocumentUploadIntegration:
-    """Test the complete upload integration."""
+    """Test the complete importador integration."""
 
-    @patch('frontend.pages.upload_document.coordinator')
-    @patch('frontend.pages.upload_document.storage')
+    @patch('frontend.pages.importador.coordinator')
+    @patch('frontend.pages.importador.storage')
     def test_full_upload_workflow(self, mock_storage, mock_coordinator):
-        """Test the complete upload workflow."""
+        """Test the complete importador workflow."""
         # Setup mocks
         mock_coordinator.run_task.side_effect = [
             # Extract result

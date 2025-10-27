@@ -98,16 +98,40 @@ def _log_validation(level: str, message: str, details: Optional[Dict] = None):
 
 def _only_digits(s: str) -> str:
     """Remove todos os caracteres não numéricos de uma string.
-    
+
     Args:
         s: String de entrada que pode conter caracteres não numéricos
-        
+
     Returns:
         String contendo apenas dígitos numéricos
     """
     if s is None:
         return ""
     return re.sub(r"\D", "", str(s))
+
+
+def _convert_brazilian_number(value: Any) -> float:
+
+    # Converte para string para processamento
+    value_str = str(value).strip()
+
+    # Remove símbolos de moeda e espaços
+    value_str = re.sub(r'[R$\s]', '', value_str)
+
+    # Converte formato brasileiro (1.234,56) para americano (1234.56)
+    if ',' in value_str and '.' in value_str:
+        # Formato brasileiro: 1.234,56 → 1234.56
+        value_str = value_str.replace('.', '').replace(',', '.')
+    elif ',' in value_str:
+        # Apenas vírgula como separador decimal: 1234,56 → 1234.56
+        value_str = value_str.replace(',', '.')
+    # Se não há vírgula nem ponto, é um número inteiro
+
+    try:
+        return float(value_str)
+    except (ValueError, TypeError):
+        logger.warning(f"Não foi possível converter valor: '{value}' -> '{value_str}'")
+        return 0.0
 
 
 def validate_cnpj(cnpj: str) -> bool:
@@ -206,9 +230,10 @@ def validate_totals(items: List[Dict[str, Any]], total: float) -> Tuple[bool, fl
             v_unit_raw = item.get("valor_unitario", 0)
             v_total_raw = item.get("valor_total", 0)
             
-            qtd = Decimal(str(qtd_raw)).quantize(Decimal("0.0000")) if qtd_raw is not None else Decimal("0")
-            v_unit = Decimal(str(v_unit_raw)).quantize(Decimal("0.0000")) if v_unit_raw is not None else Decimal("0")
-            v_total = Decimal(str(v_total_raw)).quantize(Decimal("0.00")) if v_total_raw is not None else Decimal("0")
+            # Converte valores para Decimal tratando formato brasileiro
+            qtd = Decimal(str(_convert_brazilian_number(qtd_raw))).quantize(Decimal("0.0000")) if qtd_raw is not None else Decimal("0")
+            v_unit = Decimal(str(_convert_brazilian_number(v_unit_raw))).quantize(Decimal("0.0000")) if v_unit_raw is not None else Decimal("0")
+            v_total = Decimal(str(_convert_brazilian_number(v_total_raw))).quantize(Decimal("0.00")) if v_total_raw is not None else Decimal("0")
             
             # Soma o valor total do item
             total_calculado += v_total
@@ -218,7 +243,7 @@ def validate_totals(items: List[Dict[str, Any]], total: float) -> Tuple[bool, fl
     
     # Arredonda para 2 casas decimais
     total_calculado = total_calculado.quantize(Decimal('0.01'))
-    total_doc = Decimal(str(total)).quantize(Decimal('0.01'))
+    total_doc = Decimal(str(_convert_brazilian_number(total))).quantize(Decimal('0.01'))
     
     # Verifica se o total calculado está dentro da margem de erro aceitável
     diferenca = abs(total_calculado - total_doc)
@@ -357,7 +382,7 @@ def _validate_impostos_nfe(doc: Dict[str, Any], erros: List[str], avisos: List[s
             # Verifica se o valor do ICMS está presente quando necessário
             if cst not in ('40', '41', '50'):  # CSTs que podem ter valor zero
                 valor_icms_raw = icms.get('valor', 0)
-                valor_icms = float(valor_icms_raw) if valor_icms_raw is not None else 0.0
+                valor_icms = _convert_brazilian_number(valor_icms_raw)
                 if valor_icms <= 0:
                     avisos.append(f'ICMS com valor zerado para CST {cst}')
                     _log_validation('warning', f'ICMS com valor zerado para CST {cst}')
@@ -381,31 +406,43 @@ def _validate_impostos_nfe(doc: Dict[str, Any], erros: List[str], avisos: List[s
     if 'ipi' in impostos and impostos['ipi']:
         ipi = impostos['ipi']
         detalhes_ipi = {}
-        
-        cst_ipi = str(ipi.get('cst', '')).zfill(2)
+
+        # Verifica se IPI é um dicionário ou uma string/valor simples
+        if isinstance(ipi, dict):
+            cst_ipi = str(ipi.get('cst', '')).zfill(2)
+            aliquota_raw = ipi.get('aliquota', 0)
+            valor_raw = ipi.get('valor', 0)
+        elif isinstance(ipi, (str, int, float)):
+            # Se for um valor simples, assume CST padrão
+            cst_ipi = '00'  # CST padrão para IPI
+            aliquota_raw = 0
+            valor_raw = _convert_brazilian_number(ipi) if isinstance(ipi, str) else float(ipi)
+        else:
+            # Tipo desconhecido, pula validação
+            avisos.append('Formato de IPI inválido')
+            _log_validation('warning', 'Formato de IPI inválido')
+            cst_ipi = '00'
+            aliquota_raw = 0
+            valor_raw = 0
+
         detalhes_ipi['cst'] = cst_ipi
-        
+
         # Valida o CST do IPI
         if cst_ipi not in CST_IPI_VALIDOS:
             erros.append(f'CST IPI {cst_ipi} inválido')
-            _log_validation('error', f'CST IPI inválido: {cst_ipi}')
-        
+
         # Verifica alíquota e valor do IPI com tratamento seguro
-        aliquota_raw = ipi.get('aliquota', 0)
-        valor_raw = ipi.get('valor', 0)
-        
-        aliquota = float(aliquota_raw) if aliquota_raw is not None else 0.0
-        valor = float(valor_raw) if valor_raw is not None else 0.0
-        valor = float(ipi.get('valor', 0))
-        
+        aliquota = _convert_brazilian_number(aliquota_raw)
+        valor = _convert_brazilian_number(valor_raw)
+
         detalhes_ipi['aliquota'] = aliquota
         detalhes_ipi['valor'] = valor
-        
+
         if cst_ipi not in ('01', '02', '03', '04', '51', '52', '53', '54', '55'):
             if aliquota > 0 or valor > 0:
                 avisos.append(f'IPI com valor/alíquota para CST {cst_ipi}')
                 _log_validation('warning', f'IPI com valor/alíquota para CST {cst_ipi}')
-        
+
         detalhes['ipi'] = detalhes_ipi
     else:
         avisos.append('IPI não informado')
@@ -417,21 +454,24 @@ def _validate_impostos_nfe(doc: Dict[str, Any], erros: List[str], avisos: List[s
             trib = impostos[imposto]
             detalhes_imp = {}
 
-            cst = str(trib.get('cst', '')).zfill(2)
-            detalhes_imp['cst'] = cst
+            # Verifica se trib é um dicionário antes de chamar .get()
+            if isinstance(trib, dict):
+                cst = str(trib.get('cst', '')).zfill(2)
+                detalhes_imp['cst'] = cst
 
-            # Valida o CST do PIS/COFINS
-            # Verifica alíquota e valor com tratamento seguro
-            aliquota_raw = trib.get('aliquota', 0)
-            valor_raw = trib.get('valor', 0)
+                # Valida o CST do PIS/COFINS
+                # Verifica alíquota e valor com tratamento seguro
+                aliquota_raw = trib.get('aliquota', 0)
+                valor_raw = trib.get('valor', 0)
+            else:
+                # Se não for dicionário, assume formato simples
+                cst = '00'  # CST padrão
+                detalhes_imp['cst'] = cst
+                aliquota_raw = 0
+                valor_raw = trib if isinstance(trib, (int, float)) else _convert_brazilian_number(str(trib))
 
-            aliquota = float(aliquota_raw) if aliquota_raw is not None else 0.0
-            valor = float(valor_raw) if valor_raw is not None else 0.0
-            _log_validation('error', f'CST {imposto.upper()} inválido: {cst}')
-
-            # Verifica alíquota e valor
-            aliquota = float(trib.get('aliquota', 0))
-            valor = float(trib.get('valor', 0))
+            aliquota = _convert_brazilian_number(aliquota_raw)
+            valor = _convert_brazilian_number(valor_raw)
 
             detalhes_imp['aliquota'] = aliquota
             detalhes_imp['valor'] = valor
@@ -449,9 +489,9 @@ def _validate_impostos_nfe(doc: Dict[str, Any], erros: List[str], avisos: List[s
         icms_st = impostos['icms_st']
         detalhes_st = {}
 
-        valor_st = float(icms_st.get('valor', 0))
-        mva = float(icms_st.get('mva', 0))
-        aliquota = float(icms_st.get('aliquota', 0))
+        valor_st = _convert_brazilian_number(icms_st.get('valor', 0))
+        mva = _convert_brazilian_number(icms_st.get('mva', 0))
+        aliquota = _convert_brazilian_number(icms_st.get('aliquota', 0))
 
         detalhes_st['valor'] = valor_st
         detalhes_st['mva'] = mva
@@ -594,7 +634,7 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
             avisos.append('Total do documento não informado, utilizando 0.0 para validação')
             _log_validation('warning', 'Total do documento não informado')
         else:
-            total = float(total_value)
+            total = _convert_brazilian_number(total_value)
     except (ValueError, TypeError) as e:
         error_msg = f'Valor total do documento inválido: {total_value} - {str(e)}'
         erros.append(error_msg)
@@ -676,10 +716,10 @@ def validate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
             valor_unitario_raw = item.get("valor_unitario", 0)
             valor_total_raw = item.get("valor_total", 0)
             
-            # Converte para float tratando casos None
-            quantidade = float(quantidade_raw) if quantidade_raw is not None else 0.0
-            valor_unitario = float(valor_unitario_raw) if valor_unitario_raw is not None else 0.0
-            valor_total = float(valor_total_raw) if valor_total_raw is not None else 0.0
+            # Converte para float tratando formato brasileiro (vírgula como separador)
+            quantidade = _convert_brazilian_number(quantidade_raw)
+            valor_unitario = _convert_brazilian_number(valor_unitario_raw)
+            valor_total = _convert_brazilian_number(valor_total_raw)
             
             detalhes_item.update({
                 'quantidade': quantidade,
