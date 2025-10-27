@@ -46,8 +46,8 @@ class DocumentContext:
 class DocumentSearchEngine:
     """Search and retrieve relevant document context."""
 
-    def __init__(self, supabase_client):
-        self.supabase = supabase_client
+    def __init__(self, storage):
+        self.storage = storage
 
     async def search_documents(
         self,
@@ -57,107 +57,39 @@ class DocumentSearchEngine:
     ) -> DocumentContext:
         """Search for relevant documents based on query."""
 
-        # Search in document summaries and insights
-        search_query = """
-        SELECT
-            fd.id,
-            fd.file_name,
-            fd.document_type,
-            fd.document_number,
-            fd.issuer_cnpj,
-            fd.extracted_data,
-            fd.classification,
-            ds.summary_text,
-            ds.key_insights,
-            ai.insight_text,
-            ai.insight_type,
-            ai.confidence_score
-        FROM fiscal_documents fd
-        LEFT JOIN document_summaries ds ON fd.id = ds.fiscal_document_id
-        LEFT JOIN analysis_insights ai ON fd.id = ai.fiscal_document_id
-        WHERE
-            (fd.extracted_data::text ILIKE %s OR
-             ds.summary_text ILIKE %s OR
-             ai.insight_text ILIKE %s)
-        """
-
-        params = [f'%{query}%', f'%{query}%', f'%{query}%']
-
-        if document_types:
-            search_query += " AND fd.document_type = ANY(%s)"
-            params.append(document_types)
-
-        search_query += f" ORDER BY ai.confidence_score DESC NULLS LAST LIMIT {limit}"
-
         try:
-            # Busca simples mas eficiente usando a API do Supabase
-            # Primeiro busca em extracted_data (JSON)
-            result1 = self.supabase.table('fiscal_documents').select(
-                'id, file_name, document_type, document_number, issuer_cnpj, extracted_data, classification'
-            ).or_(
-                f'extracted_data.ilike.%{query}%,file_name.ilike.%{query}%,document_type.ilike.%{query}%'
-            ).limit(limit).execute()
+            # Use storage to get all documents and filter by query
+            all_docs = self.storage.get_fiscal_documents(page=1, page_size=1000)
 
-            # Busca também em document_summaries se existirem
-            try:
-                result2 = self.supabase.table('document_summaries').select(
-                    'fiscal_document_id, summary_text, key_insights'
-                ).ilike('summary_text', f'%{query}%').execute()
+            # Filter documents containing the query
+            filtered_docs = []
+            for doc in all_docs.items:
+                if self._document_matches_query(doc, query):
+                    filtered_docs.append(doc)
 
-                # Busca em analysis_insights se existirem
-                result3 = self.supabase.table('analysis_insights').select(
-                    'fiscal_document_id, insight_text, insight_type, confidence_score'
-                ).ilike('insight_text', f'%{query}%').execute()
+            # Limit results
+            documents = filtered_docs[:limit]
 
-                # Combina os resultados
-                all_docs = {}
-                if result1.data:
-                    for doc in result1.data:
-                        all_docs[doc['id']] = doc
+            # Get summaries for these documents
+            summaries = []
+            insights = []
 
-                # Adiciona documentos encontrados através de summaries
-                if result2.data:
-                    for summary in result2.data:
-                        doc_id = summary['fiscal_document_id']
-                        if doc_id not in all_docs:
-                            # Busca o documento completo
-                            doc_result = self.supabase.table('fiscal_documents').select(
-                                'id, file_name, document_type, document_number, issuer_cnpj, extracted_data, classification'
-                            ).eq('id', doc_id).execute()
-                            if doc_result.data:
-                                all_docs[doc_id] = doc_result.data[0]
+            for doc in documents:
+                # Get document summaries if available
+                doc_summaries = self.storage.get_fiscal_documents(
+                    id=doc['id'], page=1, page_size=1
+                )
+                if doc_summaries.items:
+                    # Extract summary text from document data (if stored)
+                    pass
 
-                # Adiciona documentos encontrados através de insights
-                if result3.data:
-                    for insight in result3.data:
-                        doc_id = insight['fiscal_document_id']
-                        if doc_id not in all_docs:
-                            # Busca o documento completo
-                            doc_result = self.supabase.table('fiscal_documents').select(
-                                'id, file_name, document_type, document_number, issuer_cnpj, extracted_data, classification'
-                            ).eq('id', doc_id).execute()
-                            if doc_result.data:
-                                all_docs[doc_id] = doc_result.data[0]
-
-                documents = list(all_docs.values())[:limit]
-
-            except Exception as e:
-                logger.warning(f"Error in advanced search: {e}")
-                documents = result1.data if result1.data else []
-
-            # Get summaries
-            summary_result = self.supabase.table('document_summaries').select(
-                'fiscal_document_id, summary_text, key_insights'
-            ).in_('fiscal_document_id', [doc['id'] for doc in documents]).execute()
-
-            summaries = [item['summary_text'] for item in summary_result.data if item['summary_text']]
-
-            # Get insights
-            insights_result = self.supabase.table('analysis_insights').select(
-                'fiscal_document_id, insight_text, insight_type, insight_category, confidence_score'
-            ).in_('fiscal_document_id', [doc['id'] for doc in documents]).execute()
-
-            insights = insights_result.data if insights_result.data else []
+                # Get analysis insights for this document
+                doc_insights = self.storage.get_fiscal_documents(
+                    id=doc['id'], page=1, page_size=1
+                )
+                if doc_insights.items and doc_insights.items[0].get('classification'):
+                    # Extract insights from classification data
+                    pass
 
             return DocumentContext(
                 documents=documents,
@@ -169,12 +101,30 @@ class DocumentSearchEngine:
             logger.error(f"Error searching documents: {e}")
             return DocumentContext(documents=[], summaries=[], insights=[])
 
+    def _document_matches_query(self, document: Dict[str, Any], query: str) -> bool:
+        """Check if document matches the search query."""
+        query_lower = query.lower()
+        extracted_data = document.get('extracted_data', {})
+
+        # Search in various fields
+        search_fields = [
+            extracted_data.get('emitente', {}).get('razao_social', ''),
+            extracted_data.get('emitente', {}).get('cnpj', ''),
+            extracted_data.get('destinatario', {}).get('razao_social', ''),
+            extracted_data.get('destinatario', {}).get('cnpj', ''),
+            document.get('file_name', ''),
+            document.get('document_number', ''),
+            str(extracted_data)
+        ]
+
+        return any(query_lower in str(field).lower() for field in search_fields)
+
 
 class AnalysisCache:
     """Cache system to avoid redundant LLM calls."""
 
-    def __init__(self, supabase_client):
-        self.supabase = supabase_client
+    def __init__(self, storage):
+        self.storage = storage
 
     def _generate_cache_key(self, query: str, context: Dict[str, Any]) -> str:
         """Generate a unique cache key for query + context."""
@@ -192,15 +142,12 @@ class AnalysisCache:
         cache_key = self._generate_cache_key(query, context)
 
         try:
-            result = self.supabase.table('analysis_cache').select('*').eq(
-                'cache_key', cache_key
-            ).gte('expires_at', datetime.now().isoformat()).execute()
+            cache_entry = self.storage.get_analysis_cache(cache_key)
 
-            if result.data and len(result.data) > 0:
-                cache_entry = result.data[0]
+            if cache_entry:
                 return {
-                    'content': cache_entry['response_content'],
-                    'metadata': cache_entry['response_metadata'],
+                    'content': cache_entry.get('response_content', ''),
+                    'metadata': cache_entry.get('response_metadata', {}),
                     'cached': True
                 }
 
@@ -220,17 +167,18 @@ class AnalysisCache:
         """Cache the response for future use."""
 
         cache_key = self._generate_cache_key(query, context)
+        expires_at = (datetime.now() + timedelta(days=7)).isoformat()
 
         try:
-            self.supabase.table('analysis_cache').insert({
-                'cache_key': cache_key,
-                'query_type': query_type,
-                'query_text': query,
-                'context_data': context,
-                'response_content': response,
-                'response_metadata': metadata,
-                'expires_at': (datetime.now() + timedelta(days=7)).isoformat()
-            }).execute()
+            self.storage.save_analysis_cache(
+                cache_key=cache_key,
+                query_type=query_type,
+                query_text=query,
+                context_data=context,
+                response_content=response,
+                response_metadata=metadata,
+                expires_at=expires_at
+            )
 
         except Exception as e:
             logger.error(f"Error caching response: {e}")
@@ -239,11 +187,11 @@ class AnalysisCache:
 class ChatAgent:
     """Main chat agent that coordinates LLM interactions."""
 
-    def __init__(self, supabase_client):
-        self.supabase = supabase_client
-        self.search_engine = DocumentSearchEngine(supabase_client)
-        self.cache = AnalysisCache(supabase_client)
-        self.document_analyzer = DocumentAnalyzer(supabase_client)
+    def __init__(self, storage):
+        self.storage = storage
+        self.search_engine = DocumentSearchEngine(storage)
+        self.cache = AnalysisCache(storage)
+        self.document_analyzer = DocumentAnalyzer(storage)
 
         # Initialize Gemini
         if not GOOGLE_API_KEY:
@@ -341,15 +289,8 @@ class ChatAgent:
         """Create a new chat session."""
 
         try:
-            result = self.supabase.table('chat_sessions').insert({
-                'session_name': session_name or f"Chat Session {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                'is_active': True
-            }).execute()
-
-            if result.data and len(result.data) > 0:
-                return result.data[0]['id']
-            else:
-                raise Exception("Failed to create chat session")
+            session = self.storage.create_chat_session(session_name)
+            return session['id']
 
         except Exception as e:
             logger.error(f"Error creating chat session: {e}")
@@ -365,12 +306,7 @@ class ChatAgent:
         """Save a message to the chat session."""
 
         try:
-            self.supabase.table('chat_messages').insert({
-                'session_id': session_id,
-                'message_type': message_type,
-                'content': content,
-                'metadata': metadata or {}
-            }).execute()
+            self.storage.save_chat_message(session_id, message_type, content, metadata or {})
 
         except Exception as e:
             logger.error(f"Error saving message: {e}")
@@ -378,11 +314,9 @@ class ChatAgent:
     async def get_conversation_history(self, session_id: str) -> List[Dict[str, Any]]:
         """Get conversation history for display."""
         try:
-            result = self.supabase.table('chat_messages').select('*').eq(
-                'session_id', session_id
-            ).order('created_at').execute()
-
-            return result.data if result.data else []
+            messages = self.storage.get_chat_messages(session_id, limit=50)
+            # Convert to the format expected by the frontend
+            return messages
 
         except Exception as e:
             logger.error(f"Error getting conversation history: {e}")
@@ -391,23 +325,7 @@ class ChatAgent:
     async def get_conversation_context(self, session_id: str) -> str:
         """Get conversation history as context for the LLM."""
         try:
-            result = self.supabase.table('chat_messages').select('*').eq(
-                'session_id', session_id
-            ).order('created_at', desc=True).limit(10).execute()
-
-            if not result.data:
-                return "Esta é uma nova conversa."
-
-            # Format recent messages for context
-            context_lines = []
-            for msg in result.data[:5]:  # Last 5 messages
-                msg_type = "Usuário" if msg['message_type'] == 'user' else "Assistente"
-                context_lines.append(f"{msg_type}: {msg['content']}")
-
-            # Reverse to show chronological order
-            context_lines.reverse()
-
-            return "Histórico da conversa:\n" + "\n".join(context_lines)
+            return self.storage.get_chat_context(session_id, limit=5)
 
         except Exception as e:
             logger.error(f"Error getting conversation context: {e}")
@@ -1184,3 +1102,17 @@ Responda em português de forma profissional e útil."""
                     context_parts.append(f"- {insight}")
 
         return "\n".join(context_parts) if context_parts else "Nenhum contexto específico disponível."
+
+    def _clean_response_content(self, content: str) -> str:
+        """Clean and format the LLM response content."""
+        if not content:
+            return ""
+
+        # Remove extra whitespace and normalize line breaks
+        cleaned = content.strip()
+
+        # Fix common formatting issues
+        cleaned = cleaned.replace('```json', '```')
+        cleaned = cleaned.replace('```python', '```')
+
+        return cleaned

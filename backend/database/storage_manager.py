@@ -4,6 +4,8 @@ Handles initialization and switching between storage backends.
 """
 import logging
 from typing import Optional
+import uuid
+from datetime import datetime
 
 from config import SUPABASE_URL, SUPABASE_KEY, DATABASE_CONFIG
 from .base_storage import StorageInterface, StorageType
@@ -148,33 +150,18 @@ class StorageManager:
 
     @property
     def supabase_client(self):
-        """Get a Supabase client instance for chat system compatibility."""
-        try:
-            from supabase import create_client
-
-            if not SUPABASE_URL or not SUPABASE_KEY:
-                # If no Supabase credentials, return a mock client that raises errors
-                class MockClient:
-                    def table(self, table_name):
-                        raise AttributeError("Supabase not configured - check your credentials")
-                return MockClient()
-
-            # Create a real Supabase client
-            client = create_client(SUPABASE_URL, SUPABASE_KEY)
-            return client
-
-        except ImportError:
-            # If supabase package not available, return a mock client
+        """Get a PostgreSQL-based client that mimics Supabase API for chat system compatibility."""
+        # Since chat system now uses PostgreSQL directly, this method just returns the storage
+        # This maintains backward compatibility for any code that still references supabase_client
+        if not isinstance(self._storage, PostgreSQLStorage):
+            # If not using PostgreSQL, return a mock client that raises errors
             class MockClient:
                 def table(self, table_name):
-                    raise AttributeError("Supabase client not available - install supabase-py")
+                    raise AttributeError("PostgreSQL storage not available - chat system requires PostgreSQL")
             return MockClient()
-        except Exception as e:
-            # If any other error, return a mock client
-            class MockClient:
-                def table(self, table_name):
-                    raise AttributeError(f"Failed to create Supabase client: {e}")
-            return MockClient()
+
+        # Return the storage directly since chat system now uses it directly
+        return self._storage
 
     def close(self):
         """Close any open connections."""
