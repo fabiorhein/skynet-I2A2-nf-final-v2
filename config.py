@@ -62,12 +62,15 @@ SUPABASE_URL = _get('SUPABASE_URL') or _get('connections.supabase.URL')
 SUPABASE_KEY = _get('SUPABASE_KEY') or _get('connections.supabase.KEY')
 
 # Database connection settings for direct database access (migrations)
-# First try to get from connections.supabase.database section, then fallback to root level
-DATABASE = _get('connections.supabase.database.DATABASE') or _get('DATABASE') or 'postgres'
-DB_USER = _get('connections.supabase.database.USER') or _get('USER')
-DB_PASSWORD = _get('connections.supabase.database.PASSWORD') or _get('PASSWORD')
-DB_HOST = _get('connections.supabase.database.HOST') or _get('HOST')
-DB_PORT = _get('connections.supabase.database.PORT') or _get('PORT') or '5432'
+# Prioritize root level settings from secrets.toml, then fallback to connections section
+DATABASE = _get('DATABASE') or _get('connections.supabase.database.DATABASE') or 'postgres'
+DB_USER = _get('USER') or _get('connections.supabase.database.USER')
+DB_PASSWORD = _get('PASSWORD') or _get('connections.supabase.database.PASSWORD')
+DB_HOST = _get('HOST') or _get('connections.supabase.database.HOST')
+DB_PORT = _get('PORT') or _get('connections.supabase.database.PORT') or '5432'
+DB_POOL_MODE = _get('POOL_MODE') or _get('connections.supabase.database.POOL_MODE') or 'transaction'
+DB_SSL_MODE = _get('SSL_MODE') or _get('connections.supabase.database.SSL_MODE') or 'require'
+DB_CONNECT_TIMEOUT = _get('CONNECT_TIMEOUT') or _get('connections.supabase.database.CONNECT_TIMEOUT') or '10'
 
 # Other settings
 GOOGLE_API_KEY = _get('GOOGLE_API_KEY')
@@ -90,13 +93,14 @@ DATABASE_CONFIG = {
     'password': DB_PASSWORD,
     'host': DB_HOST,
     'port': DB_PORT,
-    'sslmode': 'require'  # or 'prefer' if you have SSL issues
+    'sslmode': DB_SSL_MODE,
+    'connect_timeout': DB_CONNECT_TIMEOUT
 }
 
 # Connection string for direct database access (for SQLAlchemy, psycopg2, etc.)
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DATABASE}?sslmode=require"
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DATABASE}?sslmode={DB_SSL_MODE}&connect_timeout={DB_CONNECT_TIMEOUT}"
 
-# Supabase client configuration (for API access)
+# Supabase client configuration (for API access - only for auth/chat if needed)
 SUPABASE_CONFIG = {
     'url': SUPABASE_URL,
     'key': SUPABASE_KEY,
@@ -156,6 +160,17 @@ Path(PROCESSED_DIR).mkdir(parents=True, exist_ok=True)
 ALL = {
     'SUPABASE_URL': SUPABASE_URL,
     'SUPABASE_KEY': SUPABASE_KEY,
+    'DATABASE': DATABASE,
+    'DB_USER': DB_USER,
+    'DB_PASSWORD': DB_PASSWORD,
+    'DB_HOST': DB_HOST,
+    'DB_PORT': DB_PORT,
+    'DB_POOL_MODE': DB_POOL_MODE,
+    'DB_SSL_MODE': DB_SSL_MODE,
+    'DB_CONNECT_TIMEOUT': DB_CONNECT_TIMEOUT,
+    'DATABASE_CONFIG': DATABASE_CONFIG,
+    'DATABASE_URL': DATABASE_URL,
+    'SQLALCHEMY_DATABASE_URL': SQLALCHEMY_DATABASE_URL,
     'TESSERACT_PATH': TESSERACT_PATH,
     'GOOGLE_API_KEY': GOOGLE_API_KEY,
     'LOG_LEVEL': LOG_LEVEL,

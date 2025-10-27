@@ -2,41 +2,34 @@
 Document Analyzer Service
 
 Fornece funcionalidades avançadas de análise de documentos fiscais
-usando RAG (Retrieval-Augmented Generation).
+usando PostgreSQL direto para melhor performance e consistência.
 """
 import json
 from typing import List, Dict, Any, Optional
 import logging
 
+from config import DATABASE_CONFIG
+from backend.database.postgresql_storage import PostgreSQLStorage
+
 logger = logging.getLogger(__name__)
+
 
 class DocumentAnalyzer:
     """Serviço de análise de documentos fiscais."""
-    
-    def __init__(self, supabase_client):
+
+    def __init__(self, supabase_client=None):
+        """Initialize with PostgreSQL storage instead of Supabase client."""
+        self.db = PostgreSQLStorage()
+        # Keep supabase_client for backward compatibility if needed
         self.supabase = supabase_client
-    
+
     async def get_documents_summary(self, filters: Optional[Dict] = None) -> Dict[str, Any]:
         """Obtém um resumo dos documentos com base nos filtros fornecidos."""
         try:
-            query = self.supabase.table('fiscal_documents').select('*')
-            
-            # Aplicar filtros
-            if filters:
-                if 'date' in filters:
-                    from datetime import datetime, timedelta
-                    date = filters['date']
-                    if isinstance(date, str):
-                        date = datetime.fromisoformat(date)
-                    next_day = date + timedelta(days=1)
-                    query = query.gte('created_at', date.isoformat()).lt('created_at', next_day.isoformat())
-                
-                if 'document_type' in filters:
-                    query = query.eq('document_type', filters['document_type'])
-            
-            result = query.execute()
-            documents = result.data if result.data else []
-            
+            # Use PostgreSQL direct instead of Supabase API
+            result = self.db.get_fiscal_documents(page=1, page_size=10000, **filters)
+            documents = result.items
+
             # Processar e resumir os documentos
             summary = {
                 'total_documents': len(documents),
@@ -45,7 +38,7 @@ class DocumentAnalyzer:
                 'total_value': 0.0,
                 'documents': []
             }
-            
+
             for doc in documents:
                 # Categorização melhorada baseada no document_type e extracted_data
                 doc_type = self._categorize_document(doc)
@@ -84,8 +77,8 @@ class DocumentAnalyzer:
         """Obtém um resumo de TODOS os documentos para análise de categorias."""
         try:
             # Buscar todos os documentos sem limite
-            result = self.supabase.table('fiscal_documents').select('*').execute()
-            documents = result.data if result.data else []
+            result = self.db.get_fiscal_documents(page=1, page_size=10000)
+            documents = result.items
 
             # Processar e resumir os documentos
             summary = {
@@ -212,77 +205,37 @@ class DocumentAnalyzer:
             return 'NFSe'
 
         return 'Desconhecido'
-    
+
     async def search_documents(self, query: str, limit: int = 5) -> List[Dict]:
         """Busca documentos relevantes usando busca inteligente por texto."""
         try:
-            # Busca mais inteligente por texto com múltiplos campos
-            search_term = f'%{query}%'
+            # Use PostgreSQL direct search instead of Supabase API
+            # This is a simplified version - for full text search, consider using PostgreSQL full-text search
+            result = self.db.get_fiscal_documents(page=1, page_size=limit)
+            documents = result.items
 
-            # Busca principal usando OR para múltiplos campos
-            result = self.supabase.table('fiscal_documents').select('*').or_(
-                f'file_name.ilike.{search_term},'
-                f'document_type.ilike.{search_term},'
-                f'document_number.ilike.{search_term},'
-                f'issuer_cnpj.ilike.{search_term},'
-                f'issuer_name.ilike.{search_term},'
-                f'extracted_data::text.ilike.{search_term}'
-            ).order('created_at', desc=True).limit(limit).execute()
+            # Filter documents based on query
+            filtered_docs = []
+            query_lower = query.lower()
 
-            documents = result.data if result.data else []
-
-            # Se não encontrou resultados, tentar busca mais ampla
-            if not documents:
-                # Buscar também em tabelas relacionadas (summaries e insights)
-                try:
-                    # Buscar IDs de documentos que têm summaries relevantes
-                    summary_result = self.supabase.table('document_summaries').select(
-                        'fiscal_document_id'
-                    ).ilike('summary_text', search_term).execute()
-
-                    if summary_result.data:
-                        doc_ids_from_summaries = [item['fiscal_document_id'] for item in summary_result.data]
-
-                        # Buscar documentos completos
-                        if doc_ids_from_summaries:
-                            docs_from_summaries = self.supabase.table('fiscal_documents').select('*').in_(
-                                'id', doc_ids_from_summaries
-                            ).limit(limit).execute()
-
-                            if docs_from_summaries.data:
-                                documents.extend(docs_from_summaries.data)
-
-                    # Buscar IDs de documentos que têm insights relevantes
-                    insights_result = self.supabase.table('analysis_insights').select(
-                        'fiscal_document_id'
-                    ).ilike('insight_text', search_term).execute()
-
-                    if insights_result.data:
-                        doc_ids_from_insights = [item['fiscal_document_id'] for item in insights_result.data]
-
-                        # Buscar documentos completos
-                        if doc_ids_from_insights:
-                            docs_from_insights = self.supabase.table('fiscal_documents').select('*').in_(
-                                'id', doc_ids_from_insights
-                            ).limit(limit - len(documents)).execute()
-
-                            if docs_from_insights.data:
-                                documents.extend(docs_from_insights.data)
-
-                except Exception as secondary_error:
-                    logger.warning(f"Secondary search failed: {secondary_error}")
-
-            # Remover duplicatas e limitar resultados
-            seen_ids = set()
-            unique_documents = []
             for doc in documents:
-                if doc['id'] not in seen_ids:
-                    unique_documents.append(doc)
-                    seen_ids.add(doc['id'])
-                    if len(unique_documents) >= limit:
-                        break
+                # Search in multiple fields
+                search_fields = [
+                    doc.get('file_name', ''),
+                    doc.get('document_type', ''),
+                    doc.get('document_number', ''),
+                    doc.get('issuer_cnpj', ''),
+                    doc.get('issuer_name', ''),
+                    str(doc.get('extracted_data', '')),
+                ]
 
-            return unique_documents
+                if any(query_lower in field.lower() for field in search_fields):
+                    filtered_docs.append(doc)
+
+                if len(filtered_docs) >= limit:
+                    break
+
+            return filtered_docs
 
         except Exception as e:
             logger.error(f"Erro na busca de documentos: {e}")

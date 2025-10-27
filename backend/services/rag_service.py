@@ -38,21 +38,26 @@ class RAGService:
     def _initialize_embedding_service(self):
         """Initialize embedding service with fallback logic."""
         try:
-            # Try to import and use fallback service
-            from backend.services.fallback_embedding_service import FallbackEmbeddingService
+            # Try to import and use fallback service with free embeddings first
+            try:
+                from .fallback_embedding_service import FallbackEmbeddingService
 
-            # Prefer free embeddings first (Sentence Transformers)
-            self.embedding_service = FallbackEmbeddingService(preferred_provider="free")
+                # Prefer free embeddings first (Sentence Transformers)
+                self.embedding_service = FallbackEmbeddingService(preferred_provider="free")
 
-            service_info = self.embedding_service.get_service_info()
-            logger.info(f"✅ RAG embedding service ready: {service_info['primary_service']} (fallback: {service_info['fallback_service']})")
+                service_info = self.embedding_service.get_service_info()
+                logger.info(f"✅ RAG embedding service ready: {service_info['primary_service']} (fallback: {service_info['fallback_service']})")
 
-        except ImportError as e:
-            logger.warning(f"Fallback embedding service not available: {e}")
-            logger.info("💡 Run: python scripts/setup_free_embeddings.py")
-            # Fallback to direct Gemini service
-            self.embedding_service = GeminiEmbeddingService()
-            logger.info("✅ Using direct Gemini embedding service")
+            except ImportError:
+                logger.warning("Fallback embedding service not available, trying Gemini...")
+                # Fallback to Gemini service
+                try:
+                    from .embedding_service import GeminiEmbeddingService
+                    self.embedding_service = GeminiEmbeddingService()
+                    logger.info("✅ Using Gemini embedding service")
+                except ImportError:
+                    logger.error("No embedding service available")
+                    raise ImportError("No embedding service available")
 
         except Exception as e:
             logger.error(f"Failed to initialize any embedding service: {e}")

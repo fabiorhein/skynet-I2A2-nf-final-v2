@@ -4,13 +4,20 @@ Gemini Embedding Service for RAG system.
 This module provides embedding generation using Google Gemini API for semantic search
 and retrieval-augmented generation in fiscal documents.
 """
-import google.generativeai as genai
 import logging
 import re
 from typing import List, Dict, Any, Optional, Tuple
 from config import GOOGLE_API_KEY
 
 logger = logging.getLogger(__name__)
+
+# Conditional import for google.generativeai
+try:
+    import google.generativeai as genai
+    GOOGLE_AVAILABLE = True
+except ImportError:
+    GOOGLE_AVAILABLE = False
+    logger.warning("Google Generative AI not available. Consider installing: pip install google-generativeai")
 
 
 class GeminiEmbeddingService:
@@ -32,6 +39,9 @@ class GeminiEmbeddingService:
         self.api_key = api_key or GOOGLE_API_KEY
         if not self.api_key:
             raise ValueError("GOOGLE_API_KEY is required for Gemini embeddings")
+
+        if not GOOGLE_AVAILABLE:
+            raise ImportError("Google Generative AI is not available. Install with: pip install google-generativeai")
 
         genai.configure(api_key=self.api_key)
         self.model_name = model_name

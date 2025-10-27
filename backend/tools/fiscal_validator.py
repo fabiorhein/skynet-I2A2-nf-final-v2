@@ -454,13 +454,21 @@ def _validate_impostos_nfe(doc: Dict[str, Any], erros: List[str], avisos: List[s
             trib = impostos[imposto]
             detalhes_imp = {}
 
-            cst = str(trib.get('cst', '')).zfill(2)
-            detalhes_imp['cst'] = cst
+            # Verifica se trib é um dicionário antes de chamar .get()
+            if isinstance(trib, dict):
+                cst = str(trib.get('cst', '')).zfill(2)
+                detalhes_imp['cst'] = cst
 
-            # Valida o CST do PIS/COFINS
-            # Verifica alíquota e valor com tratamento seguro
-            aliquota_raw = trib.get('aliquota', 0)
-            valor_raw = trib.get('valor', 0)
+                # Valida o CST do PIS/COFINS
+                # Verifica alíquota e valor com tratamento seguro
+                aliquota_raw = trib.get('aliquota', 0)
+                valor_raw = trib.get('valor', 0)
+            else:
+                # Se não for dicionário, assume formato simples
+                cst = '00'  # CST padrão
+                detalhes_imp['cst'] = cst
+                aliquota_raw = 0
+                valor_raw = trib if isinstance(trib, (int, float)) else _convert_brazilian_number(str(trib))
 
             aliquota = _convert_brazilian_number(aliquota_raw)
             valor = _convert_brazilian_number(valor_raw)

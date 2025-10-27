@@ -52,7 +52,9 @@ class PostgreSQLStorage(StorageInterface):
         if self._connection is None or self._connection.closed:
             try:
                 self._connection = psycopg2.connect(**self.db_config)
-                logger.info("Database connection established")
+                # Enable autocommit to avoid manual transaction management
+                self._connection.autocommit = True
+                logger.info("Database connection established with autocommit enabled")
             except Exception as e:
                 logger.error(f"Failed to connect to database: {e}")
                 raise PostgreSQLStorageError(f"Database connection failed: {e}")
@@ -141,7 +143,7 @@ class PostgreSQLStorage(StorageInterface):
         logger.debug("=== END DEBUG ===")
 
         # Convert dict/list objects to JSON strings for JSONB columns
-        jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data']
+        jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data', 'analyses']
         for i, (col, value) in enumerate(zip(columns, values)):
             if col in jsonb_fields and value is not None:
                 if not isinstance(value, (str, bytes, bytearray)):
@@ -226,7 +228,7 @@ class PostgreSQLStorage(StorageInterface):
                 saved_doc = dict(result)
 
                 # Convert JSONB fields back from string to dict/list (same as get_fiscal_document)
-                jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data']
+                jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data', 'analyses']
                 for field in jsonb_fields:
                     if field in saved_doc and saved_doc[field] is not None:
                         if isinstance(saved_doc[field], str):
@@ -251,13 +253,15 @@ class PostgreSQLStorage(StorageInterface):
     def get_fiscal_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
         """Get a single fiscal document by ID."""
         query = "SELECT * FROM fiscal_documents WHERE id = %s"
+        logger.debug(f"Searching for document with ID: {doc_id}")
         result = self._execute_query(query, (doc_id,), "one")
         if result:
+            logger.debug(f"Document found: {result['id']}")
             # Convert result back to dict format expected by the interface
             doc = dict(result)
 
             # Convert JSONB fields back from string to dict/list
-            jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data']
+            jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data', 'analyses']
             for field in jsonb_fields:
                 if field in doc and doc[field] is not None:
                     if isinstance(doc[field], str):
@@ -268,6 +272,8 @@ class PostgreSQLStorage(StorageInterface):
                             pass
 
             return doc
+        else:
+            logger.debug(f"Document not found with ID: {doc_id}")
         return None
 
     def get_fiscal_documents(
@@ -322,7 +328,7 @@ class PostgreSQLStorage(StorageInterface):
         items = [dict(item) for item in items] if items else []
 
         # Convert JSONB fields back from string to dict/list for each item
-        jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data']
+        jsonb_fields = ['extracted_data', 'classification', 'validation_details', 'metadata', 'document_data', 'analyses']
         for item in items:
             for field in jsonb_fields:
                 if field in item and item[field] is not None:

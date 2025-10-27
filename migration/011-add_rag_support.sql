@@ -1,24 +1,19 @@
--- 011-add_rag_support.sql
--- Add RAG support to fiscal documents system (SIMPLIFIED VERSION)
-
-SELECT 'Starting RAG support migration...' as migration_status;
-
--- Ensure pgvector extension is available
+-- Ativar extensão de vetores
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- Create document_chunks table for RAG system
+-- Tabela para armazenar pedaços de documentos
 CREATE TABLE IF NOT EXISTS document_chunks (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     fiscal_document_id UUID NOT NULL REFERENCES fiscal_documents(id) ON DELETE CASCADE,
     chunk_number INTEGER NOT NULL,
     content_text TEXT NOT NULL,
     embedding VECTOR(768),
-    metadata JSONB DEFAULT '{}'::jsonb,
+    metadata JSONB DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(fiscal_document_id, chunk_number)
 );
 
--- Create analysis_insights table for structured insights
+-- Tabela para armazenar insights extraídos
 CREATE TABLE IF NOT EXISTS analysis_insights (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     fiscal_document_id UUID NOT NULL REFERENCES fiscal_documents(id) ON DELETE CASCADE,
@@ -30,44 +25,14 @@ CREATE TABLE IF NOT EXISTS analysis_insights (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Update fiscal_documents table with RAG fields
+-- Adicionar colunas à tabela de documentos
 ALTER TABLE fiscal_documents
 ADD COLUMN IF NOT EXISTS document_type VARCHAR,
 ADD COLUMN IF NOT EXISTS document_data JSONB,
-ADD COLUMN IF NOT EXISTS embedding_status VARCHAR DEFAULT 'pending' CHECK (embedding_status IN ('pending', 'processing', 'completed', 'failed')),
+ADD COLUMN IF NOT EXISTS embedding_status VARCHAR DEFAULT 'pending',
 ADD COLUMN IF NOT EXISTS last_embedding_update TIMESTAMPTZ;
 
--- Update document_summaries table (if exists)
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'document_summaries') THEN
-        ALTER TABLE document_summaries ADD COLUMN IF NOT EXISTS embedding_vector_new VECTOR(768);
-        UPDATE document_summaries SET embedding_vector_new = embedding_vector WHERE embedding_vector IS NOT NULL;
-        ALTER TABLE document_summaries DROP COLUMN IF EXISTS embedding_vector CASCADE;
-        ALTER TABLE document_summaries RENAME COLUMN embedding_vector_new TO embedding_vector;
-        COMMENT ON COLUMN document_summaries.embedding_vector IS 'Vector embedding for semantic search (768 dimensions)';
-    END IF;
-END $$;
-
--- Create ONLY essential indexes (minimal set to avoid timeout)
-CREATE INDEX IF NOT EXISTS idx_document_chunks_fiscal_document_id
-ON document_chunks(fiscal_document_id);
-
-CREATE INDEX IF NOT EXISTS idx_analysis_insights_document_id
-ON analysis_insights(fiscal_document_id);
-
-CREATE INDEX IF NOT EXISTS idx_fiscal_documents_embedding_status
-ON fiscal_documents(embedding_status);
-
--- Grant basic permissions
-GRANT SELECT ON document_chunks TO authenticated;
-GRANT SELECT ON analysis_insights TO authenticated;
-GRANT INSERT, UPDATE ON document_chunks TO authenticated;
-GRANT INSERT ON analysis_insights TO authenticated;
-
--- Add basic comments
-COMMENT ON TABLE document_chunks IS 'Document chunks with embeddings for RAG';
-COMMENT ON TABLE analysis_insights IS 'Analysis insights from fiscal documents';
-COMMENT ON COLUMN document_chunks.embedding IS '768-dimensional vector embeddings';
-
-SELECT 'RAG support migration completed successfully' as migration_status;
+-- Criar índices para performance
+CREATE INDEX IF NOT EXISTS idx_document_chunks_fiscal_document_id ON document_chunks(fiscal_document_id);
+CREATE INDEX IF NOT EXISTS idx_analysis_insights_document_id ON analysis_insights(fiscal_document_id);
+CREATE INDEX IF NOT EXISTS idx_fiscal_documents_embedding_status ON fiscal_documents(embedding_status);

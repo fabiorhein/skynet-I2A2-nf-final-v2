@@ -867,17 +867,20 @@ Responda em português de forma profissional e útil."""
                     # Extrair IDs dos documentos
                     doc_ids = [doc['fiscal_document_id'] for doc in similar_docs]
 
-                    # Buscar documentos completos
-                    result = self.supabase.table('fiscal_documents').select('*').in_('id', doc_ids).execute()
+                    # Buscar documentos completos usando PostgreSQL direto
+                    from backend.database.postgresql_storage import PostgreSQLStorage
+                    db = PostgreSQLStorage()
 
-                    if result.data:
-                        documents = []
-                        for doc in result.data:
+                    documents = []
+                    for doc_id in doc_ids:
+                        doc = db.get_fiscal_document(doc_id)
+                        if doc:
                             # Adicionar similaridade do RAG
-                            doc_similarity = next((d['total_similarity'] for d in similar_docs if d['fiscal_document_id'] == doc['id']), 0)
+                            doc_similarity = next((d['total_similarity'] for d in similar_docs if d['fiscal_document_id'] == doc_id), 0)
                             doc['rag_similarity'] = doc_similarity
                             documents.append(doc)
 
+                    if documents:
                         document_context = DocumentContext(
                             documents=documents,
                             summaries=[],
