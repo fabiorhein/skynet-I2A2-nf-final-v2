@@ -7,6 +7,43 @@
 
 Sistema avançado para processamento de documentos fiscais com suporte a extração via OCR, validação de regras fiscais, análise inteligente com IA, e integração com PostgreSQL.
 
+## 📋 Índice
+
+- [Visão Geral](#-visão-geral)
+- [Funcionalidades Principais](#-funcionalidades-principais)
+- [Estrutura do Projeto](#-estrutura-do-projeto)
+- [Pré-requisitos](#-pré-requisitos)
+- [Instalação e Configuração](#-instalação-e-configuração)
+- [Configuração do Banco de Dados](#-configuração-do-banco-de-dados)
+- [Configuração do secrets.toml](#-configuração-do-secretstoml)
+- [Páginas do Sistema](#-páginas-do-sistema)
+  - [Home](#home-)
+  - [Importador](#importador-)
+  - [Chat IA](#chat-ia-)
+  - [Histórico](#histórico-)
+  - [RAG](#rag-)
+- [Executando o Sistema](#-executando-o-sistema)
+- [Testes](#-testes)
+- [Solução de Problemas](#-solução-de-problemas)
+- [Contribuição](#-contribuição)
+- [Licença](#-licença)
+
+## 🌟 Visão Geral
+
+O SkyNET-I2A2 é uma solução completa para processamento e análise de documentos fiscais, desenvolvida para automatizar e otimizar o fluxo de trabalho fiscal de empresas. O sistema combina técnicas avançadas de OCR, processamento de linguagem natural e aprendizado de máquina para extrair, validar e analisar informações de documentos fiscais de forma inteligente.
+
+## ✨ Funcionalidades Principais
+
+- **Processamento de Documentos Fiscais**: Suporte a diversos formatos de documentos fiscais
+- **OCR Avançado**: Extração de texto de imagens e PDFs com suporte a Tesseract OCR
+- **Validação Fiscal**: Verificação automática de regras fiscais e consistência dos dados
+- **Análise Inteligente**: Uso de IA para análise de documentos e geração de insights
+- **Integração com PostgreSQL**: Armazenamento seguro e escalável dos dados
+- **Interface Web Intuitiva**: Desenvolvida com Streamlit para fácil utilização
+- **Sistema RAG**: Recuperação e Geração com IA para respostas precisas
+- **Histórico Completo**: Rastreamento de todas as operações realizadas
+- **Suporte a Múltiplos Usuários**: Gerenciamento de sessões e histórico por usuário
+
 ## ✨ **Novidades da Versão Atual**
 
 - ✅ **Tratamento de Datas Aprimorado**: Corrigido erro `'datetime.datetime' object is not subscriptable` em todas as páginas
@@ -17,6 +54,277 @@ Sistema avançado para processamento de documentos fiscais com suporte a extraç
 - ✅ **Sistema de Migrações Avançado**: Script `run_migration.py` para todas as plataformas
 - ✅ **Testes Completos**: Cobertura de testes para todas as funcionalidades
 - ✅ **Correções de Bugs**: Resolução de problemas críticos de upload, validação e exibição
+
+## 📁 Estrutura do Projeto
+
+```
+skynet-I2A2-nf-final-v2/
+├── .streamlit/               # Configurações do Streamlit
+│   ├── config.toml          # Configurações gerais
+│   └── secrets.toml         # Credenciais e configurações sensíveis
+├── backend/                 # Lógica de backend
+│   ├── agents/              # Agentes de processamento
+│   ├── api/                 # Definições de API
+│   ├── database/            # Camada de banco de dados
+│   └── services/            # Serviços principais
+├── frontend/                # Interface do usuário
+│   ├── components/          # Componentes reutilizáveis
+│   └── pages/               # Páginas da aplicação
+├── migration/               # Scripts de migração do banco de dados
+├── scripts/                 # Scripts utilitários
+├── tests/                   # Testes automatizados
+├── .env.example             # Exemplo de variáveis de ambiente
+├── app.py                   # Ponto de entrada da aplicação
+├── config.py                # Configurações da aplicação
+├── requirements.txt         # Dependências do projeto
+└── setup.sh                 # Script de instalação
+```
+
+## 📋 Pré-requisitos
+
+- Python 3.11 ou superior
+- PostgreSQL 12 ou superior
+- Tesseract OCR (para processamento de imagens)
+- Git (para controle de versão)
+- pip (gerenciador de pacotes Python)
+
+## 🚀 Instalação e Configuração
+
+### 1. Clonar o repositório
+
+```bash
+git clone https://github.com/fabiorhein/skynet-I2A2-nf-final-v2.git
+cd skynet-I2A2-nf-final-v2
+```
+
+### 2. Configurar ambiente virtual
+
+```bash
+# Criar ambiente virtual
+python -m venv venv
+
+# Ativar ambiente virtual
+# Linux/macOS
+source venv/bin/activate
+# Windows
+# .\venv\Scripts\activate
+```
+
+### 3. Instalar dependências
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Instalar Tesseract OCR
+
+#### Linux (Ubuntu/Debian)
+```bash
+sudo apt update
+sudo apt install tesseract-ocr tesseract-ocr-por
+```
+
+#### macOS (usando Homebrew)
+```bash
+brew install tesseract tesseract-lang
+```
+
+#### Windows
+Baixe e instale o Tesseract OCR do site oficial:
+https://github.com/UB-Mannheim/tesseract/wiki
+
+## 🗃️ Configuração do Banco de Dados
+
+### 1. Criar banco de dados e usuário
+
+```sql
+-- Conectar ao PostgreSQL como superusuário
+sudo -u postgres psql
+
+-- Criar banco de dados
+CREATE DATABASE skynet_db;
+
+-- Criar usuário
+CREATE USER skynet_user WITH PASSWORD 'sua_senha_segura';
+
+-- Conceder privilégios
+GRANT ALL PRIVILEGES ON DATABASE skynet_db TO skynet_user;
+
+-- Conceder privilégios para extensões
+\c skynet_db
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE EXTENSION IF NOT EXISTS "vector";
+```
+
+### 2. Aplicar migrações
+
+```bash
+# Aplicar todas as migrações
+python scripts/run_migration.py
+
+# Ou aplicar uma migração específica
+python scripts/run_migration.py --single migration/001-create_fiscal_documents.sql
+```
+
+## 🔐 Configuração do secrets.toml
+
+Crie ou edite o arquivo `.streamlit/secrets.toml` com as seguintes configurações:
+
+```toml
+# Google APIs
+GOOGLE_API_KEY = "sua_chave_aqui"
+
+# Configurações do Tesseract OCR
+# Para Linux (padrão)
+TESSERACT_PATH = "/usr/bin/tesseract"
+
+# Configurações de Log
+LOG_LEVEL = "INFO"
+
+# Configurações do FiscalValidatorAgent
+[FISCAL_VALIDATOR]
+cache_enabled = true
+cache_dir = ".fiscal_cache"
+cache_ttl_days = 30
+
+# Configurações de Rate Limiting
+[RATE_LIMITING]
+embeddings_per_minute = 20
+embeddings_per_hour = 300
+chat_per_minute = 30
+chat_per_hour = 400
+
+# Configuração do Banco de Dados PostgreSQL
+[connections.postgresql]
+HOST = "localhost"
+PORT = "5432"
+DATABASE = "skynet_db"
+USER = "skynet_user"
+PASSWORD = "sua_senha_segura"
+```
+
+## 🖥️ Páginas do Sistema
+
+### Home 🏠
+A página inicial do sistema, fornecendo uma visão geral das funcionalidades e acesso rápido às principais operações.
+
+**Funcionalidades:**
+- Visão geral do sistema
+- Estatísticas de documentos processados
+- Links rápidos para as principais funcionalidades
+- Status do sistema e conexões
+
+### Importador 📤
+Interface para importação e processamento de documentos fiscais.
+
+**Funcionalidades:**
+- Upload de múltiplos arquivos (PDF, imagens)
+- Extração automática de texto com OCR
+- Validação de campos fiscais
+- Visualização prévia dos documentos
+- Correção manual de campos extraídos
+
+### Chat IA 💬
+Interface de chat com IA para consulta sobre documentos fiscais.
+
+**Funcionalidades:**
+- Chat interativo com IA
+- Contexto de documentos carregados
+- Histórico de conversas
+- Exportação de conversas
+
+### Histórico 📜
+Visualização e gerenciamento de documentos processados.
+
+**Funcionalidades:**
+- Lista de documentos processados
+- Filtros e busca avançada
+- Visualização detalhada de documentos
+- Exportação de dados
+
+### RAG 🔍
+Interface para o sistema de Recuperação e Geração com IA.
+
+**Funcionalidades:**
+- Busca semântica em documentos
+- Geração de respostas baseadas em contexto
+- Ajuste de parâmetros de busca
+- Visualização de similaridade
+
+## 🚀 Executando o Sistema
+
+### Ambiente de Desenvolvimento
+
+```bash
+# Ativar ambiente virtual
+source venv/bin/activate  # Linux/macOS
+# .\venv\Scripts\activate  # Windows
+
+# Iniciar o servidor Streamlit
+streamlit run app.py
+```
+
+O sistema estará disponível em: http://localhost:8501
+
+### Produção
+
+Para ambientes de produção, recomenda-se o uso de um servidor WSGI como Gunicorn com Nginx como proxy reverso.
+
+## 🧪 Testes
+
+O sistema inclui uma suíte abrangente de testes para garantir a qualidade do código:
+
+```bash
+# Executar todos os testes
+pytest
+
+# Executar testes específicos
+pytest tests/test_date_conversion.py      # Testes de conversão de data
+pytest tests/test_document_processing.py  # Testes de processamento de documentos
+pytest tests/test_importador.py           # Testes do módulo de importação
+pytest tests/test_rag_service.py          # Testes do serviço RAG
+
+# Gerar relatório de cobertura
+pytest --cov=backend tests/
+```
+
+## 🐛 Solução de Problemas
+
+### Erros comuns e soluções:
+
+1. **Erro ao conectar ao banco de dados**
+   - Verifique as credenciais no `secrets.toml`
+   - Certifique-se de que o PostgreSQL está em execução
+   - Verifique se o usuário tem as permissões necessárias
+
+2. **Problemas com OCR**
+   - Verifique se o Tesseract está instalado corretamente
+   - Confirme o caminho para o executável do Tesseract no `secrets.toml`
+   - Para melhor precisão, use imagens com boa resolução e contraste
+
+3. **Erros de migração**
+   - Verifique se todas as migrações anteriores foram aplicadas
+   - Consulte os logs para mensagens de erro específicas
+   - Em caso de falha, pode ser necessário recriar o banco de dados e aplicar as migrações novamente
+
+## 🤝 Contribuição
+
+Contribuições são bem-vindas! Siga estes passos para contribuir:
+
+1. Faça um fork do projeto
+2. Crie uma branch para sua feature (`git checkout -b feature/nova-feature`)
+3. Faça commit das suas alterações (`git commit -m 'Adiciona nova feature'`)
+4. Faça push para a branch (`git push origin feature/nova-feature`)
+5. Abra um Pull Request
+
+## 📄 Licença
+
+Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
+
+---
+
+Desenvolvido por [Fabio Hein](https://github.com/fabiorhein) - 2024
 
 ## 🚀 **Início Rápido**
 
