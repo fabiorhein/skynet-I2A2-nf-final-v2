@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import base64
 import io
 from typing import Any, Dict, List
+from decimal import Decimal
 
 # Inicializa a variável pd como None
 pd = None
@@ -38,6 +39,31 @@ def safe_dataframe(data):
     except Exception as e:
         st.error(f"Erro ao criar DataFrame: {str(e)}")
         return None
+
+def _to_float(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        clean = value.strip().replace('R$', '').replace(' ', '')
+        if not clean:
+            return 0.0
+        if ',' in clean and '.' in clean:
+            clean = clean.replace('.', '').replace(',', '.')
+        elif ',' in clean:
+            clean = clean.replace(',', '.')
+        try:
+            return float(clean)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+def _format_currency(value: Any) -> str:
+    amount = _to_float(value)
+    return f"R$ {amount:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
 
 def get_validation_errors(doc):
     """Extrai informações de validação do documento."""
@@ -164,9 +190,10 @@ def get_document_summary(doc):
     destinatario = doc_data.get('destinatario') or {}
     
     # Valores
-    total = doc_data.get('total', 0)
-    if isinstance(total, (int, float)):
-        total = f'R$ {total:,.2f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
+    total_value = doc_data.get('total')
+    if _to_float(total_value) == 0.0:
+        total_value = doc_data.get('valor_servico', doc.get('total_value', 0))
+    total = _format_currency(total_value)
     
     # Conta itens
     itens = doc_data.get('itens') or []
@@ -218,10 +245,10 @@ def render_document_details(doc):
             
         with col2:
             st.markdown("**Valores**")
-            total = doc_data.get('total', 0)
-            if isinstance(total, (int, float)):
-                total = f'R$ {total:,.2f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
-            st.write(f"**Valor Total:** {total}")
+            total_value = doc_data.get('total')
+            if _to_float(total_value) == 0.0:
+                total_value = doc_data.get('valor_servico', doc.get('total_value', 0))
+            st.write(f"**Valor Total:** {_format_currency(total_value)}")
             
             # Conta itens
             itens = doc_data.get('itens', [])
