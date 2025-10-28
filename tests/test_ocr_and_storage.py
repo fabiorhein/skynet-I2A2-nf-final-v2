@@ -1,8 +1,10 @@
-import sys, pathlib
+import pathlib
+import sys
+
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+
+from backend.database.local_storage import LocalJSONStorage
 from backend.tools.ocr_processor import ocr_text_to_document
-from backend import storage
-import os
 
 
 def test_ocr_mapping_basic():
@@ -15,20 +17,26 @@ def test_ocr_mapping_basic():
     Total: 4,00
     """
     doc = ocr_text_to_document(text)
+
+    assert doc['tipo_documento'] == 'NFE'
     assert doc['emitente']['cnpj'] == '12345678000195'
     assert doc['numero'] == '234'
     assert abs(doc['total'] - 4.0) < 1e-6
 
 
-def test_storage_write_read(tmp_path):
-    # temporarily point storage file to tmp location
-    from backend import storage as stmod
-    orig = stmod.STORAGE_PATH
-    try:
-        stmod.STORAGE_PATH = tmp_path / 'docs.json'
-        stmod.save_document({'file': 'a.xml', 'parsed': {'numero': '1'}})
-        arr = stmod.load_documents()
-        assert len(arr) == 1
-        assert arr[0]['file'] == 'a.xml'
-    finally:
-        stmod.STORAGE_PATH = orig
+def test_local_storage_save_and_load(tmp_path):
+    storage = LocalJSONStorage(data_dir=str(tmp_path))
+
+    saved_doc = storage.save_fiscal_document({
+        'file_name': 'nota.xml',
+        'document_type': 'NFe',
+        'document_number': '1'
+    })
+
+    assert saved_doc['id'] is not None
+
+    loaded = storage.get_fiscal_document(saved_doc['id'])
+
+    assert loaded is not None
+    assert loaded['file_name'] == 'nota.xml'
+    assert loaded['document_number'] == '1'

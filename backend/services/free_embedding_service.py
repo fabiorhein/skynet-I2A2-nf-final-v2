@@ -16,8 +16,9 @@ logger = logging.getLogger(__name__)
 try:
     from sentence_transformers import SentenceTransformer
     SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    logger.warning("sentence-transformers not installed. Install with: pip install sentence-transformers torch")
+except (ImportError, ValueError):
+    logger.warning("sentence-transformers not installed or misconfigured. Install with: pip install sentence-transformers torch")
+    SentenceTransformer = None  # type: ignore
     SENTENCE_TRANSFORMERS_AVAILABLE = False
 
 

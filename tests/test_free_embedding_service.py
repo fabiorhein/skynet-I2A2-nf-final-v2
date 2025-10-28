@@ -1,13 +1,23 @@
-import pytest
+import os
+import sys
+import pathlib
 from unittest.mock import MagicMock
+
+import numpy as np
+import pytest
+
+# Ensure backend package is importable when running tests in isolation
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 @pytest.fixture
 def mock_sentence_transformer(monkeypatch):
     mock_model = MagicMock()
     mock_model.encode.side_effect = [
-        [0.1, 0.1, 0.2],
-        [0.3, 0.4, 0.5],
+        np.array([0.1, 0.1, 0.2]),
+        np.array([0.3, 0.4, 0.5]),
     ]
 
     monkeypatch.setattr(

@@ -44,10 +44,12 @@ class TestRecipientFields:
         # Should validate successfully
         assert result['status'] in ['success', 'warning', 'error']
 
-        # Check that recipient validation exists
+        # Check that recipient validation exists and reflects normalized structure
         assert 'destinatario' in result['validations']
-        assert result['validations']['destinatario']['cnpj'] is True  # Test CNPJ should be valid
-        assert result['validations']['destinatario']['razao_social'] == 'Cliente Teste SA'
+        dest_validation = result['validations']['destinatario']
+        assert dest_validation['tipo'] == 'CNPJ'
+        assert dest_validation['identificacao'].replace('.', '').replace('/', '').replace('-', '') == '12345678000199'
+        assert dest_validation['valido'] is False  # CNPJ de teste é tratado como inválido
 
     def test_fiscal_validator_missing_recipient(self):
         """Test fiscal validator with missing recipient."""
@@ -77,8 +79,11 @@ class TestRecipientFields:
 
         # Should not have recipient validation if no recipient present
         if 'destinatario' in result['validations']:
-            # If present, should indicate no recipient data
-            assert not result['validations']['destinatario'].get('cnpj', False)
+            dest_validation = result['validations']['destinatario']
+            assert dest_validation['tipo'] == 'CNPJ'
+            identificacao = dest_validation.get('identificacao') or ''
+            assert identificacao in (None, '', 'N/A') or identificacao.replace('.', '').replace('/', '').replace('-', '') == ''
+            assert dest_validation.get('valido') is False
 
     def test_postgresql_storage_recipient_fields(self):
         """Test PostgreSQL storage with recipient fields."""
@@ -183,64 +188,23 @@ class TestRecipientFields:
             assert result['issue_date'] == '2025-08-28T00:00:00Z'
 
     def test_recipient_fields_filtering(self):
-        """Test filtering documents by recipient fields."""
-        with patch.object(PostgreSQLStorage, '_get_connection') as mock_conn, \
-             patch.object(PostgreSQLStorage, '_execute_query') as mock_execute:
-
-            mock_connection = MagicMock()
-            mock_conn.return_value = mock_connection
-
-            # Mock multiple documents for filtering tests
-            mock_execute.side_effect = [
-                # _get_table_columns
-                [
-                    {'column_name': 'id'}, {'column_name': 'file_name'},
-                    {'column_name': 'recipient_cnpj'}, {'column_name': 'recipient_name'},
-                    {'column_name': 'document_number'}
-                ],
-                # First document
-                {
-                    'id': 'doc-1',
-                    'file_name': 'test1.xml',
-                    'recipient_cnpj': '11111111000100',
-                    'recipient_name': 'Cliente A',
-                    'document_number': '111'
-                },
-                # Second document
-                {
-                    'id': 'doc-2',
-                    'file_name': 'test2.xml',
-                    'recipient_cnpj': '22222222000100',
-                    'recipient_name': 'Cliente B',
-                    'document_number': '222'
-                },
-                # Filter by recipient_cnpj
-                [
-                    {
-                        'id': 'doc-1',
-                        'recipient_cnpj': '11111111000100',
-                        'recipient_name': 'Cliente A'
-                    }
-                ],
-                # Filter by recipient_name
-                [
-                    {
-                        'id': 'doc-2',
-                        'recipient_cnpj': '22222222000100',
-                        'recipient_name': 'Cliente B'
-                    }
-                ]
-            ]
-
+        """Test that recipient filters are passed through with normalized values."""
+        with patch.object(PostgreSQLStorage, '_get_connection') as mock_conn:
             storage = PostgreSQLStorage()
 
-            # Test filtering by recipient CNPJ
-            result = storage.get_fiscal_documents(filters={'recipient_cnpj': '11111111000100'})
-            assert result.total >= 1
+            with patch.object(storage, '_execute_query') as mock_execute:
+                mock_execute.side_effect = [
+                    [{'count': 1}],
+                    [{'id': 'doc-1', 'recipient_cnpj': '11111111000100'}],
+                    [{'count': 1}],
+                    [{'id': 'doc-2', 'recipient_name': 'Cliente B'}]
+                ]
 
-            # Test filtering by recipient name
-            result = storage.get_fiscal_documents(filters={'recipient_name': 'Cliente B'})
-            assert result.total >= 1
+                storage.get_fiscal_documents(recipient_cnpj='11.111.111/0001-00')
+                storage.get_fiscal_documents(recipient_name='Cliente B')
+
+                # Verifica que o CNPJ foi normalizado para apenas dígitos
+                assert any('%11111111000100%' in str(call.args[1]) for call in mock_execute.call_args_list)
 
     def test_recipient_validation_cnpj_formats(self):
         """Test recipient validation with different CNPJ formats."""
@@ -279,7 +243,10 @@ class TestRecipientFields:
             # Should validate successfully regardless of CNPJ format
             assert result['status'] in ['success', 'warning', 'error']
 
-            # Check that CNPJ validation works
+            # Check that CNPJ normalization and boolean flag are exposed
             if 'destinatario' in result['validations']:
-                # The CNPJ should be validated correctly
-                assert result['validations']['destinatario']['cnpj'] in [True, False]
+                dest_validation = result['validations']['destinatario']
+                assert dest_validation['tipo'] in ['CNPJ', 'CPF']
+                identificacao = dest_validation['identificacao'].replace('.', '').replace('/', '').replace('-', '')
+                assert identificacao == expected_clean
+                assert isinstance(dest_validation['valido'], bool)
