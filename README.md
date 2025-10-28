@@ -297,6 +297,9 @@ Principais suítes disponíveis:
 - `tests/test_recipient_fields.py`: validação de CNPJ/CPF e filtragem por destinatário.
 - `tests/test_importador.py`: fluxo de upload fim a fim com validações.
 - `tests/test_rag_service.py`: pipeline completo do RAG e fallback de embeddings.
+- `tests/test_free_embedding_service.py`: geração de embeddings locais e cenários de erro.
+- `tests/test_fallback_embedding_service.py`: uso exclusivo de embeddings gratuitos e falhas de inicialização.
+- `tests/test_vector_store_service.py`: persistência de chunks, busca semântica e atualização de status.
 
 ## 🗂️ Estrutura do Projeto
 
