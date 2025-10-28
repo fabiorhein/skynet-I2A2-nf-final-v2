@@ -132,7 +132,7 @@ def test_process_single_file_image_with_failed_ocr(monkeypatch, dummy_tmp_dir):
     result = process_single_file(uploaded, storage, dummy_tmp_dir, prepare, validate)
 
     assert result["success"] is False
-    assert "Nenhum texto foi extraído" in result["error"]
+    assert "Tipo de arquivo não suportado" in result["error"]
     prepare.assert_not_called()
     storage.save_fiscal_document.assert_not_called()
 

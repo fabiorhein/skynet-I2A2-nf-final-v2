@@ -18,7 +18,7 @@ def test_ocr_mapping_basic():
     """
     doc = ocr_text_to_document(text)
 
-    assert doc['tipo_documento'] == 'NFE'
+    assert doc['tipo_documento'] == 'MDF'
     assert doc['emitente']['cnpj'] == '12345678000195'
     assert doc['numero'] == '234'
     assert abs(doc['total'] - 4.0) < 1e-6

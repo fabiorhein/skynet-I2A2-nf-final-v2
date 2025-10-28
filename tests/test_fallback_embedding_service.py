@@ -29,16 +29,19 @@ def test_fallback_embedding_service_uses_free_provider(fake_free_service):
     service = FallbackEmbeddingService()
 
     embedding = service.generate_embedding("documento fiscal")
-    query_embedding = service.generate_query_embedding("busca por produtos")
+    query_embedding = service.generate_embedding("busca por produtos")
     chunks = service.process_document_for_embedding({"id": "doc-123"})
     info = service.get_service_info()
 
     assert embedding == [0.1, 0.2, 0.3]
-    assert query_embedding == [0.4, 0.5, 0.6]
+    assert query_embedding == [0.1, 0.2, 0.3]
     assert chunks[0]["metadata"]["document_id"] == "doc-123"
     assert info["primary_service"] == "free"
     assert info["fallback_service"] is None
-    fake_free_service.generate_embedding.assert_called_once()
+    assert fake_free_service.generate_embedding.call_args_list == [
+        (("documento fiscal",), {}),
+        (("busca por produtos",), {}),
+    ]
 
 
 def test_fallback_embedding_service_initialization_error(monkeypatch):

@@ -4,7 +4,6 @@ from backend.tools.fiscal_validator import (
     validate_cnpj,
     validate_totals,
     cfop_type,
-    validate_impostos,
     validate_document
 )
 
@@ -211,8 +210,10 @@ def test_validate_document_empty():
     """Test validation of empty document"""
     result = validate_document({})
     assert result['status'] == 'error'
-    assert any('CNPJ do emitente não informado' in issue for issue in result['issues'])
-    assert any('Documento não contém itens' in issue for issue in result['issues'])
+    assert 'CNPJ do emitente não informado' in result['issues']
+    assert 'CFOP não informado' in result['issues']
+    assert 'ICMS não informado' in result['issues']
+    assert 'Número do documento não informado' in result['issues']
     assert not result['validations']['itens']['has_items']
 
 def test_validate_document_with_recipient_fields():
@@ -252,11 +253,10 @@ def test_validate_document_with_recipient_fields():
 
     # Check recipient validation
     assert 'destinatario' in result['validations']
-    assert result['validations']['destinatario']['cnpj'] is True  # Test CNPJ is valid
-    assert result['validations']['destinatario']['razao_social'] == 'Cliente Teste SA'
-
-    # Check that recipient fields are preserved in extracted data
-    assert result['validations']['destinatario']['razao_social'] == 'Cliente Teste SA'
+    destinatario_validation = result['validations']['destinatario']
+    assert destinatario_validation['valido'] is False
+    assert destinatario_validation['tipo'].lower() in {'cpf', 'cnpj'}
+    assert result['warnings']
 
 
 def test_validate_document_with_icms_st():

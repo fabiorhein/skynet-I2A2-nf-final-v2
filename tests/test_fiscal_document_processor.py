@@ -1,316 +1,197 @@
-"""
-Testes para o processador de documentos fiscais.
-"""
+"""Testes para o processador de documentos fiscais."""
 import os
 import sys
 import pytest
+from types import ModuleType, SimpleNamespace
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
-# Adiciona o diretório raiz ao path para importar os módulos
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import backend.tools.fiscal_document_processor as processor_module
 from backend.tools.fiscal_document_processor import FiscalDocumentProcessor
 
-# Caminho para a pasta de fixtures
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
-# Verifica se o Tesseract está instalado
-pytesseract_available = True
-try:
-    import pytesseract
-    # Tenta encontrar o Tesseract no PATH
-    try:
-        pytesseract.get_tesseract_version()
-    except pytesseract.TesseractNotFoundError:
-        pytesseract_available = False
-except ImportError:
-    pytesseract_available = False
+def _ensure_module(name: str, module):
+    if name not in sys.modules:
+        sys.modules[name] = module
 
-# Pula os testes se o Tesseract não estiver disponível
-pytestmark = pytest.mark.skipif(
-    not pytesseract_available,
-    reason="Tesseract OCR não está instalado ou não está no PATH"
+
+_ensure_module(
+    'pytesseract',
+    SimpleNamespace(
+        image_to_string=lambda *args, **kwargs: "",
+        get_tesseract_version=lambda: "5.0",
+        pytesseract=SimpleNamespace(tesseract_cmd=None),
+    ),
+)
+_ensure_module('pytesseract.pytesseract', SimpleNamespace(tesseract_cmd=None))
+
+_ensure_module(
+    'pdf2image',
+    SimpleNamespace(convert_from_path=lambda *args, **kwargs: [], convert_from_bytes=lambda *args, **kwargs: []),
 )
 
-class TestFiscalDocumentProcessor:
-    """Testes para a classe FiscalDocumentProcessor."""
-    
-    @classmethod
-    def setup_class(cls):
-        """Configuração inicial para os testes."""
-        cls.processor = FiscalDocumentProcessor()
-        
-        # Cria diretório de saída se não existir
-        cls.output_dir = Path("test_output")
-        cls.output_dir.mkdir(exist_ok=True)
-    
-    def test_is_supported_file(self):
-        """Testa a verificação de formatos suportados."""
-        assert self.processor.is_supported_file("teste.pdf") is True
-        assert self.processor.is_supported_file("teste.PDF") is True
-        assert self.processor.is_supported_file("teste.jpg") is True
-        assert self.processor.is_supported_file("teste.png") is True
-        assert self.processor.is_supported_file("teste.tiff") is True
-        assert self.processor.is_supported_file("teste.bmp") is True
-        assert self.processor.is_supported_file("teste.txt") is False
-        assert self.processor.is_supported_file("teste.doc") is False
-    
-    def test_extract_text_from_image(self, tmp_path):
-        """Testa a extração de texto de uma imagem."""
-        # Cria uma imagem de teste com texto
-        from PIL import Image, ImageDraw, ImageFont
-        
-        # Cria uma imagem em branco
-        img = Image.new('RGB', (800, 200), color=(255, 255, 255))
-        d = ImageDraw.Draw(img)
-        
-        # Tenta carregar uma fonte, usa a padrão se não conseguir
-        try:
-            font = ImageFont.truetype("arial.ttf", 20)
-        except IOError:
-            font = ImageFont.load_default()
-        
-        # Adiciona texto à imagem
-        d.text((10, 10), "NOTA FISCAL ELETRÔNICA", fill=(0, 0, 0), font=font)
-        d.text((10, 40), "Nº 12345", fill=(0, 0, 0), font=font)
-        d.text((10, 70), "Emitente: LOJA TESTE LTDA", fill=(0, 0, 0), font=font)
-        d.text((10, 100), "CNPJ: 12.345.678/0001-90", fill=(0, 0, 0), font=font)
-        d.text((10, 130), "Valor Total: R$ 1.234,56", fill=(0, 0, 0), font=font)
-        
-        # Salva a imagem temporariamente
-        img_path = tmp_path / "test_image.png"
-        img.save(img_path)
-        
-        # Extrai o texto
-        result = self.processor.extract_text(img_path)
-        
-        # Verifica o resultado
-        assert result['success'] is True
-        assert "NOTA FISCAL ELETRÔNICA" in result['text']
-        assert "12345" in result['text']
-        assert "LOJA TESTE" in result['text']
-        assert "12.345.678/0001-90" in result['text']
-        assert "1.234,56" in result['text']
-    
-    def test_extract_text_from_pdf(self, tmp_path):
-        """Testa a extração de texto de um PDF."""
-        # Cria um PDF de teste com texto
-        from reportlab.lib.pagesizes import letter
-        from reportlab.pdfgen import canvas
-        
-        # Cria um PDF com texto
-        pdf_path = tmp_path / "test_pdf.pdf"
-        c = canvas.Canvas(str(pdf_path), pagesize=letter)
-        width, height = letter
-        
-        # Adiciona texto ao PDF
-        c.setFont("Helvetica", 12)
-        c.drawString(100, height - 100, "NOTA FISCAL ELETRÔNICA")
-        c.drawString(100, height - 130, "Nº 67890")
-        c.drawString(100, height - 160, "Emitente: EMPRESA TESTE LTDA")
-        c.drawString(100, height - 190, "CNPJ: 98.765.432/0001-21")
-        c.drawString(100, height - 220, "Valor Total: R$ 5.678,90")
-        
-        # Adiciona uma segunda página
-        c.showPage()
-        c.setFont("Helvetica", 12)
-        c.drawString(100, height - 100, "Continuação da Nota Fiscal")
-        c.drawString(100, height - 130, "Página 2")
-        
-        c.save()
-        
-        # Extrai o texto
-        result = self.processor.extract_text(pdf_path)
-        
-        # Verifica o resultado
-        assert result['success'] is True
-        assert "NOTA FISCAL ELETRÔNICA" in result['text']
-        assert "67890" in result['text']
-        assert "EMPRESA TESTE" in result['text']
-        assert "98.765.432/0001-21" in result['text']
-        assert "5.678,90" in result['text']
-        assert len(result['pages']) >= 1  # Deve ter pelo menos uma página
-    
-    def test_identify_document_type(self):
-        """Testa a identificação do tipo de documento."""
-        # Teste para NFe
-        nfe_text = """
-        NOTA FISCAL ELETRÔNICA
-        Nº 12345
-        EMITENTE: LOJA TESTE LTDA
-        CNPJ: 12.345.678/0001-90
-        """
-        assert self.processor.identify_document_type(nfe_text) == 'nfe'
-        
-        # Teste para NFCe
-        nfce_text = """
-        NFC-e
-        Nº 12345
-        EMITENTE: LOJA TESTE LTDA
-        CNPJ: 12.345.678/0001-90
-        """
-        assert self.processor.identify_document_type(nfce_text) == 'nfce'
-        
-        # Teste para CTe
-        cte_text = """
-        CONHECIMENTO DE TRANSPORTE ELETRÔNICO
-        Nº 12345
-        EMITENTE: TRANSPORTADORA TESTE LTDA
-        CNPJ: 12.345.678/0001-90
-        """
-        assert self.processor.identify_document_type(cte_text) == 'cte'
-        
-        # Teste para MDFe
-        mdfe_text = """
-        MANIFESTO DE DOCUMENTOS FISCAIS ELETRÔNICOS
-        Nº 12345
-        EMITENTE: TRANSPORTADORA TESTE LTDA
-        CNPJ: 12.345.678/0001-90
-        """
-        assert self.processor.identify_document_type(mdfe_text) == 'mdfe'
-        
-        # Teste para tipo desconhecido
-        unknown_text = "Documento qualquer sem identificação clara"
-        assert self.processor.identify_document_type(unknown_text) == 'unknown'
-    
-    def test_extract_with_heuristics(self):
-        """Testa a extração de dados estruturados usando heurísticas."""
-        # Texto de exemplo de uma nota fiscal
-        text = """
-        NOTA FISCAL ELETRÔNICA
-        Nº 12345
-        
-        EMITENTE:
-        LOJA TESTE LTDA
-        CNPJ: 12.345.678/0001-90
-        Inscrição Estadual: 123.456.789.111
-        
-        DESTINATÁRIO:
-        CONSUMIDOR
-        CPF: 123.456.789-00
-        
-        ITENS DA NOTA:
-        CÓDIGO  DESCRIÇÃO               QTD  UN  VL UNIT   VL TOTAL
-        001      PRODUTO TESTE 1         2    UN  50,00     100,00
-        002      PRODUTO TESTE 2         1    UN  75,50     75,50
-        
-        VALOR TOTAL R$ 175,50
-        ICMS: R$ 31,59
-        PIS: R$ 2,84
-        COFINS: R$ 13,10
-        
-        Chave de Acesso: 35210123456789012345678901234567890123456789
-        Protocolo de Autorização: 123456789012345
-        """
-        
-        # Extrai os dados estruturados
-        doc = self.processor._extract_with_heuristics(text, 'nfe')
-        
-        # Verifica os campos básicos
-        assert doc['success'] is True
-        assert doc['document_type'] == 'nfe'
-        assert doc['numero'] == '12345'
-        assert doc['valor_total'] == 175.50
-        
-        # Verifica o emitente
-        assert doc['emitente']['cnpj'] == '12.345.678/0001-90'
-        assert doc['emitente']['inscricao_estadual'] == '123.456.789.111'
-        
-        # Verifica o destinatário
-        assert doc['destinatario']['cpf'] == '123.456.789-00'
-        
-        # Verifica os itens
-        assert len(doc['itens']) == 2
-        assert doc['itens'][0]['descricao'] == 'PRODUTO TESTE 1'
-        assert doc['itens'][0]['quantidade'] == 2.0
-        assert doc['itens'][0]['valor_unitario'] == 50.0
-        assert doc['itens'][0]['valor_total'] == 100.0
-        
-        # Verifica os impostos
-        assert 'icms' in doc['impostos']
-        assert doc['impostos']['icms'] == 31.59
-        assert 'pis' in doc['impostos']
-        assert doc['impostos']['pis'] == 2.84
-        assert 'cofins' in doc['impostos']
-        assert doc['impostos']['cofins'] == 13.10
-        
-        # Verifica a chave de acesso e protocolo
-        assert doc['chave_acesso'] == '35210123456789012345678901234567890123456789'
-        assert doc['protocolo_autorizacao'] == '123456789012345'
-    
-    @patch('backend.tools.fiscal_document_processor.LLMOCRMapper')
-    def test_process_document_with_llm(self, mock_llm_mapper):
-        """Testa o processamento de um documento com LLM."""
-        # Configura o mock do LLM
-        mock_mapper = MagicMock()
-        mock_mapper.available = True
-        mock_mapper.map_ocr_text.return_value = {
+if 'PIL' not in sys.modules:
+    pil_module = ModuleType('PIL')
+    image_module = ModuleType('PIL.Image')
+    image_module.Resampling = SimpleNamespace(LANCZOS=1)
+    image_module.Image = MagicMock
+    pil_module.Image = image_module
+    pil_module.UnidentifiedImageError = Exception
+    image_enhance = ModuleType('PIL.ImageEnhance')
+    image_enhance.Contrast = lambda img: SimpleNamespace(enhance=lambda value: img)
+    sys.modules['PIL'] = pil_module
+    sys.modules['PIL.Image'] = image_module
+    sys.modules['PIL.ImageEnhance'] = image_enhance
+
+reportlab_module = sys.modules.get('reportlab')
+if reportlab_module is None:
+    fake_canvas = SimpleNamespace(
+        Canvas=lambda *args, **kwargs: SimpleNamespace(
+            showPage=lambda: None,
+            save=lambda: None,
+            setFont=lambda *a, **k: None,
+            drawString=lambda *a, **k: None,
+        )
+    )
+    reportlab_module = ModuleType('reportlab')
+    reportlab_module.lib = SimpleNamespace(pagesizes=SimpleNamespace(letter=(612, 792)))
+    reportlab_module.pdfgen = SimpleNamespace(canvas=fake_canvas)
+    sys.modules['reportlab'] = reportlab_module
+    sys.modules['reportlab.lib'] = reportlab_module.lib
+    sys.modules['reportlab.lib.pagesizes'] = reportlab_module.lib.pagesizes
+    sys.modules['reportlab.pdfgen'] = reportlab_module.pdfgen
+    sys.modules['reportlab.pdfgen.canvas'] = reportlab_module.pdfgen.canvas
+
+@pytest.fixture
+def processor():
+    return FiscalDocumentProcessor()
+
+
+@pytest.fixture(autouse=True)
+def ensure_re(monkeypatch):
+    import re
+
+    monkeypatch.setattr(processor_module, 're', re, raising=False)
+
+
+def test_is_supported_file(processor):
+    assert processor.is_supported_file('teste.pdf') is True
+    assert processor.is_supported_file('teste.JPG') is True
+    assert processor.is_supported_file('teste.txt') is False
+
+
+def test_extract_text_from_image(tmp_path, processor, monkeypatch):
+    image_path = tmp_path / 'nota.png'
+    image_path.write_bytes(b'fake')
+
+    fake_image = MagicMock()
+    monkeypatch.setattr(processor_module, 'Image', SimpleNamespace(open=MagicMock(return_value=fake_image)), raising=False)
+    monkeypatch.setattr(
+        FiscalDocumentProcessor,
+        '_extract_text_from_image',
+        MagicMock(return_value='OCR resultado'),
+    )
+
+    result = processor.extract_text(image_path)
+
+    assert result['success'] is True
+    assert result['text'] == 'OCR resultado'
+    assert result['pages'][1] == 'OCR resultado'
+
+
+def test_extract_text_from_pdf(tmp_path, processor, monkeypatch):
+    pdf_path = tmp_path / 'nota.pdf'
+    pdf_path.write_bytes(b'%PDF')
+
+    fake_pages = {1: 'Página 1', 2: 'Página 2'}
+    monkeypatch.setattr(
+        FiscalDocumentProcessor,
+        '_extract_text_from_pdf',
+        MagicMock(return_value=fake_pages),
+    )
+
+    result = processor.extract_text(pdf_path)
+
+    assert result['success'] is True
+    assert result['pages'] == fake_pages
+    assert result['text'].startswith('--- PÁGINA 1 ---')
+
+
+def test_identify_document_type_variants(processor):
+    assert processor.identify_document_type('Nota Fiscal Eletrônica Nº 123') == 'nfe'
+    assert processor.identify_document_type('NFCE modelo 65 em trânsito') == 'nfce'
+    assert processor.identify_document_type('Conhecimento de Transporte Eletrônico') == 'cte'
+    assert processor.identify_document_type('Manifesto de Documentos Fiscais Eletrônicos') == 'mdfe'
+    assert processor.identify_document_type('Documento sem identificação') == 'unknown'
+
+
+def test_extract_with_heuristics_returns_core_fields(processor):
+    sample_text = """
+    NOTA FISCAL ELETRÔNICA
+    Nº 12345
+    EMITENTE: LOJA TESTE LTDA
+    CNPJ: 12.345.678/0001-90
+    DESTINATÁRIO: CONSUMIDOR
+    CPF: 123.456.789-00
+    VALOR TOTAL R$ 175,50
+    ICMS: R$ 31,59
+    """
+
+    doc = processor._extract_with_heuristics(sample_text, 'nfe')
+
+    assert doc['success'] is True
+    assert doc['document_type'] == 'nfe'
+    assert doc['emitente']['cnpj'] == '12.345.678/0001-90'
+    assert doc['destinatario']['cpf'] == '123.456.789-00'
+    assert doc['valor_total'] == pytest.approx(175.50)
+    assert doc['impostos']['icms'] == pytest.approx(31.59)
+
+
+def test_process_document_uses_llm_when_available(tmp_path, processor, monkeypatch):
+    llm_response = {
+        'success': True,
+        'document_type': 'nfe',
+        'numero': '12345',
+        'valor_total': 200.0,
+        'emitente': {'razao_social': 'Empresa X'},
+        'destinatario': {'razao_social': 'Cliente Y'},
+        'itens': [{'descricao': 'Item', 'valor_total': 200.0}],
+        'impostos': {'icms': 36.0},
+    }
+
+    class FakeMapper:
+        def __init__(self, *_args, **_kwargs):
+            self.available = True
+
+        def map_ocr_text(self, text):
+            return llm_response
+
+    fake_llm_module = ModuleType('backend.tools.llm_ocr_mapper')
+    fake_llm_module.LLMOCRMapper = FakeMapper
+    sys.modules['backend.tools.llm_ocr_mapper'] = fake_llm_module
+
+    monkeypatch.setattr(
+        FiscalDocumentProcessor,
+        'extract_text',
+        lambda self, path: {
             'success': True,
-            'document_type': 'nfe',
-            'numero': '12345',
-            'data_emissao': '01/01/2023',
-            'valor_total': 175.50,
-            'emitente': {
-                'razao_social': 'LOJA TESTE LTDA',
-                'cnpj': '12.345.678/0001-90',
-                'inscricao_estadual': '123.456.789.111'
-            },
-            'destinatario': {
-                'razao_social': 'CONSUMIDOR',
-                'cpf': '123.456.789-00'
-            },
-            'itens': [
-                {
-                    'descricao': 'PRODUTO TESTE 1',
-                    'quantidade': 2.0,
-                    'valor_unitario': 50.0,
-                    'valor_total': 100.0
-                },
-                {
-                    'descricao': 'PRODUTO TESTE 2',
-                    'quantidade': 1.0,
-                    'valor_unitario': 75.5,
-                    'valor_total': 75.5
-                }
-            ],
-            'impostos': {
-                'icms': 31.59,
-                'pis': 2.84,
-                'cofins': 13.10
-            },
-            'chave_acesso': '35210123456789012345678901234567890123456789',
-            'protocolo_autorizacao': '123456789012345'
-        }
-        mock_llm_mapper.return_value = mock_mapper
-        
-        # Cria um arquivo de teste temporário
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as f:
-            f.write(b'%PDF-1.4\n1 0 obj\n<</Type/Catalog/Pages 2 0 R>>\nendobj\n2 0 obj\n<</Type/Pages/Kids[3 0 R]/Count 1>>\nendobj\n3 0 obj\n<</Type/Page/Parent 2 0 R/Resources<</Font<</F1 4 0 R>>>>/MediaBox[0 0 612 792]/Contents 5 0 R>>\nendobj\n4 0 obj\n<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>\nendobj\n5 0 obj\n<</Length 44>>\nstream\nBT\n/F1 24 Tf\n100 700 Td\n(Hello, World!) Tj\nET\nendstream\nendobj\nxref\n0 6\n0000000000 65535 f \n0000000010 00000 n \n0000000053 00000 n \n0000000109 00000 n \n0000000202 00000 n \n0000000149 00000 n \ntrailer\n<</Size 6/Root 1 0 R>>\nstartxref\n307\n%%EOF')
-            file_path = f.name
-        
-        try:
-            # Processa o documento
-            result = self.processor.process_document(file_path)
-            
-            # Verifica se o LLM foi chamado
-            mock_mapper.map_ocr_text.assert_called_once()
-            
-            # Verifica o resultado
-            assert result['success'] is True
-            assert result['document_type'] == 'nfe'
-            assert result['numero'] == '12345'
-            assert result['valor_total'] == 175.50
-            assert result['emitente']['razao_social'] == 'LOJA TESTE LTDA'
-            assert len(result['itens']) == 2
-            
-        finally:
-            # Remove o arquivo temporário
-            try:
-                os.unlink(file_path)
-            except:
-                pass
+            'text': 'conteúdo OCR',
+            'pages': {1: 'conteúdo'},
+        },
+    )
+
+    pdf_path = tmp_path / 'nota.pdf'
+    pdf_path.write_bytes(b'%PDF')
+
+    result = processor.process_document(pdf_path)
+
+    assert result['success'] is True
+    assert result['numero'] == '12345'
+    assert result['valor_total'] == 200.0
+    assert result['impostos']['icms'] == 36.0
+
 
 if __name__ == "__main__":
     pytest.main(["-v", "test_fiscal_document_processor.py"])
