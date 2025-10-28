@@ -5,204 +5,354 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-12+-green.svg)](https://postgresql.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Sistema avançado para processamento de documentos fiscais com suporte a extração via OCR, validação de regras fiscais, análise inteligente com IA, e integração com PostgreSQL.
+SkyNET-I2A2 é uma plataforma completa para ingestão, validação e análise inteligente de documentos fiscais brasileiros. O projeto combina OCR, parsers XML, validações fiscais, RAG (Retrieval-Augmented Generation) e uma interface Streamlit para entregar um fluxo ponta a ponta conectado a PostgreSQL.
 
-## 📋 Índice
+## 📚 Índice
 
 - [Visão Geral](#-visão-geral)
-- [Funcionalidades Principais](#-funcionalidades-principais)
-- [Estrutura do Projeto](#-estrutura-do-projeto)
+- [Principais Funcionalidades](#-principais-funcionalidades)
+- [Arquitetura e Fluxo](#-arquitetura-e-fluxo)
+- [Tecnologias Principais](#-tecnologias-principais)
 - [Pré-requisitos](#-pré-requisitos)
-- [Instalação e Configuração](#-instalação-e-configuração)
-- [Configuração do Banco de Dados](#-configuração-do-banco-de-dados)
-- [Configuração do secrets.toml](#-configuração-do-secretstoml)
+- [Guia Rápido](#-guia-rápido)
+  - [Instalação Automática](#instalação-automática)
+  - [Instalação Manual](#instalação-manual)
+- [Configuração](#-configuração)
+  - [Variáveis de Ambiente (.env)](#variáveis-de-ambiente-env)
+  - [Arquivo secrets.toml](#arquivo-secretstoml)
+  - [Banco de Dados e Migrações](#banco-de-dados-e-migrações)
+  - [Embeddings e Sistema RAG](#embeddings-e-sistema-rag)
+- [Execução](#-execução)
+  - [Ambiente de Desenvolvimento](#ambiente-de-desenvolvimento)
+  - [Ambiente de Produção](#ambiente-de-produção)
 - [Páginas do Sistema](#-páginas-do-sistema)
-  - [Home](#home-)
-  - [Importador](#importador-)
-  - [Chat IA](#chat-ia-)
-  - [Histórico](#histórico-)
-  - [RAG](#rag-)
-- [Executando o Sistema](#-executando-o-sistema)
 - [Testes](#-testes)
+- [Estrutura do Projeto](#-estrutura-do-projeto)
+- [Scripts Úteis](#-scripts-úteis)
 - [Solução de Problemas](#-solução-de-problemas)
 - [Contribuição](#-contribuição)
 - [Licença](#-licença)
 
-## 🌟 Visão Geral
+## 🌍 Visão Geral
 
-O SkyNET-I2A2 é uma solução completa para processamento e análise de documentos fiscais, desenvolvida para automatizar e otimizar o fluxo de trabalho fiscal de empresas. O sistema combina técnicas avançadas de OCR, processamento de linguagem natural e aprendizado de máquina para extrair, validar e analisar informações de documentos fiscais de forma inteligente.
+O SkyNET-I2A2 automatiza o ciclo de vida de documentos fiscais: captura (upload, OCR ou XML), extração estruturada, validação fiscal, armazenamento em PostgreSQL e consulta inteligente via RAG. O `config.py` centraliza parâmetros sensíveis, priorizando variáveis de ambiente, segredos do Streamlit e `.streamlit/secrets.toml`, garantindo execução consistente em diferentes ambientes.
 
-## ✨ Funcionalidades Principais
+## ✨ Principais Funcionalidades
 
-- **Processamento de Documentos Fiscais**: Suporte a diversos formatos de documentos fiscais
-- **OCR Avançado**: Extração de texto de imagens e PDFs com suporte a Tesseract OCR
-- **Validação Fiscal**: Verificação automática de regras fiscais e consistência dos dados
-- **Análise Inteligente**: Uso de IA para análise de documentos e geração de insights
-- **Integração com PostgreSQL**: Armazenamento seguro e escalável dos dados
-- **Interface Web Intuitiva**: Desenvolvida com Streamlit para fácil utilização
-- **Sistema RAG**: Recuperação e Geração com IA para respostas precisas
-- **Histórico Completo**: Rastreamento de todas as operações realizadas
-- **Suporte a Múltiplos Usuários**: Gerenciamento de sessões e histórico por usuário
+### Processamento documental
+- Upload de NFe, NFCe, CTe, MDFe, PDFs e imagens com OCR Tesseract.
+- Parser XML especializado (`backend/tools/xml_parser.py`) com detecção automática de schema.
+- Normalização de datas brasileiras e conversão de valores monetários.
 
-## ✨ **Novidades da Versão Atual**
+### Validação fiscal
+- FiscalValidator com checagens de ICMS, ICMS-ST, IPI, PIS/COFINS e consistência de totais.
+- Conversão automática de formatos brasileiros (datas, valores e CNPJ).
+- Registro detalhado de metadados e validações em PostgreSQL.
 
-- ✅ **Tratamento de Datas Aprimorado**: Corrigido erro `'datetime.datetime' object is not subscriptable` em todas as páginas
-- ✅ **Padronização de Campos**: Substituição de `session_name` para `title` em todo o sistema
-- ✅ **PostgreSQL Nativo**: Substituição completa do sistema Supabase por PostgreSQL direto
-- ✅ **Campos Destinatário**: Suporte completo a `recipient_cnpj` e `recipient_name`
-- ✅ **Conversão de Data Automática**: Suporte a formato brasileiro (DD/MM/YYYY) → ISO
-- ✅ **Sistema de Migrações Avançado**: Script `run_migration.py` para todas as plataformas
-- ✅ **Testes Completos**: Cobertura de testes para todas as funcionalidades
-- ✅ **Correções de Bugs**: Resolução de problemas críticos de upload, validação e exibição
+### Inteligência artificial e RAG
+- Serviço de chat com histórico persistente, cache e respostas contextualizadas.
+- RAGService com fallback de embeddings (Sentence Transformers local + Gemini opcional).
+- Busca semântica via pgvector e Google Gemini quando disponível.
 
-## 📁 Estrutura do Projeto
+### Armazenamento e governança
+- Integração nativa com PostgreSQL (`backend/database/postgresql_storage.py`).
+- Vector store usando pgvector para armazenar embeddings e chunks de documentos.
+- Scripts de migração e verificações automáticas para manter o schema alinhado.
+
+## 🏗️ Arquitetura e Fluxo
 
 ```
-skynet-I2A2-nf-final-v2/
-├── .streamlit/               # Configurações do Streamlit
-│   ├── config.toml          # Configurações gerais
-│   └── secrets.toml         # Credenciais e configurações sensíveis
-├── backend/                 # Lógica de backend
-│   ├── agents/              # Agentes de processamento
-│   ├── api/                 # Definições de API
-│   ├── database/            # Camada de banco de dados
-│   └── services/            # Serviços principais
-├── frontend/                # Interface do usuário
-│   ├── components/          # Componentes reutilizáveis
-│   └── pages/               # Páginas da aplicação
-├── migration/               # Scripts de migração do banco de dados
-├── scripts/                 # Scripts utilitários
-├── tests/                   # Testes automatizados
-├── .env.example             # Exemplo de variáveis de ambiente
-├── app.py                   # Ponto de entrada da aplicação
-├── config.py                # Configurações da aplicação
-├── requirements.txt         # Dependências do projeto
-└── setup.sh                 # Script de instalação
+┌─────────────────┐    ┌──────────────────────────┐    ┌──────────────────────────┐
+│ Frontend         │    │ Backend                  │    │ Banco de Dados            │
+│ (Streamlit)      │↔──►│ Agents & Services        │↔──►│ PostgreSQL + pgvector     │
+│ • pages/         │    │ • DocumentAnalyzer       │    │ • fiscal_documents        │
+│ • components/    │    │ • StorageManager         │    │ • document_chunks         │
+│                  │    │ • RAGService             │    │ • análise & histórico     │
+└─────────────────┘    └──────────────────────────┘    └──────────────────────────┘
 ```
 
-## 📋 Pré-requisitos
+**Fluxo de upload**
+```
+Arquivo → OCR/XML → validação fiscal → armazenamento → indexação RAG
+```
 
-- Python 3.11 ou superior
-- PostgreSQL 12 ou superior
-- Tesseract OCR (para processamento de imagens)
-- Git (para controle de versão)
-- pip (gerenciador de pacotes Python)
+**Fluxo de chat/RAG**
+```
+Pergunta → geração de embedding → busca semântica → contexto → resposta IA
+```
 
-## 🚀 Instalação e Configuração
+## 🧰 Tecnologias Principais
 
-### 1. Clonar o repositório
+- Python 3.11+
+- Streamlit (frontend)
+- PostgreSQL 12+ com extensão pgvector
+- Tesseract OCR + Poppler (PDF para imagem)
+- Sentence Transformers / Google Gemini para embeddings
+- pytest para testes automatizados
+
+## ✅ Pré-requisitos
+
+- **Sistema Operacional:** Windows 10/11, macOS 10.15+ ou Linux.
+- **Python:** 3.11 ou superior com `pip` instalado.
+- **Banco de Dados:** PostgreSQL 12+ (local ou hospedado).
+- **OCR:** Tesseract instalado e disponível na variável `PATH`.
+- **Ferramentas do projeto:** Git, acesso à internet para baixar dependências/modelos.
+
+## ⚡ Guia Rápido
+
+### Instalação Automática
+
+O script `./setup.sh` cria o ambiente virtual, instala dependências, checa PostgreSQL/Tesseract e orienta a execução das migrações.
 
 ```bash
-git clone https://github.com/fabiorhein/skynet-I2A2-nf-final-v2.git
-cd skynet-I2A2-nf-final-v2
+chmod +x setup.sh
+./setup.sh
 ```
 
-### 2. Configurar ambiente virtual
+### Instalação Manual
 
-```bash
-# Criar ambiente virtual
-python -m venv venv
+1. **Clonar o repositório**
+   ```bash
+   git clone https://github.com/fabiorhein/skynet-I2A2-nf-final-v2.git
+   cd skynet-I2A2-nf-final-v2
+   ```
+2. **Criar e ativar ambiente virtual**
+   ```bash
+   python -m venv venv
+   # Linux/macOS
+   source venv/bin/activate
+   # Windows
+   .\venv\Scripts\activate
+   ```
+3. **Instalar dependências**
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. **Instalar Tesseract / Poppler**
+   - Linux (Ubuntu/Debian): `sudo apt install -y tesseract-ocr tesseract-ocr-por poppler-utils`
+   - macOS: `brew install tesseract tesseract-lang poppler`
+   - Windows: `choco install tesseract poppler` ou instaladores oficiais.
+5. **Copiar variáveis de ambiente base**
+   ```bash
+   cp .env.example .env
+   ```
+6. **Criar usuário e banco PostgreSQL**
+   ```bash
+   sudo -u postgres createuser -P skynet_user
+   sudo -u postgres createdb -O skynet_user skynet_db
+   ```
+7. **Aplicar migrações**
+   ```bash
+   python scripts/run_migration.py
+   ```
 
-# Ativar ambiente virtual
-# Linux/macOS
-source venv/bin/activate
-# Windows
-# .\venv\Scripts\activate
-```
+## 🔧 Configuração
 
-### 3. Instalar dependências
+### Variáveis de Ambiente (.env)
 
-```bash
-pip install -r requirements.txt
-```
+O `config.py` lê variáveis de ambiente antes de consultar `streamlit.secrets` ou `.streamlit/secrets.toml`, priorizando credenciais seguras para PostgreSQL e APIs.
 
-### 4. Instalar Tesseract OCR
+| Variável | Descrição |
+|----------|-----------|
+| `SUPABASE_URL` / `SUPABASE_KEY` | Necessárias apenas se o projeto usar recursos Supabase legados. |
+| `DATABASE`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | Credenciais PostgreSQL usadas por `StorageManager`. |
+| `GOOGLE_API_KEY` | Chave para Google Gemini (chat/embeddings pagos). |
+| `TESSERACT_PATH`, `TESSDATA_PREFIX` | Caminhos customizados do OCR. |
+| `LOG_LEVEL` | Define granularidade dos logs (`INFO`, `DEBUG`, etc.). |
+| `UPLOAD_DIR`, `PROCESSED_DIR` | Diretórios para arquivos recebidos/processados. |
 
-#### Linux (Ubuntu/Debian)
-```bash
-sudo apt update
-sudo apt install tesseract-ocr tesseract-ocr-por
-```
+### Arquivo secrets.toml
 
-#### macOS (usando Homebrew)
-```bash
-brew install tesseract tesseract-lang
-```
-
-#### Windows
-Baixe e instale o Tesseract OCR do site oficial:
-https://github.com/UB-Mannheim/tesseract/wiki
-
-## 🗃️ Configuração do Banco de Dados
-
-### 1. Criar banco de dados e usuário
-
-```sql
--- Conectar ao PostgreSQL como superusuário
-sudo -u postgres psql
-
--- Criar banco de dados
-CREATE DATABASE skynet_db;
-
--- Criar usuário
-CREATE USER skynet_user WITH PASSWORD 'sua_senha_segura';
-
--- Conceder privilégios
-GRANT ALL PRIVILEGES ON DATABASE skynet_db TO skynet_user;
-
--- Conceder privilégios para extensões
-\c skynet_db
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-CREATE EXTENSION IF NOT EXISTS "vector";
-```
-
-### 2. Aplicar migrações
-
-```bash
-# Aplicar todas as migrações
-python scripts/run_migration.py
-
-# Ou aplicar uma migração específica
-python scripts/run_migration.py --single migration/001-create_fiscal_documents.sql
-```
-
-## 🔐 Configuração do secrets.toml
-
-Crie ou edite o arquivo `.streamlit/secrets.toml` com as seguintes configurações:
+`config.py` também lê `.streamlit/secrets.toml`. Exemplo:
 
 ```toml
-# Google APIs
 GOOGLE_API_KEY = "sua_chave_aqui"
-
-# Configurações do Tesseract OCR
-# Para Linux (padrão)
-TESSERACT_PATH = "/usr/bin/tesseract"
-
-# Configurações de Log
 LOG_LEVEL = "INFO"
 
-# Configurações do FiscalValidatorAgent
-[FISCAL_VALIDATOR]
-cache_enabled = true
-cache_dir = ".fiscal_cache"
-cache_ttl_days = 30
-
-# Configurações de Rate Limiting
-[RATE_LIMITING]
-embeddings_per_minute = 20
-embeddings_per_hour = 300
-chat_per_minute = 30
-chat_per_hour = 400
-
-# Configuração do Banco de Dados PostgreSQL
 [connections.postgresql]
 HOST = "localhost"
 PORT = "5432"
 DATABASE = "skynet_db"
 USER = "skynet_user"
-PASSWORD = "sua_senha_segura"
+PASSWORD = "sua_senha"
+
+[FISCAL_VALIDATOR]
+cache_enabled = true
+cache_dir = ".fiscal_cache"
+cache_ttl_days = 30
 ```
+
+### Banco de Dados e Migrações
+
+1. **Criar extensões no banco**
+   ```sql
+   CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+   CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+   CREATE EXTENSION IF NOT EXISTS "vector";
+   ```
+2. **Executar migrações**
+   ```bash
+   python scripts/run_migration.py
+   # ou
+   python scripts/apply_migrations.py --single 014-add_recipient_columns.sql
+   ```
+3. **Validar setup do RAG**
+   ```bash
+   python scripts/check_rag_setup.py
+   ```
+
+### Embeddings e Sistema RAG
+
+- O `FallbackEmbeddingService` prioriza Sentence Transformers locais e usa Gemini apenas como backup.
+- Para configurar embeddings gratuitos:
+  ```bash
+  python scripts/setup_free_embeddings.py
+  python scripts/test_free_embeddings_simple.py
+  ```
+- É possível escolher o provedor preferido:
+  ```python
+  from backend.services.fallback_embedding_service import FallbackEmbeddingService
+
+  service = FallbackEmbeddingService(preferred_provider="free")  # default
+  ```
+- Uso programático do RAG:
+  ```python
+  import asyncio
+  from backend.services import RAGService
+
+  async def main():
+      rag = RAGService()
+      resposta = await rag.answer_query(
+          query="Quais notas foram emitidas hoje?",
+          filters={"document_type": "NFe"},
+          max_context_docs=3,
+      )
+      print(resposta["answer"])
+
+  asyncio.run(main())
+  ```
+
+## ▶️ Execução
+
+### Ambiente de Desenvolvimento
+
+```bash
+source venv/bin/activate  # ou .\venv\Scripts\activate
+streamlit run app.py
+```
+
+O menu lateral apresenta Home, Importador, Chat IA, Histórico e RAG. O `StorageManager` indica no sidebar se a conexão PostgreSQL está ativa ou se o sistema caiu para armazenamento local.
+
+### Ambiente de Produção
+
+- Configure variáveis de ambiente e secrets em seu servidor ou serviço (Streamlit Cloud, Docker, etc.).
+- Exponha a aplicação:
+  ```bash
+  streamlit run app.py --server.address 0.0.0.0 --server.port 8501
+  ```
+- Utilize proxy reverso (Nginx/Traefik) e processos supervisionados (systemd, supervisor) conforme necessário.
+- Garanta SSL e políticas de backup do PostgreSQL.
+
+## 🖥️ Páginas do Sistema
+
+### Home 🏠
+- Painel com visão geral do sistema, estatísticas rápidas e status de integrações (PostgreSQL, RAG, OCR).
+- Links rápidos para operações frequentes (upload, chat, consultas históricas).
+- Indicadores de saúde da aplicação exibidos via sidebar.
+
+### Importador 📤
+- Upload de múltiplos arquivos (PDF, imagens, XML) com pré-visualização.
+- Extração automática de texto via OCR e parser XML dedicado.
+- Validação de campos fiscais, edição manual e envio direto ao PostgreSQL.
+
+### Chat IA 💬
+- Sessões persistentes de conversa com contexto fiscal carregado automaticamente.
+- Cache inteligente que sinaliza quando uma resposta veio de consultas anteriores.
+- Exportação de conversas e integração opcional com resultados RAG.
+
+### Histórico 📜
+- Lista paginada de documentos processados com filtros por data, CNPJ e tipo.
+- Visualização detalhada utilizando `frontend/components/document_renderer.py`.
+- Exportação de dados consolidados para auditoria.
+
+### RAG 🔍
+- Busca semântica com ranking baseado em similaridade de embeddings (pgvector).
+- Visualização de chunks relevantes, pontuação de similaridade e metadados.
+- Ferramentas de validação suportada por IA para comparação entre documentos.
+
+## 🧪 Testes
+
+```bash
+pytest                 # executa toda a suíte
+pytest -m unit         # apenas testes unitários
+pytest -m integration  # testes que dependem de PostgreSQL
+pytest --cov=backend --cov-report=html
+```
+
+Marcadores disponíveis (`pytest.ini`): `unit`, `integration`, `e2e`, `db`, `slow`, `online`, `windows`, `linux`, `macos`.
+
+Principais suítes disponíveis:
+- `tests/test_date_conversion.py`: garante a conversão DD/MM/YYYY → ISO.
+- `tests/test_postgresql_storage.py`: cobre serialização JSONB, filtros e campos recipient.
+- `tests/test_recipient_fields.py`: validação de CNPJ/CPF e filtragem por destinatário.
+- `tests/test_importador.py`: fluxo de upload fim a fim com validações.
+- `tests/test_rag_service.py`: pipeline completo do RAG e fallback de embeddings.
+
+## 🗂️ Estrutura do Projeto
+
+```
+skynet-I2A2-nf-final-v2/
+├── app.py
+├── config.py
+├── backend/
+│   ├── agents/
+│   ├── database/
+│   ├── services/
+│   └── tools/
+├── frontend/
+│   ├── components/
+│   └── pages/
+├── migration/
+├── scripts/
+├── tests/
+├── data/
+└── .streamlit/
+```
+
+## 🛠️ Scripts Úteis
+
+| Script | Descrição |
+|--------|-----------|
+| `scripts/run_migration.py` | Executa todas as migrações ou uma específica (`--single`). |
+| `scripts/apply_migrations.py` | Alternativa compatível para executar migrações sob demanda. |
+| `scripts/check_rag_setup.py` | Verifica configurações do RAG (extensões, chaves, tabelas). |
+| `scripts/setup_free_embeddings.py` | Baixa e configura modelos Sentence Transformers locais. |
+| `scripts/debug_document_issue.py` | Auxilia na inspeção de documentos problemáticos. |
+| `scripts/test_rag_system.py` | Testa o pipeline completo do RAG. |
+
+## 🛎️ Solução de Problemas
+
+- **Não conecta ao PostgreSQL:** confirme `HOST`, `USER`, `PASSWORD` e se as migrações foram aplicadas.
+- **Erro `expected 768 dimensions, not 384`:** execute o script de setup de embeddings e as migrações RAG (`011`/`011b`).
+- **`column recipient_cnpj does not exist`:** rode `python scripts/run_migration.py --single 014-add_recipient_columns.sql`.
+- **RAG não inicializa:** verifique `GOOGLE_API_KEY`; caso indisponível, mantenha embeddings gratuitos instalados.
+- **Tesseract não encontrado:** ajuste `TESSERACT_PATH` no `.env` ou `secrets.toml`.
+- **Datas fora de faixa:** confira se o upload está usando a função de conversão automática; limpe dados inválidos antes de reprocessar.
+
+## 🤝 Contribuição
+
+1. Faça um fork do repositório.
+2. Crie uma branch: `git checkout -b feature/nova-feature`.
+3. Execute testes antes de enviar (`pytest`).
+4. Abra um Pull Request descrevendo as mudanças e impactos.
+
+## 📄 Licença
+
+Distribuído sob a Licença MIT. Consulte o arquivo [LICENSE](LICENSE) para detalhes.
+
+---
+
+Desenvolvido por [Fabio Hein](https://github.com/fabiorhein) e colaboradores — 2024.
 
 ## 🖥️ Páginas do Sistema
 
