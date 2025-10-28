@@ -1,8 +1,8 @@
-"""
-Database package for the application.
+"""Database package for the application."""
 
-This package provides storage implementations and database utilities.
-"""
+import importlib
+import logging
+import sys
 
 from .base_storage import (
     StorageInterface,
@@ -15,7 +15,20 @@ from .base_storage import (
 
 from .postgresql_storage import PostgreSQLStorage, PostgreSQLStorageError
 from .local_storage import LocalJSONStorage, LocalStorageError
-from .storage_manager import StorageManager, storage_manager, get_storage, get_storage_type
+
+logger = logging.getLogger(__name__)
+
+try:
+    from .storage_manager import StorageManager, storage_manager, get_storage, get_storage_type
+except KeyError as exc:
+    # Streamlit/Hot reload can leave a partially-initialized module in sys.modules
+    logger.warning("Reloading backend.database.storage_manager after KeyError: %s", exc)
+    sys.modules.pop('backend.database.storage_manager', None)
+    storage_manager_module = importlib.import_module('backend.database.storage_manager')
+    StorageManager = storage_manager_module.StorageManager
+    storage_manager = storage_manager_module.storage_manager
+    get_storage = storage_manager_module.get_storage
+    get_storage_type = storage_manager_module.get_storage_type
 
 __all__ = [
     # Base types and interfaces

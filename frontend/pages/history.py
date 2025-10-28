@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timedelta
 import base64
 import io
+from typing import Any, Dict, List
 
 # Inicializa a variável pd como None
 pd = None
@@ -42,13 +43,49 @@ def get_validation_errors(doc):
     """Extrai informações de validação do documento."""
     if not isinstance(doc, dict):
         return 0, []
-    
+
     # Check both validation and validation_details fields
     validation = doc.get('validation', {}) or {}
     validation_details = doc.get('validation_details', {}) or {}
-    
+
     # Extract errors from validation field
-    errors = validation.get('errors', []) if isinstance(validation.get('errors'), list) else []
+    errors: List[Dict[str, Any]] = []
+    seen_map: Dict[str, int] = {}
+
+    def _normalize(value: Any) -> str:
+        return '' if value is None else str(value).strip()
+
+    def add_issue(message: Any, category: Any, details: Any = '') -> None:
+        msg_str = _normalize(message)
+        cat_str = _normalize(category)
+        details_str = _normalize(details)
+        key = msg_str.lower()
+
+        if key in seen_map:
+            idx = seen_map[key]
+            existing = errors[idx]
+            existing_cat = _normalize(existing.get('category'))
+
+            if existing_cat.lower() in ('aviso', 'warning') and cat_str.lower() not in ('aviso', 'warning'):
+                existing['category'] = category
+
+            if not _normalize(existing.get('details')) and details_str:
+                existing['details'] = details
+            return
+
+        errors.append({
+            'message': message,
+            'details': details,
+            'category': category
+        })
+        seen_map[key] = len(errors) - 1
+
+    raw_errors = validation.get('errors') if isinstance(validation.get('errors'), list) else []
+    for err in raw_errors:
+        if isinstance(err, dict):
+            add_issue(err.get('message'), err.get('category', 'Erro'), err.get('details'))
+        else:
+            add_issue(err, 'Erro')
     
     # Extract errors and issues from validation_details field if available
     if validation_details and isinstance(validation_details, dict):
@@ -56,27 +93,21 @@ def get_validation_errors(doc):
         issues = validation_details.get('issues', [])
         if isinstance(issues, list):
             for issue in issues:
-                errors.append({
-                    'message': issue if isinstance(issue, str) else str(issue),
-                    'category': 'Erro'
-                })
+                add_issue(issue if isinstance(issue, str) else str(issue), 'Erro')
         
         # Extract warnings (avisos)
         warnings = validation_details.get('warnings', [])
         if isinstance(warnings, list):
             for warning in warnings:
-                errors.append({
-                    'message': warning if isinstance(warning, str) else str(warning),
-                    'category': 'Aviso'
-                })
+                add_issue(warning if isinstance(warning, str) else str(warning), 'Aviso')
         
         # Extract status-based errors
-        if validation_details.get('status') == 'error':
-            errors.append({
-                'message': validation_details.get('message', 'Erro na validação'),
-                'details': str(validation_details),
-                'category': 'Status'
-            })
+        if validation_details.get('status') == 'error' and not errors:
+            add_issue(
+                validation_details.get('message', 'Erro na validação'),
+                'Status',
+                str(validation_details)
+            )
         
         # Extract field-level validation errors
         if validation_details.get('validations'):
@@ -84,28 +115,35 @@ def get_validation_errors(doc):
                 # Handle case where result is a boolean
                 if isinstance(result, bool):
                     if not result:
-                        errors.append({
-                            'message': f'Erro na validação de {field}',
-                            'details': 'A validação retornou falso',
-                            'category': field
-                        })
+                        field_lower = field.lower()
+                        if any(token in field_lower for token in ('valido', 'válido', 'valid', 'status')):
+                            continue
+                        add_issue(
+                            f'Erro na validação de {field}',
+                            field,
+                            'A validação retornou falso'
+                        )
                 # Handle case where result is a dictionary
                 elif isinstance(result, dict):
                     if not result.get('valido', result.get('is_valid', True)):
-                        errors.append({
-                            'message': result.get('message', f'Erro na validação de {field}'),
-                            'details': result.get('details', ''),
-                            'category': field
-                        })
+                        add_issue(
+                            result.get('message', f'Erro na validação de {field}'),
+                            field,
+                            result.get('details', '')
+                        )
                 # Handle other cases (string, number, etc.)
                 elif not result:
-                    errors.append({
-                        'message': f'Erro na validação de {field}',
-                        'details': f'Valor inválido: {result}',
-                        'category': field
-                    })
+                    add_issue(
+                        f'Erro na validação de {field}',
+                        field,
+                        f'Valor inválido: {result}'
+                    )
     
-    return len(errors), errors
+    error_count = sum(
+        1 for err in errors
+        if str(err.get('category', '')).lower() not in ('aviso', 'warning')
+    )
+    return error_count, errors
 
 def get_document_summary(doc):
     """Extrai um resumo das informações principais do documento."""
@@ -114,14 +152,16 @@ def get_document_summary(doc):
     
     # Tenta extrair dados do documento processado
     doc_data = doc.get('parsed', {}) or doc.get('extracted_data', {}) or {}
+    if not isinstance(doc_data, dict):
+        doc_data = {}
     
     # Informações básicas
     doc_type = doc.get('document_type', 'Desconhecido')
     document_number = doc_data.get('numero') or doc.get('document_number', 'N/A')
     
     # Emitente/Destinatário
-    emitente = doc_data.get('emitente', {})
-    destinatario = doc_data.get('destinatario', {})
+    emitente = doc_data.get('emitente') or {}
+    destinatario = doc_data.get('destinatario') or {}
     
     # Valores
     total = doc_data.get('total', 0)
@@ -129,7 +169,7 @@ def get_document_summary(doc):
         total = f'R$ {total:,.2f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
     
     # Conta itens
-    itens = doc_data.get('itens', [])
+    itens = doc_data.get('itens') or []
     num_itens = len(itens) if isinstance(itens, list) else 0
     
     # Informações de validação
@@ -283,39 +323,6 @@ def render_document_details(doc):
             for i, warning in enumerate(warnings, 1):
                 st.warning(f"{i}. {warning}")
         
-        # Mostra detalhes de validação por campo
-        if validations and isinstance(validations, dict):
-            st.markdown("#### 📋 Detalhes de Validação por Campo")
-            
-            # Prepara dados para tabela
-            validation_data = []
-            for field, result in validations.items():
-                if not isinstance(result, dict):
-                    continue
-                
-                is_valid = result.get('valido', result.get('is_valid', False))
-                status_icon = '✅' if is_valid else '❌'
-                message = result.get('message', result.get('descricao', ''))
-                
-                validation_data.append({
-                    'Campo': field.replace('_', ' ').title(),
-                    'Status': status_icon,
-                    'Detalhes': message if isinstance(message, str) else json.dumps(message, ensure_ascii=False)
-                })
-            
-            if validation_data:
-                df_validation = pd.DataFrame(validation_data)
-                st.dataframe(
-                    df_validation,
-                    column_config={
-                        "Campo": st.column_config.TextColumn("Campo", width="medium"),
-                        "Status": st.column_config.TextColumn("Status", width="small"),
-                        "Detalhes": st.column_config.TextColumn("Detalhes", width="large")
-                    },
-                    hide_index=True,
-                    width='stretch'
-                )
-        
         # Mostra dados brutos de validação se disponível
         if validation_details:
             with st.expander("📊 Dados Brutos de Validação (JSON)"):
@@ -431,28 +438,25 @@ def render(storage):
             
         # Filtra por data
         if start_date is not None:
-            filters['start_date'] = start_date.strftime('%Y-%m-%d')
+            filters['created_after'] = start_date.strftime('%Y-%m-%d')
         if end_date is not None:
             # Adiciona 1 dia para incluir o dia inteiro
             end_date_plus_one = end_date + timedelta(days=1)
-            filters['end_date'] = end_date_plus_one.strftime('%Y-%m-%d')
+            filters['created_before'] = end_date_plus_one.strftime('%Y-%m-%d')
     
+    # Valores padrão para resultados e paginação
+    docs: List[Dict[str, Any]] = []
+    total = 0
+    max_page = 1
+
     # Se não houver filtros ativos, busca todos os documentos
     
     try:
-        # Se não houver filtros ativos, busca todos os documentos
-        if not filters:
-            result = storage.get_fiscal_documents(
-                page=st.session_state.doc_page,
-                page_size=page_size
-            )
-        else:
-            # Se houver filtros, aplica-os na busca
-            result = storage.get_fiscal_documents(
-                filters=filters,
-                page=st.session_state.doc_page,
-                page_size=page_size
-            )
+        result = storage.get_fiscal_documents(
+            page=st.session_state.doc_page,
+            page_size=page_size,
+            **filters
+        )
         
         # Obtém os documentos e informações de paginação
         if hasattr(result, 'items') and hasattr(result, 'total'):
@@ -481,9 +485,8 @@ def render(storage):
             
     except Exception as e:
         st.error(f'Erro ao carregar documentos: {e}')
-        docs = []
-        total = 0
-    
+        max_page = 1
+
     # Exibe o resumo dos filtros
     st.markdown(f"""
     <div style="background-color: #f0f2f6; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;">
@@ -724,14 +727,28 @@ def render(storage):
     evt_note = st.text_area('Dados do evento (JSON ou texto curto)')
     
     if st.button('Adicionar evento'):
+        raw_event_data = (evt_note or '').strip()
+        if raw_event_data:
+            try:
+                event_data = json.loads(raw_event_data)
+            except json.JSONDecodeError:
+                event_data = {'note': raw_event_data}
+        else:
+            event_data = {}
+
         event = {
             'fiscal_document_id': doc.get('id'),
             'event_type': evt_type,
-            'event_data': evt_note or {}
+            'event_data': event_data
         }
         try:
             storage.save_history(event)
             st.success('✓ Evento adicionado com sucesso')
-            st.experimental_rerun()  # Refresh to show new event
+            if hasattr(st, 'experimental_rerun'):
+                st.experimental_rerun()
+            elif hasattr(st, 'rerun'):
+                st.rerun()
+            else:
+                st.info('Atualize a página para ver o novo evento.')
         except Exception as e:
             st.error(f'Erro ao adicionar evento: {e}')

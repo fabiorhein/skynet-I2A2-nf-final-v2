@@ -335,6 +335,9 @@ class PostgreSQLStorage(StorageInterface):
                 if key == 'created_after':
                     where_conditions.append("created_at >= %s")
                     params.append(value)
+                elif key == 'created_before':
+                    where_conditions.append("created_at < %s")
+                    params.append(value)
                 # Campos UUID devem usar igualdade exata, não ILIKE
                 elif key in ['id', 'fiscal_document_id', 'session_id']:  # Campos UUID em várias tabelas
                     where_conditions.append(f"{key} = %s")
@@ -699,7 +702,8 @@ class PostgreSQLStorage(StorageInterface):
             return "Erro ao carregar histórico da conversa."
 
     def save_analysis_cache(self, cache_key: str, query_type: str, query_text: str, context_data: Dict[str, Any],
-                           response_content: str, response_metadata: Dict[str, Any], expires_at: str) -> None:
+                           response_content: str, response_metadata: Dict[str, Any], expires_at: str,
+                           session_id: Optional[str] = None, cached_at: Optional[str] = None) -> None:
         """Save analysis cache entry."""
         try:
             # Combine response_content and response_metadata into response_data JSONB
@@ -707,7 +711,9 @@ class PostgreSQLStorage(StorageInterface):
                 'response_content': response_content,
                 'response_metadata': response_metadata,
                 'query_text': query_text,
-                'context_data': context_data
+                'context_data': context_data,
+                'session_id': session_id,
+                'cached_at': cached_at or datetime.now().isoformat()
             }
 
             query = """
@@ -743,7 +749,9 @@ class PostgreSQLStorage(StorageInterface):
                         'metadata': response_data.get('response_metadata', {}),
                         'cached': True,
                         'query_text': response_data.get('query_text', ''),
-                        'context_data': response_data.get('context_data', {})
+                        'context_data': response_data.get('context_data', {}),
+                        'cached_session_id': response_data.get('session_id'),
+                        'cached_at': response_data.get('cached_at')
                     }
                 return None
 

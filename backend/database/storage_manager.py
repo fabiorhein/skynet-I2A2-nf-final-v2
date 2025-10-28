@@ -21,6 +21,11 @@ except ImportError:
     PostgreSQLStorage = None
     PostgreSQLStorageError = Exception
 
+try:
+    from .async_postgresql_storage import AsyncPostgreSQLStorage
+except ImportError:
+    AsyncPostgreSQLStorage = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +46,7 @@ class StorageManager:
             cls._instance._status = "🔃 Inicializando armazenamento..."
             cls._instance._status_type = "info"  # Can be "info", "success", "warning", or "error"
             cls._instance._initialized = False
+            cls._instance._async_storage = None
         return cls._instance
 
     def __init__(self):
@@ -65,6 +71,7 @@ class StorageManager:
                 try:
                     logger.info("Attempting to initialize PostgreSQL storage...")
                     self._storage = PostgreSQLStorage()
+                    self._async_storage = None
                     # Test connection synchronously
                     self._test_postgresql_connection()
                     self._status = "✅ Conectado ao PostgreSQL (via psycopg2)"
@@ -98,6 +105,7 @@ class StorageManager:
             # Fall back to local storage
             logger.warning(f"Storage initialization failed ({e}), falling back to local storage")
             self._storage = LocalJSONStorage()
+            self._async_storage = None
             self._status = "⚠️ Usando armazenamento local (arquivos JSON)"
             self._status_type = "warning"
             logger.error(f"Error initializing storage: {str(e)}")
@@ -133,6 +141,19 @@ class StorageManager:
         if self._storage is None:
             self._initialize_storage()
         return self._storage
+
+    def get_async_storage(self):
+        """Get (and lazily create) an async wrapper around the storage."""
+        if not POSTGRESQL_AVAILABLE or not isinstance(self.storage, PostgreSQLStorage):
+            raise RuntimeError("Async storage is only available when PostgreSQL storage is active")
+
+        if AsyncPostgreSQLStorage is None:
+            raise RuntimeError("AsyncPostgreSQLStorage adapter is not available")
+
+        if self._async_storage is None:
+            self._async_storage = AsyncPostgreSQLStorage(self.storage)
+
+        return self._async_storage
 
     @property
     def storage_type(self) -> StorageType:
@@ -241,6 +262,10 @@ class _StorageManagerProxy:
         manager = _storage_manager_singleton.get_manager()
         return manager.storage_type
     
+    def get_async_storage(self):
+        manager = _storage_manager_singleton.get_manager()
+        return manager.get_async_storage()
+    
     def __getattr__(self, name):
         # Forward any other attribute access to the actual manager
         manager = _storage_manager_singleton.get_manager()
@@ -252,3 +277,7 @@ storage_manager = _StorageManagerProxy()
 def get_storage_type() -> StorageType:
     """Get the current storage type."""
     return storage_manager.storage_type
+
+def get_async_storage():
+    """Convenience helper to obtain the async storage wrapper."""
+    return storage_manager.get_async_storage()

@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Optional, Union
 import logging
 
 from config import DATABASE_CONFIG
-from backend.database.postgresql_storage import PostgreSQLStorage
+from backend.database.storage_manager import get_async_storage
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +18,12 @@ logger = logging.getLogger(__name__)
 class DocumentAnalyzer:
     """Serviço de análise de documentos fiscais."""
 
-    def __init__(self, supabase_client=None):
-        """Initialize with PostgreSQL storage instead of Supabase client."""
-        self.db = PostgreSQLStorage()
+    def __init__(self, supabase_client=None, db=None):
+        """Initialize with asynchronous PostgreSQL storage instead of Supabase client."""
+        if db is None:
+            self.db = get_async_storage()
+        else:
+            self.db = db
         # Keep supabase_client for backward compatibility if needed
         self.supabase = supabase_client
 
