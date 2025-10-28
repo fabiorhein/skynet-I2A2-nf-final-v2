@@ -13,7 +13,8 @@ import logging
 import time
 from datetime import datetime
 import pandas as pd
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+import pandas as pd
 
 # Backend imports
 from backend.services import RAGService
@@ -757,10 +758,49 @@ def show_document_validation():
                 st.error(f"❌ Erro na validação: {str(e)}")
 
 
+def show_rag_statistics():
+    """Exibe estatísticas do sistema RAG."""
+    st.subheader("📊 Estatísticas do Sistema RAG")
+    
+    if 'rag_service' not in st.session_state:
+        st.warning("Serviço RAG não inicializado. Por favor, aguarde...")
+        return
+    
+    try:
+        # Get basic statistics
+        stats = st.session_state.rag_service.get_statistics()
+        
+        # Display basic stats
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total de Documentos", stats.get('total_documents', 0))
+        with col2:
+            st.metric("Total de Embeddings", stats.get('total_embeddings', 0))
+        with col3:
+            st.metric("Tamanho do Índice", f"{stats.get('index_size_mb', 0):.2f} MB")
+        
+        # Display document type distribution if available
+        if 'documents_by_type' in stats and stats['documents_by_type']:
+            st.subheader("📄 Documentos por Tipo")
+            df_types = pd.DataFrame(
+                list(stats['documents_by_type'].items()),
+                columns=['Tipo de Documento', 'Quantidade']
+            )
+            st.bar_chart(df_types.set_index('Tipo de Documento'))
+        
+        # Display embedding statistics if available
+        if 'embedding_stats' in stats:
+            st.subheader("🧮 Estatísticas de Embeddings")
+            st.json(stats['embedding_stats'])
+            
+    except Exception as e:
+        st.error(f"Erro ao carregar estatísticas: {str(e)}")
+        logger.error(f"Error in show_rag_statistics: {str(e)}")
+
+
 def show_rag_examples():
     """Exibe exemplos de uso do sistema RAG."""
     st.subheader("💡 Exemplos de Uso")
-
     st.markdown("""
     ### 🔍 **Consultas Semânticas**
 

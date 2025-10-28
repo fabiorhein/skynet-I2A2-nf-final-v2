@@ -31,6 +31,72 @@ class VectorStoreService:
         self._initialize_connection()
         logger.info("VectorStoreService initialized with PostgreSQL direct connection")
 
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about the vector store.
+        
+        Returns:
+            Dictionary containing vector store statistics
+        """
+        stats = {
+            'total_vectors': 0,
+            'index_size_mb': 0,
+            'status': 'active',
+            'last_updated': datetime.utcnow().isoformat()
+        }
+        
+        try:
+            # Get total number of vectors
+            count_query = """
+            SELECT COUNT(*) as total_vectors 
+            FROM document_chunks 
+            WHERE embedding IS NOT NULL
+            """
+            result = self._execute_query(count_query, fetch='one')
+            if result:
+                stats['total_vectors'] = result.get('total_vectors', 0)
+            
+            # Get index size
+            size_query = """
+            SELECT 
+                pg_size_pretty(pg_total_relation_size('document_chunks')) as total_size,
+                pg_size_pretty(pg_indexes_size('document_chunks')) as index_size,
+                pg_size_pretty(pg_relation_size('document_chunks')) as table_size
+            """
+            size_result = self._execute_query(size_query, fetch='one')
+            if size_result:
+                stats['total_size'] = size_result.get('total_size', '0')
+                stats['index_size'] = size_result.get('index_size', '0')
+                stats['table_size'] = size_result.get('table_size', '0')
+                
+                # Convert to MB for easier display
+                try:
+                    if 'MB' in stats['total_size']:
+                        stats['index_size_mb'] = float(stats['total_size'].replace('MB', '').strip())
+                    elif 'KB' in stats['total_size']:
+                        stats['index_size_mb'] = float(stats['total_size'].replace('KB', '').strip()) / 1024
+                    elif 'GB' in stats['total_size']:
+                        stats['index_size_mb'] = float(stats['total_size'].replace('GB', '').strip()) * 1024
+                except (ValueError, AttributeError):
+                    pass
+            
+            # Get vector dimensions if available
+            dim_query = """
+            SELECT vector_dims(embedding) as dimensions 
+            FROM document_chunks 
+            WHERE embedding IS NOT NULL 
+            LIMIT 1
+            """
+            dim_result = self._execute_query(dim_query, fetch='one')
+            if dim_result and dim_result.get('dimensions'):
+                stats['embedding_dimensions'] = dim_result['dimensions']
+                
+        except Exception as e:
+            logger.error(f"Error getting vector store statistics: {str(e)}")
+            stats['error'] = str(e)
+            
+        return stats
+
     def _initialize_connection(self):
         """Initialize PostgreSQL connection."""
         try:
