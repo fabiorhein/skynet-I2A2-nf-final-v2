@@ -34,6 +34,56 @@ class RAGService:
         self.vector_store = VectorStoreService()
         self._initialize_embedding_service()
         logger.info("RAGService initialized")
+        
+    def get_statistics(self) -> Dict[str, Any]:
+        """
+        Get statistics about the RAG system.
+        
+        Returns:
+            Dict containing various statistics about the RAG system
+        """
+        stats = {
+            'status': 'active',
+            'last_updated': datetime.utcnow().isoformat(),
+            'total_documents': 0,
+            'total_embeddings': 0,
+            'index_size_mb': 0,
+            'documents_by_type': {},
+            'embedding_stats': {
+                'model': 'unknown',
+                'dimensions': 0,
+                'service': 'unknown'
+            }
+        }
+        
+        try:
+            # Get vector store stats if available
+            if hasattr(self.vector_store, 'get_stats'):
+                vector_stats = self.vector_store.get_stats()
+                if vector_stats:
+                    stats['total_embeddings'] = vector_stats.get('total_vectors', 0)
+                    stats['index_size_mb'] = vector_stats.get('index_size_mb', 0)
+            
+            # Get document type distribution if available
+            if hasattr(self, 'document_service') and hasattr(self.document_service, 'get_document_type_distribution'):
+                stats['documents_by_type'] = self.document_service.get_document_type_distribution()
+                stats['total_documents'] = sum(stats['documents_by_type'].values())
+            
+            # Get embedding service info
+            if self.embedding_service and hasattr(self.embedding_service, 'get_service_info'):
+                service_info = self.embedding_service.get_service_info()
+                stats['embedding_stats'].update({
+                    'model': service_info.get('model', 'unknown'),
+                    'dimensions': service_info.get('dimensions', 0),
+                    'service': service_info.get('primary_service', 'unknown'),
+                    'fallback_service': service_info.get('fallback_service', 'none')
+                })
+                
+        except Exception as e:
+            logger.error(f"Error getting RAG statistics: {str(e)}")
+            stats['error'] = str(e)
+            
+        return stats
 
     def _initialize_embedding_service(self):
         """Initialize embedding service with fallback logic."""
