@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Any, Optional
+from decimal import Decimal
 import concurrent.futures
 
 # Importações locais
@@ -43,6 +44,32 @@ def _validate_document_data(data: any) -> bool:
 
     return True
 
+def _to_float(value: Any) -> float:
+    """Converte diferentes formatos numéricos para float."""
+    if value is None:
+        return 0.0
+
+    if isinstance(value, Decimal):
+        return float(value)
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    if isinstance(value, str):
+        clean = value.strip().replace('R$', '').replace(' ', '')
+        if not clean:
+            return 0.0
+        if ',' in clean and '.' in clean:
+            clean = clean.replace('.', '').replace(',', '.')
+        elif ',' in clean:
+            clean = clean.replace(',', '.')
+        try:
+            return float(clean)
+        except ValueError:
+            return 0.0
+
+    return 0.0
+
 def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
     """Prepara o registro do documento para ser salvo."""
     if not isinstance(parsed, dict):
@@ -57,16 +84,16 @@ def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
     validation_status = validation.get('status', 'pending')
 
     # Extrair dados do emitente
-    emitente = parsed.get('emitente', {})
+    emitente = parsed.get('emitente') or {}
 
     # Extrair dados do destinatário, se disponível
-    destinatario = parsed.get('destinatario', {})
+    destinatario = parsed.get('destinatario') or {}
 
     # Extrair dados de itens, se disponível
-    itens = parsed.get('itens', [])
+    itens = parsed.get('itens') or []
 
     # Extrair totais, se disponível
-    totais = parsed.get('totals', {})
+    totais = parsed.get('totals') or {}
 
     # Função auxiliar para converter datas do formato brasileiro para ISO
     def convert_date_to_iso(date_str):
@@ -108,7 +135,7 @@ def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
         'recipient_cnpj': destinatario.get('cnpj') or destinatario.get('CNPJ'),
         'recipient_name': destinatario.get('razao_social') or destinatario.get('nome') or destinatario.get('xNome', ''),
         'issue_date': convert_date_to_iso(parsed.get('data_emissao') or parsed.get('dhEmi')),
-        'total_value': parsed.get('total') or totais.get('valorTotal') or 0.0,
+        'total_value': _to_float(parsed.get('total') or totais.get('valorTotal') or 0.0),
         'cfop': parsed.get('cfop') or (itens[0].get('cfop') if itens else None),
         'extracted_data': parsed,
         'validation_status': validation_status,
@@ -656,11 +683,12 @@ def render(storage):
                         col1, col2 = st.columns(2)
 
                         with col1:
+                            total_value = _to_float(record.get('total_value', 0))
                             st.markdown(f"""
                             **Informações Extraídas:**
                             - **Tipo:** {record.get('document_type', 'N/A')}
                             - **Número:** {record.get('document_number', 'N/A')}
-                            - **Valor:** R$ {record.get('total_value', 0):.2f}
+                            - **Valor:** R$ {total_value:.2f}
                             """)
 
                         with col2:

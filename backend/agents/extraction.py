@@ -12,7 +12,11 @@ def extract_from_file(path: str) -> Dict[str, Any]:
         if isinstance(parsed, dict):
             raw_text = parsed.get('raw_text', '')
             if isinstance(raw_text, str):
-                parsed['document_type'] = 'NFe'  # Set default type for XML
+                detected_type = parsed.get('tipo_documento') or parsed.get('document_type')
+                if isinstance(detected_type, str):
+                    parsed['document_type'] = detected_type
+                else:
+                    parsed['document_type'] = 'unknown'
                 return parsed
         # Return error structure if parsing failed
         return {'error': 'xml_parse_error', 'message': 'Failed to parse XML', 'raw_text': '', 'document_type': 'unknown'}

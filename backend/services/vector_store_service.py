@@ -5,6 +5,8 @@ This module provides vector storage and semantic search functionality using dire
 PostgreSQL connection with pgvector extension for efficient similarity search.
 """
 import logging
+import json
+import math
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import numpy as np
@@ -367,9 +369,9 @@ class VectorStoreService:
                 doc_groups[doc_id].append(chunk)
 
             # Build context for each document
-            context_docs = []
+            context_docs: List[Dict[str, Any]] = []
 
-            for doc_id, chunks in list(doc_groups.items())[:max_documents]:
+            for doc_id, chunks in doc_groups.items():
                 # Get document info
                 doc_query = "SELECT * FROM fiscal_documents WHERE id = %s"
                 doc_info = self._execute_query(doc_query, (doc_id,), "one")
@@ -381,6 +383,12 @@ class VectorStoreService:
 
                     # Combine chunk content
                     chunks_content = '\n\n'.join([chunk['content_text'] for chunk in top_chunks])
+                    base_similarity = sum(chunk['similarity_score'] for chunk in top_chunks) / len(top_chunks)
+
+                    document_value = self._extract_document_value(doc_info)
+                    value_score = self._normalize_document_value(document_value)
+                    recency_score = self._compute_recency_score(doc_info.get('created_at'))
+                    hybrid_score = self._compute_hybrid_score(base_similarity, value_score, recency_score)
 
                     context_docs.append({
                         'fiscal_document_id': doc_id,
@@ -388,13 +396,21 @@ class VectorStoreService:
                         'document_type': doc_info['document_type'],
                         'document_number': doc_info['document_number'],
                         'issuer_cnpj': doc_info['issuer_cnpj'],
-                        'total_similarity': sum(chunk['similarity_score'] for chunk in top_chunks) / len(top_chunks),
+                        'total_similarity': base_similarity,
                         'chunks_content': chunks_content,
-                        'chunks_count': len(top_chunks)
+                        'chunks_count': len(top_chunks),
+                        'hybrid_score': hybrid_score,
+                        'recency_score': recency_score,
+                        'value_score': value_score,
+                        'document_value': document_value
                     })
 
-            logger.info(f"PostgreSQL query retrieved context from {len(context_docs)} documents")
-            return context_docs
+            # Order contexts by hybrid score and limit to requested documents
+            context_docs.sort(key=lambda x: x.get('hybrid_score', 0), reverse=True)
+            selected_docs = context_docs[:max_documents]
+
+            logger.info(f"PostgreSQL query retrieved context from {len(selected_docs)} documents")
+            return selected_docs
 
         except Exception as e:
             logger.error(f"Error getting document context: {str(e)}")
@@ -625,6 +641,79 @@ class VectorStoreService:
         except Exception as e:
             logger.error(f"Error getting chunks for document {document_id}: {str(e)}")
             raise
+
+    def _extract_document_value(self, doc_info: Dict[str, Any]) -> Optional[float]:
+        """Extract numeric document value from stored metadata."""
+        extracted_data = doc_info.get('extracted_data')
+
+        if isinstance(extracted_data, str):
+            try:
+                extracted_data = json.loads(extracted_data)
+            except json.JSONDecodeError:
+                extracted_data = None
+
+        if isinstance(extracted_data, dict):
+            for key in ('total', 'valor_total', 'value'):
+                if key in extracted_data:
+                    value = self._safe_float(extracted_data.get(key))
+                    if value is not None:
+                        return value
+
+        return None
+
+    def _safe_float(self, raw_value: Any) -> Optional[float]:
+        """Convert different numeric formats to float."""
+        if raw_value is None:
+            return None
+
+        if isinstance(raw_value, (int, float)):
+            return float(raw_value)
+
+        if isinstance(raw_value, str):
+            cleaned = raw_value.strip()
+            if not cleaned:
+                return None
+
+            cleaned = cleaned.replace('R$', '').replace(' ', '')
+            cleaned = cleaned.replace('.', '').replace(',', '.')
+
+            try:
+                return float(cleaned)
+            except ValueError:
+                return None
+
+        return None
+
+    def _normalize_document_value(self, value: Optional[float]) -> float:
+        """Normalize document value onto [0, 1] using log scaling."""
+        if value is None or value <= 0:
+            return 0.0
+
+        return min(1.0, math.log10(value + 1) / 6.0)
+
+    def _compute_recency_score(self, created_at: Any) -> float:
+        """Compute recency score favoring newer documents."""
+        if not created_at:
+            return 0.0
+
+        if isinstance(created_at, datetime):
+            doc_datetime = created_at
+        else:
+            try:
+                doc_datetime = datetime.fromisoformat(str(created_at).replace('Z', '+00:00'))
+            except ValueError:
+                return 0.0
+
+        try:
+            delta_days = max((datetime.utcnow() - doc_datetime.replace(tzinfo=None)).total_seconds() / 86400, 0)
+        except Exception:
+            return 0.0
+
+        return math.exp(-delta_days / 30.0)
+
+    def _compute_hybrid_score(self, similarity: float, value_score: float, recency_score: float) -> float:
+        """Combine similarity, value and recency into a single ranking score."""
+        return (similarity * 0.6) + (value_score * 0.25) + (recency_score * 0.15)
 
     def close(self):
         """Close the database connection."""

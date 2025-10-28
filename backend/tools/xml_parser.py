@@ -35,7 +35,15 @@ def _parse_nfe(root, xml_string: str) -> Dict[str, Any]:
 
     def _find_under(parent_local_name: str, tag: str, node=None):
         target = node if node is not None else root
-        res = target.xpath(f'.//*[local-name()="{parent_local_name}"]//*[local-name()="{tag}"]')
+        if target is None:
+            return None
+
+        if node is not None:
+            xpath_expr = f'.//*[local-name()="{tag}"]'
+        else:
+            xpath_expr = f'.//*[local-name()="{parent_local_name}"]//*[local-name()="{tag}"]'
+
+        res = target.xpath(xpath_expr)
         return _text(res[0]) if res else None
         
     def _to_float(value):
@@ -133,8 +141,8 @@ def _parse_nfe(root, xml_string: str) -> Dict[str, Any]:
         itens.append(item)
     
     # Totais
-    total = root.xpath('.//*[local-name()="total"]//*[local-name()="ICMSTot"]')
-    total = total[0] if total else {}
+    total_nodes = root.xpath('.//*[local-name()="total"]//*[local-name()="ICMSTot"]')
+    total = total_nodes[0] if total_nodes else None
     
     # Extrai o valor total do documento
     valor_total = _to_float(_find_under('ICMSTot', 'vNF', total)) or 0.0
@@ -179,15 +187,15 @@ def _parse_nfe(root, xml_string: str) -> Dict[str, Any]:
                 'uf': _find_under('enderDest', 'UF', dest),
                 'cep': _find_under('enderDest', 'CEP', dest)
             }
-        } if dest else {},
+        } if dest is not None else {},
         'itens': itens,
         'total': valor_total,  # Agora é um valor numérico
         'total_detalhado': {  # Mantém a estrutura detalhada para referência
-            'valor_produtos': _to_float(_find_under('ICMSTot', 'vProd', total)),
-            'valor_frete': _to_float(_find_under('ICMSTot', 'vFrete', total)),
-            'valor_seguro': _to_float(_find_under('ICMSTot', 'vSeg', total)),
-            'desconto': _to_float(_find_under('ICMSTot', 'vDesc', total)),
-            'valor_ipi': _to_float(_find_under('ICMSTot', 'vIPI', total)),
+            'valor_produtos': _to_float(_find_under('ICMSTot', 'vProd', total)) if total is not None else 0.0,
+            'valor_frete': _to_float(_find_under('ICMSTot', 'vFrete', total)) if total is not None else 0.0,
+            'valor_seguro': _to_float(_find_under('ICMSTot', 'vSeg', total)) if total is not None else 0.0,
+            'desconto': _to_float(_find_under('ICMSTot', 'vDesc', total)) if total is not None else 0.0,
+            'valor_ipi': _to_float(_find_under('ICMSTot', 'vIPI', total)) if total is not None else 0.0,
             'valor_total': valor_total
         },
         'informacoes_adicionais': _find_under('infAdic', 'infCpl'),
@@ -567,19 +575,19 @@ def _parse_mdfe(root, xml_string: str) -> Dict[str, Any]:
 
     # Informações básicas
     ide = root.xpath('.//*[local-name()="ide"]')
-    ide = ide[0] if ide else {}
+    ide = ide[0] if ide else None
     
     # Emitente
     emit = root.xpath('.//*[local-name()="emit"]')
-    emit = emit[0] if emit else {}
+    emit = emit[0] if emit else None
     
     # Destinatário (se existir)
     dest = root.xpath('.//*[local-name()="dest"]')
-    dest = dest[0] if dest else {}
+    dest = dest[0] if dest else None
     
     # Modal
     modal = root.xpath('.//*[local-name()="modal"]')
-    modal = modal[0] if modal else {}
+    modal = modal[0] if modal else None
     
     # Documentos fiscais vinculados
     documentos = []
@@ -604,7 +612,7 @@ def _parse_mdfe(root, xml_string: str) -> Dict[str, Any]:
         'data_emissao': _find_under('ide', 'dhEmi', ide) or _find_under('ide', 'dEmi', ide),
         'modelo': _find_under('ide', 'mod', ide) or '58',  # 58 é o modelo padrão para MDFe
         'tipo_emissao': _find_under('ide', 'tpEmis', ide),
-        'modal': _find_under('modal', 'CNPJ', modal) and 'Rodoviário' or 'Não informado',
+        'modal': (_find_under('modal', 'CNPJ', modal) and 'Rodoviário') if modal is not None else 'Não informado',
         'uf_inicio': _find_under('ide', 'UFIni', ide),
         'uf_fim': _find_under('ide', 'UFFim', ide),
         'emitente': {
@@ -619,13 +627,15 @@ def _parse_mdfe(root, xml_string: str) -> Dict[str, Any]:
                 'uf': _find_under('enderEmit', 'UF', emit),
                 'cep': _find_under('enderEmit', 'CEP', emit)
             }
-        },
+        } if emit is not None else {},
         'destinatario': {
             'cnpj': _find_under('dest', 'CNPJ', dest),
             'cpf': _find_under('dest', 'CPF', dest),
             'ie': _find_under('dest', 'IE', dest),
             'razao_social': _find_under('dest', 'xNome', dest)
-        } if any(_find_under('dest', field, dest) for field in ['CNPJ', 'CPF', 'IE', 'xNome']) else None,
+        } if dest is not None and any(
+            _find_under('dest', field, dest) for field in ['CNPJ', 'CPF', 'IE', 'xNome']
+        ) else None,
         'documentos_vinculados': documentos,
         'total': valor_carga,  # Retorna apenas o valor numérico
         'total_detalhado': {   # Mantém a estrutura detalhada para referência
@@ -677,22 +687,53 @@ def parse_xml_string(xml_string: str) -> Dict[str, Any]:
         parser = etree.XMLParser(remove_blank_text=True, remove_comments=True)
         root = etree.fromstring(xml_string.strip().encode('utf-8'), parser=parser)
         
-        # Identifica o tipo de documento
-        if root.xpath('//*[contains(local-name(), "NFe")]'):
-            if 'mod="65"' in xml_string or 'mod=65' in xml_string:
+        # Identifica o tipo de documento a partir da raiz
+        root_local_name = etree.QName(root).localname if hasattr(etree, 'QName') else root.tag
+        root_local_lower = root_local_name.lower() if isinstance(root_local_name, str) else ''
+
+        def _detect_model(node) -> Optional[str]:
+            try:
+                values = node.xpath('.//*[local-name()="ide"]//*[local-name()="mod"]/text()')
+                if values:
+                    return str(values[0]).strip()
+            except Exception:
+                pass
+            return None
+
+        model_value = _detect_model(root)
+        is_nfce_model = model_value == '65'
+
+        if 'mdfe' in root_local_lower:
+            return _parse_mdfe(root, xml_string)
+        if 'cte' in root_local_lower:
+            return _parse_cte(root, xml_string)
+        if 'nfe' in root_local_lower:
+            if is_nfce_model or '<mod>65<' in xml_string or 'mod="65"' in xml_string or 'mod=65' in xml_string:
                 return _parse_nfce(root, xml_string)
             return _parse_nfe(root, xml_string)
-        elif root.xpath('//*[contains(local-name(), "CTe")]'):
-            return _parse_cte(root, xml_string)
-        elif root.xpath('//*[contains(local-name(), "MDFe")]'):
+
+        # Heurística adicional baseada em elementos internos (ordem importa)
+        if root.xpath('//*[contains(local-name(), "MDFe")]'):
             return _parse_mdfe(root, xml_string)
-            
+        if root.xpath('//*[contains(local-name(), "CTe")]'):
+            return _parse_cte(root, xml_string)
+        if root.xpath('//*[contains(local-name(), "NFe")]'):
+            # Recalcula o modelo apenas quando necessário
+            if model_value is None:
+                model_value = _detect_model(root)
+            if model_value == '65' or '<mod>65<' in xml_string or 'mod="65"' in xml_string or 'mod=65' in xml_string:
+                return _parse_nfce(root, xml_string)
+            return _parse_nfe(root, xml_string)
+
         # Se não for nenhum dos tipos conhecidos, tenta identificar pelo root tag
         root_tag = etree.QName(root).localname.lower()
-        if 'nfe' in root_tag or 'nfe' in xml_string.lower():
-            return _parse_nfe(root, xml_string)
-        elif 'nfce' in root_tag or 'nfce' in xml_string.lower():
+        xml_lower = xml_string.lower()
+        if 'nfce' in root_tag or 'nfce' in xml_lower:
             return _parse_nfce(root, xml_string)
+        elif 'nfe' in root_tag or 'nfe' in xml_lower:
+            if model_value == '65' or '<mod>65<' in xml_string or 'mod="65"' in xml_string or 'mod=65' in xml_string:
+                return _parse_nfce(root, xml_string)
+            return _parse_nfe(root, xml_string)
         elif 'cte' in root_tag or 'cte' in xml_string.lower():
             return _parse_cte(root, xml_string)
         elif 'mdfe' in root_tag or 'mdfe' in xml_string.lower():

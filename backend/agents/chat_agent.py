@@ -11,7 +11,7 @@ import json
 import hashlib
 import asyncio
 from typing import List, Dict, Any, Optional, Tuple, Union
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 import uuid
 import logging
@@ -42,6 +42,7 @@ except ImportError:
     SUPABASE_KEY = get_config_value('SUPABASE_KEY') or get_config_value('connections.supabase.KEY')
 
 from backend.services.document_analyzer import DocumentAnalyzer
+from backend.database.storage_manager import storage_manager, get_async_storage
 
 logger = logging.getLogger(__name__)
 
@@ -165,11 +166,7 @@ class AnalysisCache:
             cache_entry = self.storage.get_analysis_cache(cache_key)
 
             if cache_entry:
-                return {
-                    'content': cache_entry.get('response_content', ''),
-                    'metadata': cache_entry.get('response_metadata', {}),
-                    'cached': True
-                }
+                return cache_entry
 
         except Exception as e:
             logger.error(f"Error retrieving cache: {e}")
@@ -182,7 +179,8 @@ class AnalysisCache:
         context: Dict[str, Any],
         response: str,
         metadata: Dict[str, Any],
-        query_type: str = 'general'
+        query_type: str = 'general',
+        session_id: Optional[str] = None
     ) -> None:
         """Cache the response for future use."""
 
@@ -197,7 +195,8 @@ class AnalysisCache:
                 context_data=context,
                 response_content=response,
                 response_metadata=metadata,
-                expires_at=expires_at
+                expires_at=expires_at,
+                session_id=session_id
             )
 
         except Exception as e:
@@ -391,19 +390,61 @@ class ChatAgent:
     def _is_list_request(self, query: str) -> bool:
         """Verifica se a consulta é um pedido de listagem de documentos."""
         query_lower = query.lower()
-        
-        # Lista de palavras-chave que indicam um pedido de listagem
+
         list_keywords = [
-            'listar', 'mostrar', 'quais são', 'quais foram', 'quais são as',
-            'mostre', 'mostrar', 'todos os', 'todas as', 'últimas', 'recentes',
-            'notas fiscais', 'documentos fiscais', 'notas', 'documentos',
-            'lista de', 'listagem de', 'relatório de', 'relatorio de',
-            'últimos', 'últimas', 'último', 'última', 'importados', 'importadas',
-            'minutos', 'hora', 'horas', 'dia', 'dias', 'semana', 'semanas'
+            'listar', 'lista', 'quais são', 'mostrar documentos', 'ver documentos',
+            'listar documentos', 'documentos fiscais', 'notas fiscais', 'mostrar notas',
+            'quero ver', 'quais notas', 'quais documentos', 'listar notas', 'mostrar nota',
+            'documents list', 'invoice list', 'list invoices'
         ]
-        
-        # Verifica se a consulta contém pelo menos uma palavra-chave de listagem
-        return any(keyword in query_lower for keyword in list_keywords)
+
+        recent_keywords = [
+            'últimas notas', 'notas recentes', 'últimos documentos',
+            'documentos recentes', 'notas fiscais recentes', 'últimas notas fiscais',
+            'mais recentes', 'notas mais recentes', 'documentos mais recentes',
+            'últimos lançamentos', '10 últimas notas', 'dez últimas notas',
+            'últimos registros', 'registros recentes'
+        ]
+
+        analysis_keywords = [
+            'análise criteriosa', 'análise detalhada', 'análise completa',
+            'insights', 'recomendações', 'pontos de atenção', 'resumo crítico',
+            'panorama', 'diagnóstico', 'sugestões'
+        ]
+
+        # Novas palavras-chave para perguntas sobre valores e características
+        value_keywords = [
+            'maior valor', 'menor valor', 'valor mais alto', 'valor mais baixo',
+            'mais caro', 'mais barato', 'qual o maior', 'qual o menor',
+            'valor máximo', 'valor mínimo', 'nota mais cara', 'nota mais barata',
+            'documento mais caro', 'documento mais barato', 'com maior valor',
+            'com menor valor', 'valor total', 'qual a nota', 'qual o documento'
+        ]
+
+        return any(keyword in query_lower for keyword in 
+                  list_keywords + recent_keywords + analysis_keywords + value_keywords)
+
+    def _get_query_intent(self, query: str) -> str:
+        query_lower = query.lower()
+
+        analysis_keywords = [
+            'análise criteriosa', 'análise detalhada', 'análise completa',
+            'insights', 'recomendações', 'pontos de atenção', 'resumo crítico',
+            'panorama', 'diagnóstico', 'sugestões'
+        ]
+
+        recent_keywords = [
+            'últimas notas', 'notas recentes', 'últimos documentos',
+            'documentos recentes', 'notas fiscais recentes', 'últimas notas fiscais',
+            'mais recentes', 'notas mais recentes', 'documentos mais recentes',
+            'últimos lançamentos', 'últimas entradas', 'últimos registros'
+        ]
+
+        if any(keyword in query_lower for keyword in analysis_keywords):
+            return 'analysis'
+        if any(keyword in query_lower for keyword in recent_keywords):
+            return 'recent'
+        return 'generic'
 
     def _is_count_request(self, query: str) -> bool:
         """Verifica se a pergunta é sobre contagem específica."""
@@ -475,16 +516,36 @@ class ChatAgent:
             )
 
         # Check cache first
+        cached_info: Optional[Dict[str, Any]] = None
         if context:
-            cached = await self.cache.get_cached_response(query, context)
-            if cached:
-                await self.save_message(session_id, 'assistant', cached['content'],
-                                      {'cached': True, 'tokens_used': 0})
-                return ChatResponse(
-                    content=cached['content'],
-                    metadata=cached['metadata'],
-                    cached=True
-                )
+            cached_info = await self.cache.get_cached_response(query, context)
+            if cached_info:
+                cached_session = cached_info.get('cached_session_id')
+                cached_content = cached_info.get('content', '')
+                cached_metadata = cached_info.get('metadata', {})
+                cached_time = cached_info.get('cached_at')
+
+                if cached_session and cached_session == session_id:
+                    annotated_content = "🔁 **Pergunta repetida nesta sessão**\n\n" \
+                        "Reaproveitando a resposta anterior e mantendo o histórico da conversa.\n\n" \
+                        f"{cached_content}"
+                    metadata = {
+                        **cached_metadata,
+                        'cached': True,
+                        'cached_session_id': cached_session,
+                        'cached_at': cached_time,
+                        'tokens_used': 0,
+                        'reused_in_session': True
+                    }
+                    await self.save_message(session_id, 'assistant', annotated_content, metadata)
+                    return ChatResponse(
+                        content=annotated_content,
+                        metadata=metadata,
+                        cached=True
+                    )
+                else:
+                    # Cache pertence a outra sessão – continuar processamento normal
+                    cached_info = None
 
         # Get relevant document context
         document_context = DocumentContext(documents=[], summaries=[], insights=[])
@@ -629,16 +690,18 @@ Responda em português."""
         try:
             query_lower = query.lower()
             time_filter = None
-            
-            # Verifica se é um pedido de últimas notas/dados recentes
-            is_recent_query = any(word in query_lower for word in [
-                'últimas notas', 'notas recentes', 'últimos documentos', 
-                'documentos recentes', 'notas fiscais recentes', 'últimas notas fiscais',
-                'mais recentes', 'notas mais recentes', 'documentos mais recentes',
-                'últimos lançamentos', '10 últimas notas', 'dez últimas notas',
-                'últimos registros', 'registros recentes'
+
+            intent = self._get_query_intent(query)
+            is_recent_query = intent == 'recent'
+            is_analysis_request = intent == 'analysis'
+
+            # Detecta se é uma pergunta sobre valores extremos
+            is_value_query = any(keyword in query_lower for keyword in [
+                'maior valor', 'menor valor', 'valor mais alto', 'valor mais baixo',
+                'mais caro', 'mais barato', 'valor máximo', 'valor mínimo',
+                'nota mais cara', 'nota mais barata', 'documento mais caro', 'documento mais barato'
             ])
-            
+
             # Verifica se há um filtro de tempo específico na consulta
             import re
             from datetime import datetime, timedelta
@@ -658,6 +721,8 @@ Responda em português."""
                 (r'nas\s*últimas?\s*(\d+)\s*semanas?', 'weeks'),
             ]
             
+            doc_limit = None
+
             for pattern, unit in time_patterns:
                 match = re.search(pattern, query_lower)
                 if match:
@@ -666,6 +731,40 @@ Responda em português."""
                     time_filter = datetime.now() - delta
                     is_recent_query = True
                     break
+
+            # Detect explicit quantity requests (e.g., "5 últimos documentos")
+            quantity_patterns = [
+                r'(?:os|as)?\s*(\d+)\s*(?:últimos|últimas|mais\s+recentes|recentes)',
+                r'(?:listar|mostrar)\s*(\d+)\s*(?:documentos|notas)'
+            ]
+
+            for quantity_pattern in quantity_patterns:
+                match = re.search(quantity_pattern, query_lower)
+                if match:
+                    try:
+                        doc_limit = max(1, int(match.group(1)))
+                        break
+                    except ValueError:
+                        continue
+
+            if doc_limit is None:
+                number_words = {
+                    'um': 1, 'uma': 1,
+                    'dois': 2, 'duas': 2,
+                    'três': 3, 'tres': 3,
+                    'quatro': 4,
+                    'cinco': 5,
+                    'seis': 6,
+                    'sete': 7,
+                    'oito': 8,
+                    'nove': 9,
+                    'dez': 10,
+                    'quinze': 15
+                }
+                for word, value in number_words.items():
+                    if word in query_lower and any(trigger in query_lower for trigger in ['últimos', 'últimas', 'recentes']) and value:
+                        doc_limit = value
+                        break
             
             # Busca os documentos com ordenação por data e filtro de tempo
             summary_data = await self._get_all_documents_summary(time_filter=time_filter)
@@ -683,36 +782,131 @@ Responda em português."""
                 total = summary_data['total_documents']
                 documents = summary_data['documents']
                 
-                # Ordena os documentos por data de criação (mais recentes primeiro)
-                documents_sorted = sorted(
-                    documents, 
-                    key=lambda x: x.get('created_at', ''), 
-                    reverse=True
-                )
-                
-                # Para consultas de 'últimas notas', limita a 10 itens
-                limit = 10 if is_recent_query else 15
-                documents_to_show = documents_sorted[:limit]
-                
-                # Prepara o prompt baseado no tipo de consulta
-                if is_recent_query:
-                    prompt = """O usuário pediu uma lista com as notas fiscais mais recentes do banco de dados.
-
-**Dados brutos encontrados:**
-- Total de documentos: {}
-- Valor total: R$ {:.2f}
-- Mostrando as {} notas mais recentes:
-
-""".format(total, summary_data['total_value'], len(documents_to_show))
+                # Ordena os documentos baseado no tipo de consulta
+                if is_value_query:
+                    # Para perguntas sobre valores, ordena por valor (do maior para o menor)
+                    # Primeiro filtra documentos que têm valor válido
+                    documents_with_value = []
+                    for doc in documents:
+                        if doc.get('extracted_data'):
+                            try:
+                                data = doc['extracted_data']
+                                if isinstance(data, str):
+                                    data = json.loads(data)
+                                if isinstance(data, dict):
+                                    value = data.get('total', data.get('valor_total', data.get('value', None)))
+                                    if value is not None and value != 'N/A':
+                                        try:
+                                            value = float(value)
+                                            doc['_sort_value'] = value
+                                            documents_with_value.append(doc)
+                                        except (ValueError, TypeError):
+                                            pass
+                            except Exception:
+                                pass
+                    
+                    # Se encontrou documentos com valor, ordena por valor
+                    if documents_with_value:
+                        # Verifica se é pergunta sobre maior ou menor valor
+                        is_max_value = any(keyword in query_lower for keyword in [
+                            'maior valor', 'valor mais alto', 'mais caro', 'valor máximo', 
+                            'nota mais cara', 'documento mais caro'
+                        ])
+                        
+                        if is_max_value:
+                            documents_sorted = sorted(documents_with_value, key=lambda x: x['_sort_value'], reverse=True)
+                        else:
+                            documents_sorted = sorted(documents_with_value, key=lambda x: x['_sort_value'])
+                    else:
+                        # Fallback para ordenação por data se não conseguir extrair valores
+                        documents_sorted = sorted(
+                            documents, 
+                            key=lambda x: x.get('created_at', ''), 
+                            reverse=True
+                        )
                 else:
-                    prompt = """O usuário pediu uma lista com todos os documentos fiscais do banco de dados.
+                    # Ordenação padrão por data de criação (mais recentes primeiro)
+                    documents_sorted = sorted(
+                        documents, 
+                        key=lambda x: x.get('created_at', ''), 
+                        reverse=True
+                    )
+                
+                # Para consultas sobre valores extremos, mostra apenas 1 documento por padrão
+                if is_value_query and doc_limit is None:
+                    default_limit = 1
+                elif is_recent_query:
+                    default_limit = 10
+                else:
+                    default_limit = 15
+                
+                limit = doc_limit if (doc_limit and doc_limit > 0) else default_limit
+                documents_to_show = documents_sorted[:limit]
 
-**Dados brutos encontrados:**
-- Total de documentos: {}
-- Valor total: R$ {:.2f}
-- Mostrando {} de {} documentos:
+                # Prepara o prompt baseado no tipo de consulta
+                base_prompt = []
+                if is_analysis_request:
+                    base_prompt.append("O usuário pediu uma análise criteriosa dos documentos fiscais importados.")
+                    base_prompt.append(
+                        "Além de listar os documentos relevantes, forneça uma análise detalhada com: "
+                        "principais categorias e emissores, valores agregados, status de processamento "
+                        "e recomendações ou próximos passos para o usuário."
+                    )
+                elif is_value_query:
+                    if any(keyword in query_lower for keyword in [
+                        'maior valor', 'valor mais alto', 'mais caro', 'valor máximo', 
+                        'nota mais cara', 'documento mais caro'
+                    ]):
+                        base_prompt.append("O usuário quer saber qual é a nota fiscal com o maior valor total.")
+                        base_prompt.append("Mostre apenas o documento com o maior valor encontrado.")
+                    else:
+                        base_prompt.append("O usuário quer saber qual é a nota fiscal com o menor valor total.")
+                        base_prompt.append("Mostre apenas o documento com o menor valor encontrado.")
+                elif is_recent_query:
+                    base_prompt.append("O usuário pediu uma lista com as notas fiscais mais recentes do banco de dados.")
+                else:
+                    base_prompt.append("O usuário pediu uma lista com documentos fiscais do banco de dados.")
 
-""".format(total, summary_data['total_value'], len(documents_to_show), total)
+                base_prompt.append("\n**Dados brutos encontrados:**")
+                base_prompt.append(f"- Total de documentos: {total}")
+                base_prompt.append(f"- Valor total: R$ {summary_data['total_value']:.2f}")
+
+                if is_recent_query:
+                    base_prompt.append(f"- Mostrando as {len(documents_to_show)} notas mais recentes")
+                else:
+                    base_prompt.append(f"- Mostrando {len(documents_to_show)} de {total} documentos")
+
+                if is_analysis_request:
+                    # Adiciona visão agregada para embasar a análise
+                    by_type = summary_data.get('by_type', {})
+                    if by_type:
+                        base_prompt.append("\n**Distribuição por tipo:**")
+                        for doc_type, count in sorted(by_type.items(), key=lambda item: item[1], reverse=True):
+                            percentage = (count / total * 100) if total else 0
+                            base_prompt.append(f"- {doc_type}: {count} documentos ({percentage:.1f}%)")
+
+                    by_issuer = summary_data.get('by_issuer', {})
+                    if by_issuer:
+                        base_prompt.append("\n**Principais emissores:**")
+                        for issuer, count in sorted(by_issuer.items(), key=lambda item: item[1], reverse=True)[:5]:
+                            percentage = (count / total * 100) if total else 0
+                            base_prompt.append(f"- {issuer}: {count} documentos ({percentage:.1f}%)")
+
+                    status_counts: Dict[str, int] = {}
+                    for doc in documents:
+                        status = (doc.get('validation_status') or 'desconhecido').lower()
+                        status_counts[status] = status_counts.get(status, 0) + 1
+
+                    if status_counts:
+                        base_prompt.append("\n**Status de processamento:**")
+                        for status, count in sorted(status_counts.items(), key=lambda item: item[1], reverse=True):
+                            percentage = (count / total * 100) if total else 0
+                            base_prompt.append(f"- {status}: {count} documentos ({percentage:.1f}%)")
+
+                    base_prompt.append("\nInclua recomendações práticas com base nesses dados (por exemplo, prioridades de validação ou consolidação financeira).")
+
+                base_prompt.append("")
+                prompt = "\n".join(base_prompt)
                 
                 # Adiciona detalhes de cada documento
                 for i, doc in enumerate(documents_to_show, 1):
@@ -722,15 +916,25 @@ Responda em português."""
                     
                     # Formata a data e hora de forma mais amigável
                     created_at = doc.get('created_at')
+                    formatted_date = 'Data não disponível'
                     if created_at:
                         try:
-                            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                            # Formata como "DD/MM/YYYY às HH:MM"
-                            formatted_date = dt.strftime('%d/%m/%Y às %H:%M')
-                        except (ValueError, AttributeError):
-                            formatted_date = created_at[:10]  # Pega apenas a data se não conseguir converter
-                    else:
-                        formatted_date = 'Data não disponível'
+                            if isinstance(created_at, datetime):
+                                dt = created_at
+                            elif isinstance(created_at, str):
+                                dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                            else:
+                                dt = None
+
+                            if dt is not None:
+                                if dt.tzinfo is None:
+                                    dt = dt.replace(tzinfo=timezone.utc)
+                                formatted_date = dt.astimezone(timezone.utc).strftime('%d/%m/%Y às %H:%M')
+                            elif isinstance(created_at, str):
+                                formatted_date = created_at[:10]
+                        except (ValueError, TypeError):
+                            if isinstance(created_at, str):
+                                formatted_date = created_at[:10]
                     
                     # Extrai o valor
                     value = 'N/A'
@@ -771,8 +975,21 @@ Responda em português."""
                 # Instruções para a IA
                 prompt += """**Instruções:**
 Responda de forma natural e conversacional, como se estivesse apresentando os documentos para o usuário.
-- Se for uma consulta por notas recentes, destaque que são as mais atuais
-- Inclua informações importantes como tipo, emissor, valor e data/hora
+"""
+                if is_value_query:
+                    prompt += """- Esta é uma pergunta específica sobre valores dos documentos
+- Destaque claramente qual é o documento com o valor mais alto/baixo encontrado
+- Mostre o valor de forma destacada e formatada corretamente
+- Explique que este é o resultado baseado nos dados disponíveis
+"""
+                elif is_recent_query:
+                    prompt += """- Se for uma consulta por notas recentes, destaque que são as mais atuais
+"""
+                else:
+                    prompt += """- Para pedidos de análise criteriosa, vá além da lista: forneça interpretação, destaques e próximos passos
+"""
+
+                prompt += """- Inclua informações importantes como tipo, emissor, valor e data/hora
 - Formate os valores monetários corretamente (R$ X.XXX,XX)
 - Use formatação markdown para melhorar a legibilidade (negrito, itálico, listas)
 - Seja específico sobre quantos documentos estão sendo mostrados
@@ -1028,7 +1245,8 @@ Responda em português de forma profissional e útil."""
                     context=context,
                     response=content,
                     metadata=metadata,
-                    query_type=context.get('query_type', 'general')
+                    query_type=context.get('query_type', 'general'),
+                    session_id=session_id
                 )
 
             # Save to conversation history
@@ -1080,8 +1298,11 @@ Responda em português de forma profissional e útil."""
                         table.append('| ' + ' | '.join(row) + ' |')
                     return '\n'.join(table)
             
-            # Document types table (special case)
-            if any(keyword in content.lower() for keyword in doc_keywords):
+            # Document types table (special case) - improved detection
+            has_doc_types = any(keyword in content.lower() for keyword in doc_keywords)
+            has_list_indicators = any(indicator in content.lower() for indicator in ['lista de', 'tipos de', 'documentos:', 'categorias:'])
+            
+            if has_doc_types and has_list_indicators:
                 return """
 | Documento | Nome Completo | Finalidade Principal |
 |-----------|---------------|----------------------|
@@ -1106,16 +1327,26 @@ Responda em português de forma profissional e útil."""
             return content
 
     def _clean_response_content(self, content: str) -> str:
-        """Clean up response content to remove repetitions and improve quality."""
+        """Clean and format the LLM response content."""
+        if not content:
+            return ""
+
+        # Remove extra whitespace and normalize line breaks
+        cleaned = content.strip()
+
+        # Fix common formatting issues
+        cleaned = cleaned.replace('```json', '```')
+        cleaned = cleaned.replace('```python', '```')
+
         # First, try to format as table if appropriate
-        if any(keyword in content.lower() for keyword in ['tabela', 'lista de', 'documentos fiscais', 'exemplo:', 'tipos de']):
-            formatted = self._format_as_table(content)
-            if formatted != content:  # Only return if formatting was applied
+        if any(keyword in cleaned.lower() for keyword in ['tabela', 'lista de', 'documentos fiscais', 'exemplo:', 'tipos de']):
+            formatted = self._format_as_table(cleaned)
+            if formatted != cleaned:  # Only return if formatting was applied
                 return formatted
-            
+        
         # Split into sentences for better processing
         import re
-        sentences = re.split(r'(?<=[.!?])\s+', content)
+        sentences = re.split(r'(?<=[.!?])\s+', cleaned)
         
         # Remove duplicate sentences while preserving order
         seen = set()
@@ -1264,16 +1495,3 @@ Responda em português de forma profissional e útil."""
 
         return "\n".join(context_parts) if context_parts else "Nenhum contexto específico disponível."
 
-    def _clean_response_content(self, content: str) -> str:
-        """Clean and format the LLM response content."""
-        if not content:
-            return ""
-
-        # Remove extra whitespace and normalize line breaks
-        cleaned = content.strip()
-
-        # Fix common formatting issues
-        cleaned = cleaned.replace('```json', '```')
-        cleaned = cleaned.replace('```python', '```')
-
-        return cleaned

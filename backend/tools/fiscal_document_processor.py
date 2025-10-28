@@ -283,15 +283,31 @@ class FiscalDocumentProcessor:
             try:
                 from .xml_parser import parse_xml_file
                 parsed_data = parse_xml_file(str(file_path))
-                parsed_data['document_type'] = document_type
+                type_map = {
+                    'nfe': 'NFe',
+                    'nfce': 'NFCe',
+                    'cte': 'CTe',
+                    'mdfe': 'MDFe'
+                }
+                mapped_type = type_map.get(document_type, 'unknown')
+                if isinstance(parsed_data, dict):
+                    detected = parsed_data.get('tipo_documento')
+                    final_type = detected if isinstance(detected, str) else mapped_type
+                    parsed_data['document_type'] = final_type
+                else:
+                    parsed_data = {
+                        'document_type': mapped_type,
+                        'raw_text': extraction_result['text']
+                    }
                 parsed_data['success'] = True
                 return parsed_data
             except Exception as e:
+                logger.error(f"Erro ao processar XML: {str(e)}")
                 return {
                     'success': False,
-                    'error': f"Erro ao processar {document_type.upper()}: {str(e)}",
-                    'raw_text': extraction_result['text'],
-                    'document_type': document_type
+                    'error': str(e),
+                    'raw_text': '',
+                    'document_type': 'unknown'
                 }
         
         # Para outros tipos de documentos, usa a extração estruturada
@@ -314,13 +330,13 @@ class FiscalDocumentProcessor:
         
         # Verifica se é um XML
         if any(tag in text_lower for tag in ['<nfe', '<nfce', '<cte', '<mdfe', 'nfe"', 'nfce"', 'cte"', 'mdfe"']):
-            if any(tag in text_lower for tag in ['<nfe', 'nfe"']):
-                # Verifica se é NFCe (modelo 65)
-                if 'mod="65"' in text_lower or 'mod=65' in text_lower or 'modelo 65' in text_lower:
-                    return 'nfce'
-                return 'nfe'
-            elif any(tag in text_lower for tag in ['<nfce', 'nfce"']):
+            # Prioriza NFCe quando as tags coexistem (ex.: <NFCe> com <infNFe>)
+            if any(tag in text_lower for tag in ['<nfce', 'nfce"']):
                 return 'nfce'
+            if 'mod="65"' in text_lower or 'mod=65' in text_lower or 'modelo 65' in text_lower:
+                return 'nfce'
+            if any(tag in text_lower for tag in ['<nfe', 'nfe"']):
+                return 'nfe'
             elif any(tag in text_lower for tag in ['<cte', 'cte"']):
                 return 'cte'
             elif any(tag in text_lower for tag in ['<mdfe', 'mdfe"']):
@@ -350,10 +366,10 @@ class FiscalDocumentProcessor:
         # Verifica por padrões específicos de chave de acesso
         if re.search(r'cte[0-9]{44}', text_lower):
             return 'cte'
-        elif re.search(r'nfe[0-9]{44}', text_lower):
-            return 'nfe'
         elif re.search(r'nfce[0-9]{44}', text_lower):
             return 'nfce'
+        elif re.search(r'nfe[0-9]{44}', text_lower):
+            return 'nfe'
         elif re.search(r'mdfe[0-9]{44}', text_lower):
             return 'mdfe'
             
@@ -368,7 +384,7 @@ class FiscalDocumentProcessor:
                 elif uf_code == '67':
                     return 'cte'
                 elif uf_code in ['55', '65']:  # 55=NF-e, 65=NFC-e
-                    return 'nfe' if uf_code == '55' else 'nfce'
+                    return 'nfce' if uf_code == '65' else 'nfe'
         
         return 'unknown'
     
@@ -542,8 +558,6 @@ class FiscalDocumentProcessor:
                         doc['municipio_fim'] = match.group(1).strip()
                 except Exception as e:
                     logger.warning(f"Erro ao processar campo {field}: {str(e)}")
-                elif field == 'nome_destinatario' and not doc['destinatario'].get('razao_social'):
-                    doc['destinatario']['razao_social'] = match.group(1).strip()
         
         # Tenta extrair itens (seção de produtos/serviços)
         self._extract_items(text, doc)
