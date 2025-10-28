@@ -603,6 +603,27 @@ Responda em português."""
             await self.save_message(session_id, 'assistant', error_message, {'error': True})
             return ChatResponse(content=error_message, metadata={'error': True}, cached=False)
 
+    def _get_metadata_template(self, is_recent_query: bool = False, error: bool = False) -> Dict[str, Any]:
+        """Return a standardized metadata template.
+        
+        Args:
+            is_recent_query: Whether this is a recent documents query
+            error: Whether this is an error response
+            
+        Returns:
+            Dict with standardized metadata structure
+        """
+        return {
+            'model': 'system' if error else (self.model_name or 'unknown'),
+            'timestamp': datetime.now().isoformat(),
+            'tokens_used': 0,
+            'query_type': 'error' if error else ('recent_documents' if is_recent_query else 'list'),
+            'document_count': 0,
+            'total_documents': 0,
+            'is_recent_query': is_recent_query,
+            **({'error': True} if error else {})
+        }
+
     async def _handle_list_request(self, session_id: str, query: str) -> ChatResponse:
         """Handle requests for document lists using LLM for natural response."""
         try:
@@ -648,12 +669,15 @@ Responda em português."""
             
             # Busca os documentos com ordenação por data e filtro de tempo
             summary_data = await self._get_all_documents_summary(time_filter=time_filter)
+            documents_to_show = []  # Initialize as empty list
+            total = 0
             
             if not summary_data or summary_data['total_documents'] == 0:
-                # Use Gemini for natural response even when no documents
-                prompt = """O usuário pediu uma lista de documentos fiscais, mas não foram encontrados documentos no banco de dados.
-
-Por favor, responda de forma natural explicando que não há documentos disponíveis no sistema."""
+                # Return early with a friendly message when no documents are found
+                message = "📭 Não foram encontrados documentos no sistema com os critérios fornecidos."
+                metadata = self._get_metadata_template(is_recent_query=is_recent_query)
+                await self.save_message(session_id, 'assistant', message, metadata)
+                return ChatResponse(content=message, metadata=metadata, cached=False)
             else:
                 # Prepara os dados brutos para o Gemini
                 total = summary_data['total_documents']
@@ -755,33 +779,37 @@ Responda de forma natural e conversacional, como se estivesse apresentando os do
 - Inclua o total de documentos no banco para referência
 - Responda em português"""
 
-            # Envia para o Gemini para formatação natural
-            messages = [
-                SystemMessage(content=self.system_prompt),
-                HumanMessage(content=prompt)
-            ]
+            try:
+                # Envia para o Gemini para formatação natural
+                messages = [
+                    SystemMessage(content=self.system_prompt),
+                    HumanMessage(content=prompt)
+                ]
 
-            response = self.model.invoke(messages, config={
-                'temperature': 0.2,
-                'max_tokens': 2000,  # Aumentado para permitir respostas mais completas
-                'top_p': 0.9,
-                'frequency_penalty': 0.3,
-                'presence_penalty': 0.3
-            })
+                response = self.model.invoke(messages, config={
+                    'temperature': 0.2,
+                    'max_tokens': 2000,  # Aumentado para permitir respostas mais completas
+                    'top_p': 0.9,
+                    'frequency_penalty': 0.3,
+                    'presence_penalty': 0.3
+                })
 
-            content = response.content if hasattr(response, 'content') else str(response)
-            content = self._clean_response_content(content)
+                content = response.content if hasattr(response, 'content') else str(response)
+                content = self._clean_response_content(content)
 
-            # Cria metadados para rastreamento
-            metadata = {
-                'model': self.model_name or 'unknown',
-                'timestamp': datetime.now().isoformat(),
-                'tokens_used': len(content.split()),
-                'query_type': 'recent_documents' if is_recent_query else 'list',
-                'document_count': len(documents_to_show),
-                'total_documents': total,
-                'is_recent_query': is_recent_query
-            }
+                # Create tracking metadata using the template
+                metadata = self._get_metadata_template(is_recent_query=is_recent_query)
+                metadata.update({
+                    'model': self.model_name or 'unknown',
+                    'tokens_used': len(content.split()),
+                    'document_count': len(documents_to_show) if documents_to_show else 0,
+                    'total_documents': total
+                })
+            except Exception as e:
+                logger.error(f"Erro ao processar resposta do modelo: {str(e)}")
+                content = "🔍 Desculpe, ocorreu um erro ao processar sua solicitação. Tente novamente mais tarde."
+                metadata = self._get_metadata_template(is_recent_query=is_recent_query, error=True)
+                metadata['error'] = str(e)
 
             await self.save_message(session_id, 'assistant', content, metadata)
 
@@ -795,8 +823,10 @@ Responda de forma natural e conversacional, como se estivesse apresentando os do
         except Exception as e:
             error_message = f"Erro ao buscar lista de documentos: {str(e)}"
             logger.error(f"Error in _handle_list_request: {str(e)}", exc_info=True)
-            await self.save_message(session_id, 'assistant', error_message, {'error': True})
-            return ChatResponse(content=error_message, metadata={'error': True}, cached=False)
+            metadata = self._get_metadata_template(error=True)
+            metadata['error'] = str(e)
+            await self.save_message(session_id, 'assistant', error_message, metadata)
+            return ChatResponse(content=error_message, metadata=metadata, cached=False)
 
     async def _handle_summary_request(self, session_id: str, query: str) -> ChatResponse:
         """Handle requests for document summaries using LLM for natural response."""
