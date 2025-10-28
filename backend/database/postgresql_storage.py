@@ -356,7 +356,16 @@ class PostgreSQLStorage(StorageInterface):
 
         # Get total count
         count_query = f"SELECT COUNT(*) FROM fiscal_documents{where_clause}"
-        total = self._execute_query(count_query, tuple(params), "count")
+        total_result = self._execute_query(count_query, tuple(params), "count")
+        if isinstance(total_result, list):
+            if total_result and isinstance(total_result[0], dict) and 'count' in total_result[0]:
+                total = total_result[0]['count']
+            elif total_result:
+                total = total_result[0]
+            else:
+                total = 0
+        else:
+            total = total_result
 
         # Get paginated results
         offset = (page - 1) * page_size

@@ -2,34 +2,7 @@
 import pytest
 from datetime import datetime
 
-
-def convert_date_to_iso(date_str):
-    """Converte data do formato DD/MM/YYYY para YYYY-MM-DDTHH:MM:SSZ"""
-    if not date_str:
-        return None
-
-    date_str = str(date_str).strip()
-
-    # Se já estiver no formato ISO, retorna como está
-    if 'T' in date_str or '-' in date_str and ' ' not in date_str:
-        return date_str
-
-    # Tenta converter do formato DD/MM/YYYY
-    try:
-        # Primeiro tenta DD/MM/YYYY
-        if '/' in date_str and len(date_str.split('/')) == 3:
-            parts = date_str.split('/')
-            if len(parts[0]) == 2 and len(parts[1]) == 2:  # DD/MM/YYYY
-                dt = datetime.strptime(date_str, '%d/%m/%Y')
-                return dt.strftime('%Y-%m-%dT00:00:00Z')
-            elif len(parts[2]) == 2:  # DD/MM/YY
-                dt = datetime.strptime(date_str, '%d/%m/%y')
-                return dt.strftime('%Y-%m-%dT00:00:00Z')
-    except (ValueError, IndexError):
-        pass
-
-    # Se não conseguiu converter, retorna None
-    return None
+from frontend.pages.importador import convert_date_to_iso
 
 
 class TestDateConversion:

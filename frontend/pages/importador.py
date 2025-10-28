@@ -4,14 +4,69 @@ import logging
 import streamlit as st
 from pathlib import Path
 from datetime import datetime
+import re
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Any, Optional
 from decimal import Decimal
 import concurrent.futures
 
+# Expressão regular para formatos ISO básicos (YYYY-MM-DD ou YYYY-MM-DDTHH:MM:SSZ)
+ISO_DATE_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})?)?$"
+)
+
+
+def convert_date_to_iso(date_value: Optional[Any]) -> Optional[str]:
+    """Converte datas comuns (DD/MM/YYYY, DD/MM/YY) para ISO 8601.
+
+    Mantém strings já em formato ISO e lida com objetos datetime.
+    """
+
+    if date_value is None:
+        return None
+
+    if isinstance(date_value, datetime):
+        # Normaliza para UTC sem frações
+        return date_value.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    date_str = str(date_value).strip()
+    if not date_str:
+        return None
+
+    # Mantém formatos ISO (YYYY-MM-DD ou YYYY-MM-DDTHH:MM:SSZ)
+    if ISO_DATE_PATTERN.match(date_str):
+        # Normaliza espaços para 'T'
+        return date_str.replace(' ', 'T')
+
+    if '/' in date_str:
+        parts = date_str.split('/')
+        if len(parts) == 3:
+            day, month, year_part = parts
+            if not (day.isdigit() and month.isdigit()):
+                return None
+
+            year_part = year_part.strip()
+            if len(year_part) == 2 and year_part.isdigit():
+                year = int(year_part)
+                year += 1900 if year >= 70 else 2000
+            elif len(year_part) == 4 and year_part.isdigit():
+                year = int(year_part)
+            else:
+                return None
+
+            try:
+                dt = datetime(year, int(month), int(day))
+                return dt.strftime('%Y-%m-%dT00:00:00Z')
+            except ValueError:
+                return None
+
+    return None
+
+
 # Importações locais
 from backend.agents import coordinator
 from backend.tools.ocr_processor import ocr_text_to_document
+from backend.database.storage_manager import storage_manager as storage
 from .importador_utils import process_single_file, display_import_results, process_directory
 
 # Configuração do logger
@@ -95,36 +150,6 @@ def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
     # Extrair totais, se disponível
     totais = parsed.get('totals') or {}
 
-    # Função auxiliar para converter datas do formato brasileiro para ISO
-    def convert_date_to_iso(date_str):
-        """Converte data do formato DD/MM/YYYY para YYYY-MM-DDTHH:MM:SSZ"""
-        if not date_str:
-            return None
-
-        date_str = str(date_str).strip()
-
-        # Se já estiver no formato ISO, retorna como está
-        if 'T' in date_str or '-' in date_str and ' ' not in date_str:
-            return date_str
-
-        # Tenta converter do formato DD/MM/YYYY
-        try:
-            from datetime import datetime
-            # Primeiro tenta DD/MM/YYYY
-            if '/' in date_str and len(date_str.split('/')) == 3:
-                parts = date_str.split('/')
-                if len(parts[0]) == 2 and len(parts[1]) == 2:  # DD/MM/YYYY
-                    dt = datetime.strptime(date_str, '%d/%m/%Y')
-                    return dt.strftime('%Y-%m-%dT00:00:00Z')
-                elif len(parts[2]) == 2:  # DD/MM/YY
-                    dt = datetime.strptime(date_str, '%d/%m/%y')
-                    return dt.strftime('%Y-%m-%dT00:00:00Z')
-        except (ValueError, IndexError):
-            pass
-
-        # Se não conseguiu converter, retorna None
-        return None
-
     # Preparar dados do documento
     doc_data = {
         'file_name': str(uploaded.name if hasattr(uploaded, 'name') else 'documento_sem_nome.pdf'),
@@ -132,7 +157,12 @@ def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
         'document_number': parsed.get('numero') or parsed.get('nNF') or parsed.get('nCT'),
         'issuer_cnpj': emitente.get('cnpj') or emitente.get('CNPJ'),
         'issuer_name': emitente.get('razao_social') or emitente.get('nome') or emitente.get('xNome', ''),
-        'recipient_cnpj': destinatario.get('cnpj') or destinatario.get('CNPJ'),
+        'recipient_cnpj': (
+            destinatario.get('cnpj')
+            or destinatario.get('cnpj_cpf')
+            or destinatario.get('CNPJ')
+            or destinatario.get('CPF')
+        ),
         'recipient_name': destinatario.get('razao_social') or destinatario.get('nome') or destinatario.get('xNome', ''),
         'issue_date': convert_date_to_iso(parsed.get('data_emissao') or parsed.get('dhEmi')),
         'total_value': _to_float(parsed.get('total') or totais.get('valorTotal') or 0.0),
@@ -158,11 +188,16 @@ def _prepare_document_record(uploaded, parsed, classification=None) -> dict:
     }
 
     # Garante que todos os campos necessários tenham valores padrão
-    doc_data.setdefault('document_type', 'Outros')
-    doc_data.setdefault('document_number', 'SEM_NUMERO')
-    doc_data.setdefault('issuer_cnpj', '00000000000000')
-    doc_data.setdefault('issuer_name', 'Emitente não identificado')
-    doc_data.setdefault('total_value', 0.0)
+    doc_data['document_type'] = doc_data.get('document_type') or 'Outros'
+    doc_data['document_number'] = doc_data.get('document_number') or 'SEM_NUMERO'
+    doc_data['issuer_cnpj'] = (doc_data.get('issuer_cnpj') or '').strip() or '00000000000000'
+    doc_data['issuer_name'] = (doc_data.get('issuer_name') or '').strip() or 'Emitente não identificado'
+    doc_data['recipient_cnpj'] = (doc_data.get('recipient_cnpj') or '').strip() or None
+    doc_data['recipient_name'] = (doc_data.get('recipient_name') or '').strip() or None
+    doc_data['total_value'] = doc_data.get('total_value') or 0.0
+
+    # Normaliza issue_date vazia como None
+    doc_data['issue_date'] = doc_data.get('issue_date') or None
 
     return doc_data
 
