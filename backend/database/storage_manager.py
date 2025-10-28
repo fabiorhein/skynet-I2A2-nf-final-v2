@@ -6,6 +6,7 @@ import logging
 from typing import Optional
 import uuid
 from datetime import datetime
+import asyncio
 
 from config import SUPABASE_URL, SUPABASE_KEY, DATABASE_CONFIG
 from .base_storage import StorageInterface, StorageType
@@ -29,22 +30,32 @@ class StorageManager:
     Ensures consistent storage status across all components.
     """
     _instance = None
+    _initialized = False
+    _lock = None  # Will be initialized on first use
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(StorageManager, cls).__new__(cls)
+            # Initialize instance variables
+            cls._instance._storage = None
+            cls._instance._status = "🔃 Inicializando armazenamento..."
+            cls._instance._status_type = "info"  # Can be "info", "success", "warning", or "error"
             cls._instance._initialized = False
         return cls._instance
 
     def __init__(self):
         if self._initialized:
             return
-
-        self._initialized = True
-        self._storage: Optional[StorageInterface] = None
-        self._status = "🔃 Inicializando armazenamento..."
-        self._status_type = "info"  # Can be "info", "success", "warning", or "error"
-        self._initialize_storage()
+            
+        # Initialize the lock if not already done
+        if StorageManager._lock is None:
+            import threading
+            StorageManager._lock = threading.Lock()
+            
+        with StorageManager._lock:
+            if not self._initialized:  # Double-checked locking pattern
+                self._initialize_storage()
+                self._initialized = True
 
     def _initialize_storage(self):
         """Initialize the appropriate storage backend."""
@@ -52,9 +63,18 @@ class StorageManager:
             # First, try to use PostgreSQL if credentials are available
             if self._has_postgresql_config() and POSTGRESQL_AVAILABLE:
                 try:
+                    logger.info("Attempting to initialize PostgreSQL storage...")
                     self._storage = PostgreSQLStorage()
+                    # Test connection synchronously
                     self._test_postgresql_connection()
                     self._status = "✅ Conectado ao PostgreSQL (via psycopg2)"
+                    logger.info("Successfully connected to PostgreSQL")
+                except Exception as e:
+                    logger.warning(f"PostgreSQL connection failed: {str(e)}")
+                    logger.warning("Falling back to local storage")
+                    self._storage = LocalJSONStorage()
+                    self._status = "⚠️ Falha na conexão PostgreSQL, usando armazenamento local"
+                    self._status_type = "warning"
                     self._status_type = "success"
                 except PostgreSQLStorageError as e:
                     logger.warning(f"PostgreSQL connection failed ({e}), falling back to local storage")
@@ -90,16 +110,22 @@ class StorageManager:
     def _test_postgresql_connection(self):
         """Test PostgreSQL connection."""
         try:
-            # Try to execute a simple query
-            self._storage.get_fiscal_documents(page=1, page_size=1)
-        except Exception as query_error:
-            # If the table doesn't exist, we'll still consider the connection successful
-            if "relation" in str(query_error).lower() and "does not exist" in str(query_error).lower():
-                logger.info("Connected to PostgreSQL but tables don't exist yet")
-                self._status = "✅ Conectado ao PostgreSQL (tabelas não encontradas)"
-                self._status_type = "warning"
-            else:
-                raise query_error
+            # Get a connection and execute a test query
+            conn = self._storage._get_connection()
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+                conn.close()  # Close the connection after the test
+        except Exception as e:
+            if hasattr(self._storage, '_connection') and self._storage._connection:
+                try:
+                    self._storage._connection.close()
+                except:
+                    pass
+            self._status = f" Falha na conexão com o PostgreSQL: {str(e)}"
+            self._status_type = "error"
+            logger.error(f"PostgreSQL connection test failed: {str(e)}")
+            raise
 
     @property
     def storage(self) -> StorageInterface:
@@ -173,13 +199,55 @@ class StorageManager:
         self.close()
 
 
-# Global instance
-storage_manager = StorageManager()
+class _StorageManagerSingleton:
+    _instance = None
+    _initialized = False
+    _lock = None
 
-# Backward compatibility - expose storage methods at module level
+    def __init__(self):
+        if not self._initialized:
+            if _StorageManagerSingleton._lock is None:
+                import threading
+                _StorageManagerSingleton._lock = threading.Lock()
+                
+            with _StorageManagerSingleton._lock:
+                if not self._initialized:
+                    self._manager = StorageManager()
+                    self._initialized = True
+            
+    def get_manager(self) -> 'StorageManager':
+        if not hasattr(self._manager, '_storage') or self._manager._storage is None:
+            self._manager._initialize_storage()
+        return self._manager
+
+# Global instance with lazy initialization
+_storage_manager_singleton = _StorageManagerSingleton()
+
+# Backward compatibility
 def get_storage() -> StorageInterface:
-    """Get the current storage instance."""
-    return storage_manager.storage
+    """Get the current storage instance (synchronous)."""
+    manager = _storage_manager_singleton.get_manager()
+    return manager.storage
+
+# For backward compatibility with direct attribute access
+class _StorageManagerProxy:
+    @property
+    def storage(self):
+        manager = _storage_manager_singleton.get_manager()
+        return manager.storage
+    
+    @property
+    def storage_type(self):
+        manager = _storage_manager_singleton.get_manager()
+        return manager.storage_type
+    
+    def __getattr__(self, name):
+        # Forward any other attribute access to the actual manager
+        manager = _storage_manager_singleton.get_manager()
+        return getattr(manager, name)
+
+# Create a proxy instance for backward compatibility
+storage_manager = _StorageManagerProxy()
 
 def get_storage_type() -> StorageType:
     """Get the current storage type."""

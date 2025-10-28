@@ -6,7 +6,9 @@ import json
 import logging
 import re
 import traceback
-from typing import Dict, Any, List, Optional, Union
+import decimal
+from enum import Enum
+from typing import Dict, Any, List, Optional, Union, TypeVar, Type, AnyStr
 
 # Import psycopg2 only when needed to avoid import errors
 try:
@@ -18,7 +20,39 @@ except ImportError:
     PSYCOPG2_AVAILABLE = False
     Json = None
 
-from datetime import datetime, timezone, UTC
+from datetime import datetime, timezone, UTC, date, time
+
+
+class CustomJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles datetime and other non-serializable types."""
+    
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, (datetime, date, time)):
+            return obj.isoformat()
+        elif isinstance(obj, (decimal.Decimal, float)):
+            return float(obj)
+        elif isinstance(obj, (set, frozenset)):
+            return list(obj)
+        elif hasattr(obj, '__dict__'):
+            return {k: v for k, v in obj.__dict__.items() if not k.startswith('_')}
+        elif isinstance(obj, bytes):
+            return obj.decode('utf-8', errors='replace')
+        elif isinstance(obj, Enum):
+            return obj.value
+        return super().default(obj)
+
+
+def safe_json_serialize(data: Any) -> str:
+    """Safely serialize data to JSON, handling non-serializable types."""
+    try:
+        return json.dumps(data, cls=CustomJSONEncoder, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"Error serializing to JSON: {e}, data: {str(data)[:200]}")
+        # Fallback: convert to string representation
+        try:
+            return json.dumps(str(data), ensure_ascii=False)
+        except:
+            return '{}'  # Return empty object as last resort
 
 from config import DATABASE_CONFIG
 from .base_storage import (
@@ -297,9 +331,12 @@ class PostgreSQLStorage(StorageInterface):
 
         for key, value in filters.items():
             if value is not None and value != "":
+                # Tratamento especial para filtro de data
+                if key == 'created_after':
+                    where_conditions.append("created_at >= %s")
+                    params.append(value)
                 # Campos UUID devem usar igualdade exata, não ILIKE
-                uuid_fields = ['id', 'fiscal_document_id', 'session_id']  # Campos UUID em várias tabelas
-                if key in uuid_fields:
+                elif key in ['id', 'fiscal_document_id', 'session_id']:  # Campos UUID em várias tabelas
                     where_conditions.append(f"{key} = %s")
                     params.append(value)
                 elif key in ['issuer_cnpj', 'recipient_cnpj']:
@@ -516,18 +553,42 @@ class PostgreSQLStorage(StorageInterface):
             raise
 
     def save_chat_message(self, session_id: str, message_type: str, content: str, metadata: Dict[str, Any] = None) -> None:
-        """Save a message to the chat session."""
+        """Save a message to the chat session.
+        
+        Args:
+            session_id: ID da sessão de chat
+            message_type: Tipo da mensagem (user, assistant, system)
+            content: Conteúdo da mensagem
+            metadata: Metadados adicionais (serão serializados para JSON)
+        """
         try:
+            # Garante que o metadata seja um dicionário
+            if metadata is None:
+                metadata = {}
+                
+            # Remove objetos datetime ou outros não serializáveis
+            safe_metadata = {}
+            for k, v in metadata.items():
+                try:
+                    # Tenta serializar o valor para ver se é válido
+                    json.dumps({k: v}, cls=CustomJSONEncoder)
+                    safe_metadata[k] = v
+                except (TypeError, OverflowError) as e:
+                    logger.warning(f"Removendo campo não serializável dos metadados: {k}={v}")
+                    continue
+                    
             query = """
                 INSERT INTO chat_messages (session_id, message_type, content, metadata)
                 VALUES (%s, %s, %s, %s)
                 RETURNING id, created_at
             """
+            
             result = self._execute_query(
                 query, 
-                (session_id, message_type, content, Json(metadata or {})), 
+                (session_id, message_type, content, Json(safe_metadata, dumps=safe_json_serialize)), 
                 fetch="one"
             )
+            
             logger.info(f"✅ Mensagem salva - ID: {result['id']}, Tipo: {message_type}, Sessão: {session_id}")
             logger.debug(f"Conteúdo: {content[:100]}...")
 
@@ -535,7 +596,37 @@ class PostgreSQLStorage(StorageInterface):
             logger.error(f"Error saving chat message: {e}")
             logger.error(f"Session ID: {session_id}, Type: {message_type}")
             logger.error(f"Content: {content}")
-            logger.error(f"Metadata: {metadata}")
+            logger.error(f"Metadata type: {type(metadata).__name__}")
+            
+            # Tenta registrar os metadados de forma segura
+            try:
+                logger.error(f"Metadata keys: {list(metadata.keys()) if metadata else 'None'}")
+                # Tenta serializar os metadados para diagnóstico
+                safe_meta = {}
+                if metadata:
+                    for k, v in metadata.items():
+                        try:
+                            safe_meta[k] = type(v).__name__
+                        except:
+                            safe_meta[k] = 'unserializable'
+                logger.error(f"Metadata types: {safe_meta}")
+            except Exception as meta_error:
+                logger.error(f"Could not log metadata details: {meta_error}")
+                
+            # Tenta salvar uma versão simplificada da mensagem
+            try:
+                self._execute_query(
+                    """
+                    INSERT INTO chat_messages (session_id, message_type, content, metadata)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (session_id, message_type, content, Json({'error': 'original_metadata_not_serializable'})),
+                    fetch=None
+                )
+                logger.info("✅ Mensagem salva com metadados reduzidos devido a erro de serialização")
+            except Exception as fallback_error:
+                logger.error(f"Falha ao salvar mensagem simplificada: {fallback_error}")
+                
             raise
 
     def get_chat_messages(self, session_id: str, limit: int = 50) -> List[Dict[str, Any]]:

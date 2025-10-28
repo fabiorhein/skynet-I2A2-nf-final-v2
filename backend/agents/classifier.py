@@ -17,26 +17,38 @@ def classify_document(parsed: Dict[str, Any]) -> Dict[str, Any]:
             }
         }
 
-    # Get CFOP from document or first item
-    cfop = None
+    # Inicializa o tipo como 'unknown' por padrão
+    tipo = 'unknown'
+    
     try:
-        # Primeiro tenta obter o CFOP diretamente do documento
-        cfop = parsed.get('cfop')
+        # Tenta identificar o tipo de documento
+        doc_type = (str(parsed.get('tipo_documento', '')).strip() or '').upper()
         
-        # Se não encontrou, tenta obter do primeiro item
-        if not cfop:
-            itens = parsed.get('itens', [])
-            # Verifica se itens é uma lista e não está vazia
-            if isinstance(itens, (list, tuple)) and itens and isinstance(itens[0], dict):
-                cfop = itens[0].get('cfop')
+        # Se for MDF-e ou CT-e, define o tipo diretamente
+        if doc_type in ['MDF', 'MDFE']:
+            tipo = 'mdfe'
+        elif doc_type == 'CTE':
+            tipo = 'cte'
+        else:
+            # Para outros tipos, tenta obter o CFOP
+            cfop = None
+            
+            # Primeiro tenta obter o CFOP diretamente do documento
+            cfop = parsed.get('cfop')
+            
+            # Se não encontrou, tenta obter do primeiro item
+            if not cfop:
+                itens = parsed.get('itens', [])
+                # Verifica se itens é uma lista e não está vazia
+                if isinstance(itens, (list, tuple)) and itens and isinstance(itens[0], dict):
+                    cfop = itens[0].get('cfop')
+            
+            if cfop:
+                tipo = fiscal_validator.cfop_type(cfop)
     except Exception as e:
         logger = logging.getLogger(__name__)
-        logger.warning(f'Erro ao obter CFOP: {str(e)}')
-        cfop = None
-    
-    tipo = 'unknown'
-    if cfop:
-        tipo = fiscal_validator.cfop_type(cfop)
+        logger.warning(f'Erro ao classificar documento: {str(e)}')
+        # Mantém o valor padrão 'unknown' em caso de erro
 
     # Simple issuer profile: if issuer has cnpj and company-like name -> fornecedor
     emit = parsed.get('emitente') or {}

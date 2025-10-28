@@ -12,10 +12,14 @@ from pathlib import Path
 import json
 
 # Import the storage manager
-from backend.database import storage_manager, StorageManager
+from backend.database import storage_manager
 
 # Initialize storage backend
-storage = storage_manager.storage
+try:
+    storage = storage_manager.storage
+except Exception as e:
+    st.error(f"Erro ao inicializar o armazenamento: {str(e)}")
+    st.stop()
 
 from frontend.components import document_renderer
 

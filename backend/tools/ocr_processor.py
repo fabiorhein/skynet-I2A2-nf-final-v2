@@ -157,86 +157,135 @@ def ocr_text_to_document(text: str, use_llm: bool = False) -> Dict[str, Any]:
     
     Returns:
         Dict with extracted fields (numero, emitente, destinatario, etc.)
+        Always returns a dictionary with at least 'tipo_documento' and 'raw_text' keys
     """
-    # Try LLM first if requested
-    if use_llm:
-        global _llm_mapper
-        try:
-            if _llm_mapper is None:
-                _llm_mapper = LLMOCRMapper()
-            return _llm_mapper.map_ocr_text(text)
-        except Exception as e:
-            print(f"LLM mapping failed, falling back to heuristics: {e}")
-            # fall through to heuristics
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    doc: Dict[str, Any] = {'raw_text': text, 'emitente': {}, 'destinatario': {}, 'itens': [], 'impostos': {}, 'total': None}
-
-    cnpj_re = re.compile(r"(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14})")
-    cpf_re = re.compile(r"(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{11})")
-    money_re = re.compile(r"([\d.,]+)\s*$")
-    date_re = re.compile(r"(\d{2}/\d{2}/\d{4})")
-    # Match variants: N°, Nº, No, N, Nº:, Numero, num
-    num_re = re.compile(r"(?:\bN(?:\s|\s*[º°º\.]\s*)?|no|nº|n°|numero|num)\s*[:\-\.]?\s*(\d{1,10})", re.IGNORECASE)
-
-    for ln in lines:
-        # CNPJ
-        m = cnpj_re.search(ln)
-        if m and not doc['emitente'].get('cnpj'):
-            doc['emitente']['cnpj'] = re.sub(r"\D", "", m.group(1))
-            continue
-
-        # CPF fallback for destinatario
-        m = cpf_re.search(ln)
-        if m and not doc['destinatario'].get('cnpj_cpf'):
-            doc['destinatario']['cnpj_cpf'] = re.sub(r"\D", "", m.group(1))
-            continue
-
-        # document number
-        m = num_re.search(ln)
-        if m and not doc.get('numero'):
-            doc['numero'] = m.group(1)
-            continue
-        # fallback: line that is 'N 123' or '234' following 'N°' was not captured
-        if not doc.get('numero') and ln.strip().isdigit() and len(ln.strip()) <= 10:
-            # small heuristic: if line is all digits and not an item total, treat as número
-            doc['numero'] = ln.strip()
-            continue
-
-        # date
-        m = date_re.search(ln)
-        if m and not doc.get('data_emissao'):
-            doc['data_emissao'] = m.group(1)
-            continue
-
-        # totals (look for 'TOTAL' or 'Valor Total')
-        if 'total' in ln.lower() or 'valor' in ln.lower():
-            m = money_re.search(ln)
-            if m:
-                candidate = m.group(1).replace('.', '').replace(',', '.')
-                try:
-                    doc['total'] = float(candidate)
-                except Exception:
-                    pass
+    # Inicializa um documento vazio com valores padrão
+    doc: Dict[str, Any] = {
+        'tipo_documento': 'MDF',  # Assume MDF por padrão para documentos não identificados
+        'raw_text': text,
+        'emitente': {},
+        'destinatario': {},
+        'itens': [],  # MDF-e geralmente não tem itens
+        'impostos': {},
+        'total': None,
+        'chave_acesso': None,
+        'data_emissao': None,
+        'numero': None
+    }
+    
+    # Se não houver texto, retorna o documento vazio
+    if not text or not text.strip():
+        return doc
+        
+    # Tenta identificar o tipo de documento
+    text_upper = text.upper()
+    if 'MDF' in text_upper or 'MANIFESTO' in text_upper:
+        doc['tipo_documento'] = 'MDF'
+    elif 'CTE' in text_upper or 'CONHECIMENTO' in text_upper:
+        doc['tipo_documento'] = 'CTE'
+    elif 'NFS' in text_upper or 'NOTA FISCAL' in text_upper:
+        doc['tipo_documento'] = 'NFE'
+    
+    # Se for MDF ou CTE, não tenta extrair itens
+    if doc['tipo_documento'] in ['MDF', 'CTE']:
+        return doc
+        
+    # Para outros tipos de documento, tenta extrair informações estruturadas
+    try:
+        # Try LLM first if requested
+        if use_llm:
+            global _llm_mapper
+            try:
+                if _llm_mapper is None:
+                    _llm_mapper = LLMOCRMapper()
+                return {**doc, **_llm_mapper.map_ocr_text(text)}  # Mescla com os valores padrão
+            except Exception as e:
+                print(f"LLM mapping failed, falling back to heuristics: {e}")
+                # fall through to heuristics
+        
+        # Se chegou aqui, usa heurísticas para extrair informações
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        
+        # Expressões regulares para extração de dados
+        cnpj_re = re.compile(r"(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14})")
+        cpf_re = re.compile(r"(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{11})")
+        money_re = re.compile(r"([\d.,]+)\s*$")
+        date_re = re.compile(r"(\d{2}/\d{2}/\d{4})")
+        # Match variants: N°, Nº, No, N, Nº:, Numero, num
+        num_re = re.compile(r"(?:\bN(?:\s|\s*[º°º\.]\s*)?|no|nº|n°|numero|num)\s*[:\-\.]?\s*(\d{1,10})", re.IGNORECASE)
+        
+        for ln in lines:
+            # CNPJ
+            m = cnpj_re.search(ln)
+            if m and not doc['emitente'].get('cnpj'):
+                doc['emitente']['cnpj'] = re.sub(r"\D", "", m.group(1))
                 continue
 
-        # item-like line heuristic: description qty unit_value total
-        # e.g. '1x Parafuso 2,00 4,00' or 'Parafuso 2 2,00 4,00'
-        parts = ln.split()
-        if len(parts) >= 3:
-            m = money_re.search(parts[-1])
-            m2 = money_re.search(parts[-2])
-            if m and m2:
-                # assume last is total, second-last is unit or qty
-                descricao = ' '.join(parts[:-2])
-                try:
-                    valor_total = float(parts[-1].replace('.', '').replace(',', '.'))
-                except Exception:
-                    valor_total = None
-                try:
-                    quantidade = float(parts[-2].replace(',', '.'))
-                except Exception:
-                    quantidade = None
-                doc['itens'].append({'descricao': descricao, 'quantidade': quantidade, 'valor_unitario': None, 'valor_total': valor_total})
+            # CPF fallback for destinatario
+            m = cpf_re.search(ln)
+            if m and not doc['destinatario'].get('cnpj_cpf'):
+                doc['destinatario']['cnpj_cpf'] = re.sub(r"\D", "", m.group(1))
+                continue
 
-    return doc
+            # document number
+            m = num_re.search(ln)
+            if m and not doc.get('numero'):
+                doc['numero'] = m.group(1)
+                continue
+                
+            # fallback: line that is 'N 123' or '234' following 'N°' was not captured
+            if not doc.get('numero') and ln.strip().isdigit() and len(ln.strip()) <= 10:
+                # small heuristic: if line is all digits and not an item total, treat as número
+                doc['numero'] = ln.strip()
+                continue
 
+            # date
+            m = date_re.search(ln)
+            if m and not doc.get('data_emissao'):
+                doc['data_emissao'] = m.group(1)
+                continue
+
+            # totals (look for 'TOTAL' or 'Valor Total')
+            if 'total' in ln.lower() or 'valor' in ln.lower():
+                m = money_re.search(ln)
+                if m:
+                    candidate = m.group(1).replace('.', '').replace(',', '.')
+                    try:
+                        doc['total'] = float(candidate)
+                    except Exception:
+                        pass
+                    continue
+
+            # item-like line heuristic: description qty unit_value total
+            # e.g. '1x Parafuso 2,00 4,00' or 'Parafuso 2 2,00 4,00'
+            parts = ln.split()
+            if len(parts) >= 3:
+                m = money_re.search(parts[-1])
+                m2 = money_re.search(parts[-2]) if len(parts) > 1 else None
+                if m and m2:
+                    # assume last is total, second-last is unit or qty
+                    descricao = ' '.join(parts[:-2])
+                    try:
+                        valor_total = float(parts[-1].replace('.', '').replace(',', '.'))
+                    except Exception:
+                        valor_total = None
+                    try:
+                        quantidade = float(parts[-2].replace(',', '.'))
+                    except Exception:
+                        quantidade = None
+                    doc['itens'].append({
+                        'descricao': descricao, 
+                        'quantidade': quantidade, 
+                        'valor_unitario': None, 
+                        'valor_total': valor_total
+                    })
+        
+        return doc
+        
+    except Exception as e:
+        print(f"Error processing OCR text: {e}")
+        # Retorna o documento com as informações básicas mesmo em caso de erro
+        return doc
+
+    # Código removido para evitar duplicação - já processado no bloco try acima
+    pass
