@@ -493,21 +493,14 @@ class RAGService:
 
             # Create RAG prompt
             rag_prompt = f"""
-Você é um especialista em análise de documentos fiscais. Use APENAS o contexto fornecido abaixo para responder à pergunta do usuário.
+Responda à pergunta usando apenas o contexto abaixo dos documentos fiscais.
+Se não encontrar a resposta, informe que não foi possível localizar no contexto.
 
-INSTRUÇÕES IMPORTANTES:
-- Responda de forma clara, precisa e baseada apenas nos documentos fornecidos
-- Se a informação não estiver no contexto, diga que não foi possível encontrar
-- Mantenha um tom profissional e técnico
-- Se houver dados numéricos, inclua valores exatos quando disponíveis
-- Para consultas sobre valores, some apenas os valores explicitamente mencionados
-
-CONTEXTO DOS DOCUMENTOS FISCAIS:
+Contexto:
 {context}
 
-PERGUNTA DO USUÁRIO: {query}
-
-RESPOSTA (baseada apenas no contexto acima):
+Pergunta: {query}
+Resposta:
 """
 
             # Generate response

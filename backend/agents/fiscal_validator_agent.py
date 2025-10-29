@@ -157,37 +157,29 @@ class FiscalValidatorAgent:
         
         # Template de prompt para validação fiscal
         self.validation_prompt = """
-        Você é um especialista em legislação tributária brasileira. 
-        Sua tarefa é validar e normalizar códigos fiscais de acordo com as regras vigentes.
-        
-        Dados para validação:
-        - CFOP: {cfop}
-        - CST ICMS: {cst_icms}
-        - CST PIS: {cst_pis}
-        - CST COFINS: {cst_cofins}
-        - NCM: {ncm}
-        
-        Regras importantes:
-        1. CFOP deve ter 4 dígitos
-        2. CST ICMS deve ter 2 dígitos
-        3. NCM deve ter 8 ou 10 dígitos
-        4. Considere o contexto fiscal brasileiro atual
-        
-        Para cada código, retorne:
-        - is_valid: se o código é válido
-        - normalized_code: o código normalizado (padrão)
-        - description: uma descrição clara
-        - confidence: nível de confiança (0-1)
-        
-        Exemplo de saída esperada (formato JSON):
-        {{
-            "cfop": {{"is_valid": true, "normalized_code": "5102", "description": "Venda de mercadoria adquirida ou recebida de terceiros", "confidence": 0.95}},
-            "cst_icms": {{"is_valid": true, "normalized_code": "00", "description": "Tributada integralmente", "confidence": 0.98}},
-            "ncm": {{"is_valid": true, "normalized_code": "22030010", "description": "Cervejas de malte", "confidence": 0.99}}
-        }}
-        
-        Responda APENAS com o JSON, sem formatação adicional.
-        """
+Valide e normalize os códigos fiscais abaixo segundo as regras atuais do Brasil.
+Campos:
+- CFOP: {cfop}
+- CST ICMS: {cst_icms}
+- CST PIS: {cst_pis}
+- CST COFINS: {cst_cofins}
+- NCM: {ncm}
+
+Para cada código, retorne:
+- is_valid
+- normalized_code
+- description
+- confidence (0-1)
+
+Responda APENAS com o JSON no formato:
+{
+  "cfop": {...},
+  "cst_icms": {...},
+  "cst_pis": {...},
+  "cst_cofins": {...},
+  "ncm": {...}
+}
+"""
         
     
     def _process_llm_response(self, response_text: str, original_data: Dict[str, Any]) -> Dict[str, Any]:

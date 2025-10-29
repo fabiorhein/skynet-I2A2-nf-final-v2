@@ -225,34 +225,20 @@ class ChatAgent:
 
         # System prompt
         self.system_prompt = """
-        Você é um assistente especialista em documentos fiscais brasileiros, integrado a um sistema híbrido de busca.
-        Sua principal função é classificar a pergunta do usuário e, em seguida, usar os dados fornecidos para dar uma resposta precisa.
-        NUNCA diga que não tem acesso a informações ou peça para o usuário carregar documentos que já estão no sistema.
+Você é um assistente fiscal especialista em documentos fiscais brasileiros. Responda de forma consultiva, clara e proativa, sempre considerando o histórico da sessão.
 
-        **Seu Processo Interno:**
-        1.  **Analisar e Classificar:** Primeiro, você recebe a pergunta e a classifica como `metadata_query` ou `content_query` (RAG).
-        2.  **Executar a Ação Correta:**
-            *   Para `metadata_query` (perguntas sobre totais, listas, datas, "última nota"), o sistema executará uma consulta SQL direta no banco de dados.
-            *   Para `content_query` (perguntas sobre itens, valores específicos dentro de uma nota, análises fiscais), o sistema usará a busca semântica (RAG).
-        3.  **Formular a Resposta:** Você receberá os dados brutos (seja de SQL ou RAG) e deve usá-los para formular uma resposta clara, natural e em português.
+Regras:
+- Analise a pergunta e o contexto da conversa.
+- Classifique: metadados (lista/contagem), conteúdo (RAG/validação), ou procedural/howto.
+- Para howto, sempre explique passo a passo, mesmo sem documento fiscal.
+- Use dados fornecidos, mas sempre acrescente análise e recomendações.
+- Nunca diga que não encontrou informação em perguntas howto: sempre oriente tecnicamente.
+- Use Markdown para organizar e destacar informações.
 
-        **Diretrizes de Resposta:**
-        -   **Precisão Absoluta:** Baseie 100% da sua resposta nos dados fornecidos no contexto. Não invente informações.
-        -   **Confiança:** Aja como se você mesmo tivesse buscado a informação. Use frases como "A última nota importada foi..." em vez de "Segundo os dados que recebi...".
-        -   **Clareza:** Use formatação Markdown (negrito, listas, tabelas) para tornar a informação fácil de ler.
-
-        **Exemplos de Respostas para Perguntas de Metadados:**
-        -   **Usuário:** "Qual a última nota que importei?"
-            -   **Sua Resposta (após receber dados da query SQL):** "A última nota fiscal importada foi a **NF-e 12345** do fornecedor **Empresa Exemplo Ltda**, no valor de **R$ 1.500,00**, importada em **29/10/2025 às 09:15**."
-        -   **Usuário:** "Quantas notas temos de São Paulo?"
-            -   **Sua Resposta:** "Atualmente, existem **152 notas fiscais** emitidas por fornecedores de São Paulo no banco de dados."
-
-        **Exemplos de Respostas para Perguntas de Conteúdo (RAG):**
-        -   **Usuário:** "Quais os itens da nota fiscal 456?"
-            -   **Sua Resposta:** "A NF-e 456 contém os seguintes itens:
-                - Item 1: Parafuso Sextavado (100 unidades) - R$ 50,00
-                - Item 2: Porca Autotravante (100 unidades) - R$ 35,00"
-        """
+Exemplo:
+Usuário: "Como corrigir erro de rejeição 215?"
+Resposta: "Rejeição 215 indica CNPJ inválido. Verifique o CNPJ do emitente no XML, sem caracteres extras, e se corresponde ao cadastro na Sefaz."
+"""
 
     async def create_session(self, session_name: str = None) -> str:
         """Create a new chat session."""
@@ -286,9 +272,18 @@ class ChatAgent:
             return []
 
     async def get_conversation_context(self, session_id: str) -> str:
-        """Get conversation history as context for the LLM."""
+        """Get conversation history as context for the LLM, including consultative summary and last exchanges."""
         try:
-            return self.storage.get_chat_context(session_id, limit=5)
+            history = self.storage.get_chat_messages(session_id, limit=50)
+            summary = self._summarize_conversation_context(history)
+            # Seleciona as últimas 5 mensagens (perguntas e respostas)
+            last_msgs = history[-10:] if len(history) >= 10 else history
+            formatted_msgs = []
+            for msg in last_msgs:
+                who = 'Usuário' if msg.get('message_type') == 'user' else 'Assistente'
+                formatted_msgs.append(f"[{who}]: {msg.get('content','').strip()}")
+            last_msgs_str = '\n'.join(formatted_msgs)
+            return f"Resumo da sessão:\n{summary}\n\nHistórico recente:\n{last_msgs_str}"
         except Exception as e:
             logger.error(f"Error getting conversation context: {e}")
             return "Erro ao carregar histórico da conversa."
@@ -314,7 +309,7 @@ class ChatAgent:
         return await self.document_analyzer.get_all_documents_summary(time_filter=parsed_time_filter)
 
     def _detect_validation_query(self, query: str) -> Optional[Dict[str, Any]]:
-        """Heuristically detect validation-related queries without invoking the LLM."""
+        """Heuristically detect validation-related and procedural/howto queries without invoking the LLM."""
 
         validation_keywords = [
             'validaç',
@@ -326,55 +321,48 @@ class ChatAgent:
             'status da validacao',
             'status de validacao'
         ]
+        howto_keywords = [
+            'como ', 'como faço', 'como verificar', 'como corrigir', 'me ensina', 'me explique', 'tutorial', 'passo a passo', 'o que significa', 'explica', 'explicar', 'explicação', 'orientação', 'procedimento', 'validador', 'assinar xml', 'validar xml', 'corrigir xml', 'resolver erro', 'resolver rejeição', 'por que', 'motivo do erro'
+        ]
 
         query_lower = query.lower()
+        # Procedural/howto detection
+        if any(kw in query_lower for kw in howto_keywords):
+            return {'intent': 'howto', 'params': {}}
+        # Validation detection
         if any(keyword in query_lower for keyword in validation_keywords):
             params: Dict[str, Any] = {}
             reference = self._extract_document_reference(query)
             if reference:
                 params['document_reference'] = reference
             return {'intent': 'validation', 'params': params}
-
         return None
 
     def _get_query_intent_with_llm(self, query: str) -> Dict[str, Any]:
         """Classify the user's query using an LLM to determine the required action."""
         
         prompt = f"""
-        Analise a pergunta do usuário e classifique-a em uma das seguintes categorias. Extraia também os parâmetros relevantes.
+Classifique a pergunta do usuário em uma destas categorias e extraia parâmetros:
+- count (quantidade de documentos)
+- summary (resumo/distribuição)
+- list (lista de documentos, pode ter filtros)
+- validation (validação/status de documento)
+- rag (conteúdo específico, análise semântica)
+- generic (saudação ou fora das demais)
 
-        **Categorias:**
-        - `count`: Pergunta sobre a quantidade total de documentos.
-        - `summary`: Pede um resumo ou distribuição por categoria (tipo, emissor).
-        - `list`: Pede uma lista de documentos. Pode incluir filtros como "últimos", "recentes", ou por data.
-        - `validation`: Solicita validações, status ou inconsistências de um documento específico.
-        - `rag`: Pergunta sobre o conteúdo específico de um ou mais documentos, que exige análise semântica.
-        - `generic`: Conversa geral, saudação ou pergunta que não se encaixa nas outras categorias.
+Parâmetros possíveis: limit, time_filter, order_by, document_reference.
 
-        **Extração de Parâmetros:**
-        - `limit` (inteiro): Se o usuário especificar um número (ex: "5 últimas notas").
-        - `time_filter` (string): Se houver um filtro de tempo (ex: "hoje", "últimos 7 dias").
-        - `order_by` (string): Se a ordenação for clara (ex: "maior valor", "mais recente").
-        - `document_reference` (string): Identificador do documento (ex: chave, número, nome do arquivo).
+Exemplos:
+Pergunta: "quantas notas temos?"
+Resposta: {{"intent": "count", "params": {{}}}}
+Pergunta: "última nota importada"
+Resposta: {{"intent": "list", "params": {{"limit": 1}}}}
+Pergunta: "validações da NF-e 123"
+Resposta: {{"intent": "validation", "params": {{"document_reference": "NF-e 123"}}}}
 
-        **Exemplos:**
-        1. Pergunta: "quantas notas nós temos?"
-           Resposta: {{"intent": "count", "params": {{}}}}
-        2. Pergunta: "me mostre a última nota importada"
-           Resposta: {{"intent": "list", "params": {{"limit": 1, "order_by": "created_at"}}}}
-        3. Pergunta: "quais os itens da nota fiscal do fornecedor X?"
-           Resposta: {{"intent": "rag", "params": {{"vendor": "X"}}}}
-        4. Pergunta: "pode me trazer as validações da NF-e 123?"
-           Resposta: {{"intent": "validation", "params": {{"document_reference": "NF-e 123"}}}}
-        5. Pergunta: "Olá, tudo bem?"
-           Resposta: {{"intent": "generic", "params": {{}}}}
-        6. Pergunta: "faça um resumo por tipo de documento"
-           Resposta: {{"intent": "summary", "params": {{}}}}
-
-        **Pergunta do Usuário:** "{query}"
-
-        **Sua Resposta (APENAS o JSON):**
-        """
+Pergunta do usuário: "{query}"
+Responda APENAS com o JSON.
+"""
         
         try:
             messages = [HumanMessage(content=prompt)]
@@ -396,6 +384,44 @@ class ChatAgent:
     def _clean_response_content(self, content: str) -> str:
         # Simple cleaning for now
         return content.strip()
+
+    def _summarize_conversation_context(self, history: List[Dict[str, Any]]) -> str:
+        """Build a consultative summary from the conversation history."""
+        if not history:
+            return "Nenhum histórico disponível."
+        # Collect suppliers, CNPJs, validation errors, document types, and recent topics
+        suppliers = set()
+        cnpjs = set()
+        errors = 0
+        docs = set()
+        topics = []
+        for msg in history:
+            meta = msg.get('metadata') or {}
+            if meta.get('documents'):
+                for d in meta['documents']:
+                    if isinstance(d, dict):
+                        if d.get('issuer_cnpj'):
+                            cnpjs.add(d['issuer_cnpj'])
+                        if d.get('issuer_name'):
+                            suppliers.add(d['issuer_name'])
+                        if d.get('validation_status') == 'error':
+                            errors += 1
+                        if d.get('document_type'):
+                            docs.add(d['document_type'])
+            if msg.get('content'):
+                topics.append(msg['content'][:80])
+        summary = []
+        if suppliers:
+            summary.append(f"Fornecedores citados: {', '.join(sorted(suppliers))}")
+        if cnpjs:
+            summary.append(f"CNPJs discutidos: {', '.join(sorted(cnpjs))}")
+        if docs:
+            summary.append(f"Tipos de documento: {', '.join(sorted(docs))}")
+        if errors > 0:
+            summary.append(f"Notas com erro de validação nesta sessão: {errors}")
+        if topics:
+            summary.append(f"Principais tópicos: {', '.join(topics[-3:])}")
+        return '\n'.join(summary) if summary else "Nenhum dado relevante extraído do histórico."
 
     async def generate_response(
         self,
@@ -432,6 +458,8 @@ class ChatAgent:
                 return await self._handle_list_request(session_id, query, params)
             elif intent == 'validation':
                 return await self._handle_validation_request(session_id, query, params)
+            elif intent == 'howto':
+                return await self._handle_howto_request(session_id, query, params)
             else: # Handles 'rag' and 'generic'
                 return await self._handle_specific_search(session_id, query, context)
 
@@ -439,24 +467,33 @@ class ChatAgent:
             logger.error(f"Erro ao processar pergunta: {e}", exc_info=True)
             return await self._handle_specific_search(session_id, query, context)
 
+    async def _handle_howto_request(self, session_id: str, query: str, params: Dict[str, Any]) -> ChatResponse:
+        """Responde perguntas do tipo howto de forma consultiva, didática e passo a passo."""
+        try:
+            prompt = f"Pergunta procedural/howto do usuário: {query}\nResponda de forma didática, passo a passo, com recomendações técnicas e exemplos se possível. Use Markdown."
+            messages = await self._build_llm_messages(session_id, prompt)
+            response = self.model.invoke(messages)
+            content = self._clean_response_content(response.content)
+            metadata = { 'query_type': 'howto' }
+            await self.save_message(session_id, 'assistant', content, metadata)
+            return ChatResponse(content=content, metadata=metadata)
+        except Exception as e:
+            error_message = f"Erro ao responder pergunta procedural/howto: {str(e)}"
+            await self.save_message(session_id, 'assistant', error_message, {'error': True})
+            return ChatResponse(content=error_message, metadata={'error': True})
+
     async def _handle_count_request(self, session_id: str, query: str, params: Dict[str, Any]) -> ChatResponse:
         """Handle requests for document counts using LLM for natural response."""
         try:
             summary_data = await self._get_all_documents_summary()
 
             if not summary_data or summary_data['total_documents'] == 0:
-                prompt = "O usuário perguntou sobre a quantidade de documentos, mas não há nenhum no sistema. Informe que não há documentos carregados."
+                prompt = "Não há documentos no sistema. Informe isso ao usuário."
             else:
                 total = summary_data['total_documents']
                 total_value = summary_data['total_value']
                 categories = summary_data['by_type']
-                
-                prompt = f"""
-                O usuário perguntou sobre a quantidade de documentos. Responda de forma natural usando os seguintes dados:
-                - Total de documentos: {total}
-                - Valor total: R$ {total_value:,.2f}
-                - Categorias: {json.dumps(categories)}
-                """
+                prompt = f"Total: {total} documentos | Valor total: R$ {total_value:,.2f} | Categorias: {json.dumps(categories)}"
 
             messages = await self._build_llm_messages(session_id, prompt)
             response = self.model.invoke(messages)
@@ -698,9 +735,7 @@ class ChatAgent:
             limit = doc_limit if (doc_limit and doc_limit > 0) else 10
             documents_to_show = documents_sorted[:limit]
 
-            base_prompt = ["O usuário pediu uma lista de documentos. Use os dados abaixo para formular a resposta."]
-            base_prompt.append(f"Dados: {json.dumps(documents_to_show, indent=2, default=str)}")
-            prompt = "\n".join(base_prompt)
+            prompt = f"Lista de documentos (máx {limit}): {json.dumps(documents_to_show, default=str)}"
 
             messages = await self._build_llm_messages(session_id, prompt)
             response = self.model.invoke(messages)
@@ -730,9 +765,9 @@ class ChatAgent:
             summary_data = await self._get_all_documents_summary()
 
             if not summary_data or summary_data['total_documents'] == 0:
-                prompt = "O usuário pediu um resumo, mas não há documentos. Informe que não há dados para analisar."
+                prompt = "Não há documentos para resumir. Informe isso ao usuário."
             else:
-                prompt = f"O usuário pediu um resumo dos documentos. Use os seguintes dados para criar um resumo em português:\n{json.dumps(summary_data, indent=2, default=str)}"
+                prompt = f"Resumo dos documentos: {json.dumps(summary_data, default=str)}"
 
             messages = await self._build_llm_messages(session_id, prompt)
             response = self.model.invoke(messages)
@@ -758,6 +793,9 @@ class ChatAgent:
             context_prompt = context_data.get('context')
 
             if not context_prompt or context_data.get('status') == 'no_matches':
+                # Detect if this is a procedural/howto query and fallback to didactic answer
+                if self._detect_validation_query(query) and self._detect_validation_query(query).get('intent') == 'howto':
+                    return await self._handle_howto_request(session_id, query, {})
                 message = "Não encontrei informações relevantes para sua pergunta."
                 metadata = {
                     'query_type': 'rag',
@@ -1101,18 +1139,29 @@ class ChatAgent:
         return False
 
     def _format_validation_details(self, document: Dict[str, Any], status: str, validations: Any) -> str:
-        """Format validation details into a human-friendly Markdown response."""
+        """Format validation details into a human-friendly Markdown response with consultative tips."""
         file_name = document.get('file_name', 'Documento sem nome')
         status_icon = {
             'valid': '✅',
             'warning': '⚠️',
-            'invalid': '❌'
+            'invalid': '❌',
+            'error': 'ℹ️'
         }.get(status, 'ℹ️')
 
         lines = [
             f"**Documento:** {file_name}",
             f"**Status das validações:** {status_icon} {status.capitalize()}"
         ]
+
+        # Consultoria e recomendações
+        if status.lower() in ('error', 'invalid', 'não informado'):
+            lines.append("\n🔎 **Dicas para resolver problemas de validação:**")
+            lines.append("- Verifique se o arquivo XML está assinado corretamente e não foi corrompido.")
+            lines.append("- Confirme se as datas, CNPJ e valores estão corretos e compatíveis com o cadastro do fornecedor.")
+            lines.append("- Utilize o validador oficial da Sefaz para identificar erros específicos.")
+            lines.append("- Se o problema persistir em várias notas deste fornecedor, pode ser um erro sistêmico: considere revisar o cadastro ou entrar em contato com o fornecedor.")
+        elif status.lower() == 'valid':
+            lines.append("\n✅ Nenhum erro de validação encontrado. Documento está regular.")
 
         if validations:
             try:
@@ -1143,5 +1192,28 @@ class ChatAgent:
                 lines.append("\nNão foi possível interpretar os detalhes de validação armazenados.")
         else:
             lines.append("\nNenhum detalhe de validação foi registrado para este documento.")
+
+        # Análise de padrões no histórico
+        if hasattr(self, 'storage'):
+            try:
+                cnpj = document.get('issuer_cnpj')
+                if cnpj:
+                    # Busca no histórico da sessão por outros erros do mesmo CNPJ
+                    all_msgs = []
+                    try:
+                        all_msgs = self.storage.get_chat_messages(document.get('session_id'), limit=50)
+                    except Exception:
+                        pass
+                    erro_count = 0
+                    for msg in all_msgs:
+                        meta = msg.get('metadata') or {}
+                        docs = meta.get('documents') or []
+                        for d in docs:
+                            if isinstance(d, dict) and d.get('issuer_cnpj') == cnpj and d.get('validation_status') == 'error':
+                                erro_count += 1
+                    if erro_count > 1:
+                        lines.append(f"\n🔔 Atenção: Encontramos {erro_count} notas deste fornecedor com erro de validação nesta sessão. Isso pode indicar um problema recorrente.")
+            except Exception as e:
+                logger.debug(f"Erro ao analisar padrões de erro no histórico: {e}")
 
         return "\n".join(lines)
