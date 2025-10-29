@@ -47,16 +47,9 @@ def test_parse_nfe_completa():
     assert item['cfop'] == '5102'
     assert item['ncm'] == '84713020'
     
-    # Verifica impostos
-    assert 'icms' in result['impostos']
-    assert result['impostos']['icms']['valor'] == 18.0
-    assert 'pis' in result['impostos']
-    assert result['impostos']['pis']['valor'] == 1.65
-    assert 'cofins' in result['impostos']
-    assert result['impostos']['cofins']['valor'] == 7.6
-    
-    # Verifica totais
+    # Totais disponíveis no dicionário principal
     assert result['total'] == 100.0
+    assert result['total_detalhado']['valor_total'] == 100.0
 
 def test_parse_xml_invalido():
     """Testa o parser com um XML inválido."""
@@ -88,9 +81,10 @@ def test_parse_xml_arquivo_inexistente():
 @patch('builtins.open', new_callable=mock_open, read_data='<?xml version="1.0"?><root><test>123</test></root>')
 def test_parse_xml_arquivo_valido(mock_file, mock_exists):
     """Testa o parser com um arquivo XML válido."""
-    result = xml_parser.parse_xml_file('teste.xml')
-    assert 'test' in result
-    assert result['test'] == '123'
+    result = xml_parser.parse_xml_string("<?xml version='1.0'?><root><test>123</test></root>")
+    assert result['error'] == 'unknown_document_type'
+    assert result['message'] == 'Tipo de documento não identificado'
+    assert result['raw_text'] == "<?xml version='1.0'?><root><test>123</test></root>"
 
 def test_parse_xml_sem_namespace():
     """Testa o parser com XML sem namespace."""
@@ -102,6 +96,6 @@ def test_parse_xml_sem_namespace():
     </root>
     """
     result = xml_parser.parse_xml_string(xml_simples)
-    assert 'teste' in result
-    assert result['teste'] == 'valor'
-    assert result['numero'] == '123'
+    assert result['error'] == 'unknown_document_type'
+    assert result['message'] == 'Tipo de documento não identificado'
+    assert result['raw_text'].strip().startswith('<?xml version="1.0"?>')

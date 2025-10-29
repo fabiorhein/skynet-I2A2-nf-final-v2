@@ -26,6 +26,7 @@ class TestDateConversion:
         """Test that ISO dates are passed through unchanged."""
         assert convert_date_to_iso('2025-08-28') == '2025-08-28'
         assert convert_date_to_iso('2025-08-28T10:30:00Z') == '2025-08-28T10:30:00Z'
+        assert convert_date_to_iso('2023-01-01 10:40:00') == '2023-01-01T10:40:00'
         assert convert_date_to_iso('2023-01-01T00:00:00Z') == '2023-01-01T00:00:00Z'
 
     def test_convert_edge_cases(self):
@@ -39,7 +40,7 @@ class TestDateConversion:
         assert convert_date_to_iso('invalid') is None
         assert convert_date_to_iso('13/45/2025') is None  # Invalid month
         assert convert_date_to_iso('32/08/2025') is None  # Invalid day
-        assert convert_date_to_iso('28-08-2025') is None  # Dash format without T
+        assert convert_date_to_iso('28-08-2025') is None
 
         # Invalid date combinations
         assert convert_date_to_iso('30/02/2025') is None  # Feb 30th doesn't exist

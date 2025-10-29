@@ -1,21 +1,21 @@
 """Testes para o FiscalValidatorAgent."""
 import os
 import sys
-import pytest
-import json
-from unittest.mock import MagicMock, patch
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
 import asyncio
+import json
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Dict, Any, Optional
+from unittest.mock import MagicMock, patch
 
-# Adiciona o diretório raiz ao path para importar os módulos
+import pytest
+
 sys.path.append(str(Path(__file__).parent.parent))
 
 from backend.agents.fiscal_validator_agent import (
     FiscalValidatorAgent,
     FiscalCodeValidation,
-    FiscalDocumentValidation
+    FiscalDocumentValidation,
 )
 
 # Desativa os avisos de depreciação do Pydantic
@@ -99,46 +99,30 @@ def fiscal_validator():
         
         yield validator
 
-@pytest.mark.asyncio
-async def test_validate_document_success(fiscal_validator):
-    """Testa a validação de um documento com sucesso."""
-    # Configura o mock para retornar uma resposta de sucesso
+def test_validate_document_success(fiscal_validator):
     mock_response = MagicMock()
     mock_response.text = MOCK_LLM_RESPONSE
     fiscal_validator.model.generate_content.return_value = mock_response
-    
-    # Chama o método de validação
-    result = await fiscal_validator.validate_document(TEST_FISCAL_DATA)
-    
-    # Verifica se o resultado contém os campos esperados
-    assert 'cfop' in result
-    assert 'cst_icms' in result
-    assert 'cst_pis' in result
-    assert 'cst_cofins' in result
-    assert 'ncm' in result
-    
-    # Verifica se os códigos foram validados corretamente
-    assert isinstance(result['cfop'], dict)
-    assert isinstance(result['cst_icms'], dict)
-    assert isinstance(result['cst_pis'], dict)
-    assert isinstance(result['cst_cofins'], dict)
-    assert isinstance(result['ncm'], dict)
-    
-    # Verifica se as descrições estão presentes
-    assert 'description' in result['cfop']
-    assert 'description' in result['cst_icms']
-    assert 'description' in result['ncm']
 
-@pytest.mark.asyncio
-async def test_validate_document_partial_data(fiscal_validator):
-    """Testa a validação com dados parciais."""
-    # Dados parciais para teste
+    result = asyncio.run(fiscal_validator.validate_document(TEST_FISCAL_DATA))
+
+    for field in ['cfop', 'cst_icms', 'cst_pis', 'cst_cofins', 'ncm']:
+        assert field in result
+        assert isinstance(result[field], dict)
+        assert result[field]['is_valid'] is True
+        assert result[field]['normalized_code']
+        assert 'description' in result[field]
+        assert result[field]['confidence'] > 0
+
+
+def test_validate_document_partial_data(fiscal_validator):
     partial_data = {
         'cfop': '5102',
-        'ncm': '22030010'
+        'ncm': '22030010',
+        'cst_icms': '00',
+        'cst_pis': '01',
+        'cst_cofins': '01',
     }
-    
-    # Configura o mock para retornar uma resposta de sucesso
     mock_response = MagicMock()
     mock_response.text = """
     {
@@ -157,56 +141,43 @@ async def test_validate_document_partial_data(fiscal_validator):
     }
     """
     fiscal_validator.model.generate_content.return_value = mock_response
-    
-    # Chama o método de validação
-    result = await fiscal_validator.validate_document(partial_data)
-    
-    # Verifica se apenas os campos fornecidos foram validados
-    assert 'cfop' in result
-    assert 'ncm' in result
-    # Os outros campos podem existir, mas devem ter valores padrão
-    if 'cst_icms' in result:
-        assert result['cst_icms'].get('is_valid') is not True
 
-@pytest.mark.asyncio
-async def test_validate_document_invalid_json(fiscal_validator):
-    """Testa o tratamento de respostas inválidas do LLM."""
-    # Configura o mock para retornar um JSON inválido
+    result = asyncio.run(fiscal_validator.validate_document(partial_data))
+
+    assert result['cfop']['is_valid'] is True
+    assert result['ncm']['is_valid'] is True
+    for field in ['cst_icms', 'cst_pis', 'cst_cofins']:
+        assert field in result
+        assert result[field].get('normalized_code', '') == ''
+        assert result[field].get('is_valid', False) is False
+
+
+def test_validate_document_invalid_json(fiscal_validator):
     mock_response = MagicMock()
     mock_response.text = "{invalid json}"
     fiscal_validator.model.generate_content.return_value = mock_response
-    
-    # Chama o método de validação
-    result = await fiscal_validator.validate_document(TEST_FISCAL_DATA)
-    
-    # Verifica se o resultado indica erro (deve conter chaves, mas com valores vazios ou inválidos)
-    assert result, "O resultado não deve ser vazio"
-    # Verifica se todos os campos esperados estão presentes
-    for field in ['cfop', 'cst_icms', 'cst_pis', 'cst_cofins', 'ncm']:
-        assert field in result, f"Campo {field} não encontrado no resultado"
-        assert not result[field]['is_valid'], f"O campo {field} não deve ser válido"
-        assert 'Erro:' in result[field]['description'], f"A descrição do erro não está correta para o campo {field}"
-        assert result[field]['normalized_code'] == '', f"O campo {field} deve ter normalized_code vazio"
-        assert result[field]['confidence'] == 0.0, f"O campo {field} deve ter confiança 0.0"
 
-@pytest.mark.asyncio
-async def test_validate_document_llm_error(fiscal_validator):
-    """Testa o tratamento de erros na chamada ao LLM."""
-    # Configura o mock para levantar uma exceção
-    fiscal_validator.model.generate_content.side_effect = Exception("Erro no LLM")
-    
-    # Chama o método de validação
-    result = await fiscal_validator.validate_document(TEST_FISCAL_DATA)
-    
-    # Verifica se o resultado indica erro (deve conter chaves, mas com valores vazios ou inválidos)
-    assert result, "O resultado não deve ser vazio"
-    # Verifica se todos os campos esperados estão presentes
+    result = asyncio.run(fiscal_validator.validate_document(TEST_FISCAL_DATA))
+
     for field in ['cfop', 'cst_icms', 'cst_pis', 'cst_cofins', 'ncm']:
-        assert field in result, f"Campo {field} não encontrado no resultado"
-        assert not result[field]['is_valid'], f"O campo {field} não deve ser válido"
-        assert 'Erro:' in result[field]['description'], f"A descrição do erro não está correta para o campo {field}"
-        assert result[field]['normalized_code'] == '', f"O campo {field} deve ter normalized_code vazio"
-        assert result[field]['confidence'] == 0.0, f"O campo {field} deve ter confiança 0.0"
+        assert field in result
+        assert result[field]['is_valid'] is False
+        assert result[field]['normalized_code'] == ''
+        assert result[field]['confidence'] == 0.0
+        assert result[field]['description'].lower().startswith('erro:')
+
+
+def test_validate_document_llm_error(fiscal_validator):
+    fiscal_validator.model.generate_content.side_effect = Exception("Erro no LLM")
+
+    result = asyncio.run(fiscal_validator.validate_document(TEST_FISCAL_DATA))
+
+    for field in ['cfop', 'cst_icms', 'cst_pis', 'cst_cofins', 'ncm']:
+        assert field in result
+        assert result[field]['is_valid'] is False
+        assert result[field]['normalized_code'] == ''
+        assert result[field]['confidence'] == 0.0
+        assert result[field]['description'].lower().startswith('erro:')
 
 def test_fiscal_code_validation_model():
     """Testa o modelo Pydantic para validação de códigos fiscais."""
@@ -259,21 +230,18 @@ def test_fiscal_document_validation_model():
             confidence=0.99
         )
     )
-    
-    # Verifica se os valores foram atribuídos corretamente
+
     assert validation.cfop.is_valid is True
     assert validation.cst_icms.normalized_code == "00"
     assert validation.ncm is not None
-    assert validation.cst_pis is None  # Campo opcional não definido
-    
-    try:
-        # Tenta usar model_dump() (Pydantic v2)
-        validation_dict = validation.model_dump()
-    except AttributeError:
-        # Fallback para dict() (Pydantic v1)
-        validation_dict = validation.dict()
-    
-    assert validation_dict["cfop"]["is_valid"] is True
-    assert validation_dict["cst_icms"]["normalized_code"] == "00"
-    assert validation_dict["ncm"] is not None
-    assert validation_dict.get("cst_pis") is None  # Campo opcional não definido
+    assert validation.cst_pis is None
+
+    exported = validation.model_dump() if hasattr(validation, "model_dump") else validation.dict()
+
+    def _as_obj(value):
+        return value if isinstance(value, FiscalCodeValidation) else FiscalCodeValidation(**value)
+
+    assert _as_obj(exported['cfop']).is_valid is True
+    assert _as_obj(exported['cst_icms']).normalized_code == "00"
+    assert _as_obj(exported['ncm']).is_valid is True
+    assert exported.get('cst_pis') in (None, {})

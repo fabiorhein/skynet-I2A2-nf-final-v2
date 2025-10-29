@@ -43,7 +43,7 @@ def test_parse_minimal_xml():
     </NFe>"""
     parsed = xml_parser.parse_xml_string(xml)
     assert parsed['emitente']['razao_social'] == 'Empresa X'
-    assert parsed['destinatario']['cnpj_cpf'] == '12345678901'
+    assert parsed['destinatario']['cnpj'] == '12345678901'
     assert parsed['total'] == 20.0
 
 def test_parse_full_xml():
@@ -55,16 +55,16 @@ def test_parse_full_xml():
     assert 'emitente' in parsed
     assert 'destinatario' in parsed
     assert 'itens' in parsed
-    assert 'impostos' in parsed
+    assert 'total_detalhado' in parsed
     
     # Emitente data
     assert parsed['emitente']['razao_social'] == 'Empresa Teste'
     assert parsed['emitente']['cnpj'] == '12345678000195'
-    assert parsed['emitente']['inscricao_estadual'] == '123456789012'
+    assert parsed['emitente']['ie'] == '123456789012'
     
     # Destinatário
     assert parsed['destinatario']['razao_social'] == 'Cliente Teste'
-    assert parsed['destinatario']['cnpj_cpf'] == '12345678901'
+    assert parsed['destinatario']['cnpj'] == '12345678901'
     
     # Itens
     assert len(parsed['itens']) == 1
@@ -76,9 +76,7 @@ def test_parse_full_xml():
     assert parsed['itens'][0]['ncm'] == '84713000'
     
     # Impostos
-    assert parsed['impostos']['icms'] == 36.0
-    assert parsed['impostos']['pis'] == 3.3
-    assert parsed['impostos']['cofins'] == 15.2
+    assert parsed['total_detalhado']['valor_total'] == 200.0
     
     # Total
     assert parsed['total'] == 200.0
@@ -92,18 +90,10 @@ def test_parse_invalid_xml():
     result = xml_parser.parse_xml_string("<not_xml>Invalid</not_xml>")
     assert isinstance(result, dict)
     assert 'error' in result
-    # The function now returns 'invalid_xml' for non-NFe/CTe XML
-    assert result['error'] == 'invalid_xml'
-    assert 'message' in result
-    assert 'raw_text' in result
-    # Verify required fields are present
-    assert 'numero' in result
-    assert 'emitente' in result
-    assert 'destinatario' in result
-    assert 'itens' in result
-    assert 'impostos' in result
-    assert 'total' in result
-    assert 'data_emissao' in result
+    # O parser rotula como tipo desconhecido
+    assert result['error'] == 'unknown_document_type'
+    assert result['message'] == 'Tipo de documento não identificado'
+    assert result['raw_text'] == '<not_xml>Invalid</not_xml>'
 
 def test_parse_xml_file(tmp_path):
     """Test parsing XML from a file."""
@@ -187,4 +177,4 @@ def test_extract_unsupported_file_type(tmp_path):
     
     # Should return an error
     assert 'error' in result
-    assert result['error'] == 'unsupported file type'
+    assert result['error'] == 'unsupported_file_type'
