@@ -19,7 +19,12 @@ class FallbackEmbeddingService:
     availability and preference.
     """
 
-    def __init__(self, preferred_provider: str = "free", gemini_model: str = "models/embedding-001"):
+    def __init__(
+        self,
+        preferred_provider: str = "free",
+        gemini_model: str = "models/embedding-001",
+        batch_size: int = 32,
+    ):
         """
         Initialize fallback embedding service.
 
@@ -29,6 +34,7 @@ class FallbackEmbeddingService:
         """
         self.preferred_provider = "free"  # Force free provider only
         self.gemini_model = gemini_model
+        self.batch_size = max(1, batch_size)
 
         # Initialize services
         self.free_service = None
@@ -44,7 +50,10 @@ class FallbackEmbeddingService:
         """Initialize only free service."""
         # Initialize free service (Sentence Transformers) with 768-dimensions model
         try:
-            self.free_service = FreeEmbeddingService(model_name="PORTULAN/serafim-100m-portuguese-pt-sentence-encoder-ir")
+            self.free_service = FreeEmbeddingService(
+                model_name="PORTULAN/serafim-100m-portuguese-pt-sentence-encoder-ir",
+                batch_size=self.batch_size,
+            )
             logger.info("✅ Free embedding service (Sentence Transformers) ready with 768-dimensional model")
         except Exception as e:
             logger.error(f"Free embedding service failed to initialize: {e}")
