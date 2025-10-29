@@ -1,6 +1,6 @@
 # 🚀 SkyNET-I2A2 — Processamento Fiscal Inteligente
 
-[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://python.org)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.50+-red.svg)](https://streamlit.io)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-12+-green.svg)](https://postgresql.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -93,7 +93,7 @@ Pergunta → geração de embedding → busca semântica → contexto → respos
 ## ✅ Pré-requisitos
 
 - **Sistema Operacional:** Windows 10/11, macOS 10.15+ ou Linux.
-- **Python:** 3.11 ou superior com `pip` instalado.
+- **Python:** 3.12.x (recomendado). Versões 3.13 ainda apresentam incompatibilidades em dependências de OCR/LLM.
 - **Banco de Dados:** PostgreSQL 12+ (local ou hospedado).
 - **OCR:** Tesseract instalado e disponível na variável `PATH`.
 - **Ferramentas do projeto:** Git, acesso à internet para baixar dependências/modelos.
@@ -287,6 +287,20 @@ pytest                 # executa toda a suíte
 pytest -m unit         # apenas testes unitários
 pytest -m integration  # testes que dependem de PostgreSQL
 pytest --cov=backend --cov-report=html
+```
+
+Cobertura atual (out/2025): `pytest --cov` aponta **53%** do projeto, com meta pública de alcançar 80%. Os últimos ciclos reforçaram especialmente os fluxos de chat, OCR e persistência PostgreSQL.
+
+| Suite recente | Foco principal | Arquivo |
+| --- | --- | --- |
+| Chat Agent | Cache, roteamento de intents e formatação de respostas | @tests/test_chat_agent.py#1-246 |
+| Chat Coordinator | Sessões, contexto enriquecido e tratamento de erros | @tests/test_chat_coordinator.py#1-124 |
+| OCR + Storage | Fallbacks heurísticos, JSONB e parsing NFCe/MDFe | @tests/test_ocr_and_storage.py#1-42 / @tests/test_postgresql_storage.py#180-240 / @tests/test_todos_documentos_fiscais.py#70-209 |
+
+Para validar apenas os cenários de chat com mocks locais:
+
+```bash
+pytest tests/test_chat_agent.py tests/test_chat_coordinator.py -q
 ```
 
 Marcadores disponíveis (`pytest.ini`): `unit`, `integration`, `e2e`, `db`, `slow`, `online`, `windows`, `linux`, `macos`.
