@@ -44,7 +44,7 @@ class FallbackEmbeddingService:
         """Initialize only free service."""
         # Initialize free service (Sentence Transformers) with 768-dimensions model
         try:
-            self.free_service = FreeEmbeddingService(model_name="all-mpnet-base-v2")
+            self.free_service = FreeEmbeddingService(model_name="PORTULAN/serafim-100m-portuguese-pt-sentence-encoder-ir")
             logger.info("✅ Free embedding service (Sentence Transformers) ready with 768-dimensional model")
         except Exception as e:
             logger.error(f"Free embedding service failed to initialize: {e}")

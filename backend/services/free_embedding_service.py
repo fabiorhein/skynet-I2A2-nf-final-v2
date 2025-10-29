@@ -235,17 +235,24 @@ class FreeEmbeddingService:
 
             # Add metadata to each chunk
             result_chunks = []
+            doc_type = document_content.get('document_type', '')
+            issuer_cnpj = document_content.get('issuer_cnpj', '')
+
             for i, chunk_text in enumerate(chunks):
+                # Prepend essential metadata to each chunk's content for better context
+                metadata_header = f"[Tipo de Documento: {doc_type}, CNPJ Emissor: {issuer_cnpj}]\n"
+                content_with_header = metadata_header + chunk_text
+
                 chunk_metadata = {
-                    'content_text': chunk_text,
+                    'content_text': content_with_header,
                     'metadata': {
                         'chunk_number': i,
                         'document_id': document_content.get('id', ''),
-                        'document_type': document_content.get('document_type', ''),
+                        'document_type': doc_type,
                         'file_name': document_content.get('file_name', ''),
-                        'issuer_cnpj': document_content.get('issuer_cnpj', ''),
+                        'issuer_cnpj': issuer_cnpj,
                         'document_number': document_content.get('document_number', ''),
-                        'chunk_size': len(chunk_text),
+                        'chunk_size': len(content_with_header),
                         'total_chunks': len(chunks)
                     }
                 }
@@ -351,24 +358,30 @@ class FreeEmbeddingService:
         # Remove extra whitespace and normalize
         cleaned = re.sub(r'\s+', ' ', text.strip())
 
-        # Remove special characters but keep important punctuation
-        cleaned = re.sub(r'[^\w\s\-.,;:()/%R$]', '', cleaned)
+        # Remove irrelevant special characters but keep a broader set for fiscal context
+        cleaned = re.sub(r'[^\w\s\-.,;:()/%R$@+*<>_=\[\]]', '', cleaned)
+
+        # Convert to lowercase to help normalization, but after specific term replacement
+        cleaned = cleaned.lower()
 
         # Normalize common fiscal terms
+        # Normalize common fiscal terms (case-insensitive)
         fiscal_terms = {
-            'nota fiscal': 'nota fiscal',
-            'nf-e': 'nota fiscal eletrônica',
-            'nfe': 'nota fiscal eletrônica',
-            'cnpj': 'CNPJ',
-            'cpf': 'CPF',
-            'icms': 'ICMS',
-            'ipi': 'IPI',
-            'pis': 'PIS',
-            'cofins': 'COFINS'
+            r'\b(nf-e|nfe)\b': 'nota fiscal eletrônica',
+            r'\b(nf|notafiscal)\b': 'nota fiscal',
+            r'\b(cnpj|cadastro nacional da pessoa jurídica)\b': 'cnpj',
+            r'\b(cpf|cadastro de pessoas físicas)\b': 'cpf',
+            r'\b(icms|imposto sobre circulação de mercadorias e serviços)\b': 'icms',
+            r'\b(ipi|imposto sobre produtos industrializados)\b': 'ipi',
+            r'\b(pis|programa de integração social)\b': 'pis',
+            r'\b(cofins|contribuição para o financiamento da seguridade social)\b': 'cofins',
+            r'\b(rpa|recibo de pagamento autônomo)\b': 'rpa',
+            r'\b(cte|conhecimento de transporte eletrônico)\b': 'cte',
+            r'\b(mdfe|manifesto eletrônico de documentos fiscais)\b': 'mdfe'
         }
 
         for term, replacement in fiscal_terms.items():
-            cleaned = cleaned.replace(term.lower(), replacement)
+            cleaned = re.sub(term, replacement, cleaned, flags=re.IGNORECASE)
 
         return cleaned.strip()
 
@@ -384,33 +397,42 @@ class FreeEmbeddingService:
         Returns:
             List of text chunks
         """
-        if not text or len(text) <= chunk_size:
-            return [text] if text else []
+        if not text:
+            return []
 
-        chunks = []
-        start = 0
+        # Use a more robust splitter, prioritizing more significant separators
+        separators = ["\n\n", ". ", " "]
+        
+        # Start with the full text
+        final_chunks = []
+        initial_splits = [text]
 
-        while start < len(text):
-            end = min(start + chunk_size, len(text))
+        for sep in separators:
+            new_splits = []
+            for split in initial_splits:
+                if len(split) > chunk_size:
+                    new_splits.extend(split.split(sep))
+                else:
+                    new_splits.append(split)
+            initial_splits = new_splits
 
-            # If we're not at the end, try to end at a sentence boundary
-            if end < len(text):
-                # Look for sentence endings within the last 100 characters
-                for i in range(min(end, start + chunk_size - 100), end):
-                    if text[i] in '.!?' and (i + 1 >= len(text) or text[i + 1] in ' \n'):
-                        end = i + 1
-                        break
+        # Combine small splits and create final chunks with overlap
+        current_chunk = ""
+        for i, split in enumerate(initial_splits):
+            if not current_chunk:
+                current_chunk = split
+            elif len(current_chunk) + len(split) + len(separators[-1]) <= chunk_size:
+                current_chunk += separators[-1] + split
+            else:
+                final_chunks.append(current_chunk)
+                # Create overlap by taking the end of the last chunk
+                overlap_text = ' '.join(current_chunk.split(' ')[-int(overlap/5):]) # Simple word-based overlap
+                current_chunk = overlap_text + ' ' + split
+        
+        if current_chunk:
+            final_chunks.append(current_chunk)
 
-            chunk = text[start:end].strip()
-            if chunk:  # Only add non-empty chunks
-                chunks.append(chunk)
-
-            # Move start position with overlap
-            start = end - overlap if end < len(text) else end
-
-            # Prevent infinite loops
-            if start >= end:
-                start = end
+        return [chunk for chunk in final_chunks if chunk.strip()]
 
         return chunks
 

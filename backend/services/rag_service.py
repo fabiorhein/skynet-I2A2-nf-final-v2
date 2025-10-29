@@ -13,6 +13,13 @@ from backend.services.vector_store_service import VectorStoreService
 
 logger = logging.getLogger(__name__)
 
+try:
+    from sentence_transformers import CrossEncoder
+    CROSS_ENCODER_AVAILABLE = True
+except ImportError:
+    CROSS_ENCODER_AVAILABLE = False
+    CrossEncoder = None # type: ignore
+
 
 class RAGService:
     """
@@ -25,14 +32,16 @@ class RAGService:
     4. Response generation using Gemini with context
     """
 
-    def __init__(self):
+    def __init__(self, vector_store: VectorStoreService):
         """
         Initialize the RAG service with embedding and vector store services.
         """
         # Use fallback embedding service instead of direct Gemini
+        self.vector_store = vector_store
         self.embedding_service = None
-        self.vector_store = VectorStoreService()
+        self.cross_encoder = None
         self._initialize_embedding_service()
+        self._initialize_cross_encoder()
         logger.info("RAGService initialized")
         
     def get_statistics(self) -> Dict[str, Any]:
@@ -113,6 +122,96 @@ class RAGService:
             logger.error(f"Failed to initialize any embedding service: {e}")
             raise
 
+    def _initialize_cross_encoder(self):
+        """Initialize the Cross-Encoder model for re-ranking."""
+        if CROSS_ENCODER_AVAILABLE:
+            try:
+                # Using a small, fast, and multilingual model
+                model_name = 'mixedbread-ai/mxbai-rerank-xsmall-v1'
+                self.cross_encoder = CrossEncoder(model_name)
+                logger.info(f"✅ Cross-encoder model loaded: {model_name}")
+            except Exception as e:
+                logger.error(f"Failed to load cross-encoder model: {e}")
+                self.cross_encoder = None
+        else:
+            logger.warning("Cross-encoder not available. Install sentence-transformers.")
+            self.cross_encoder = None
+
+    async def _build_context_data(
+        self,
+        query: str,
+        filters: Optional[Dict[str, Any]] = None,
+        max_context_docs: int = 3
+    ) -> Dict[str, Any]:
+        """Internal helper to build context text and metadata."""
+
+        try:
+            query_embedding = self.embedding_service.generate_query_embedding(query)
+
+            similar_chunks = self.vector_store.search_similar_chunks(
+                query_embedding=query_embedding,
+                similarity_threshold=0.65,
+                max_results=10,
+                filters=filters
+            )
+
+            if not similar_chunks:
+                return {
+                    'context': "Nenhum documento relevante encontrado para a sua pergunta.",
+                    'documents': [],
+                    'similar_chunks': [],
+                    'query_embedding': query_embedding,
+                    'status': 'no_matches'
+                }
+
+            if self.cross_encoder:
+                cross_encoder_pairs = [[query, chunk['content_text']] for chunk in similar_chunks]
+                scores = self.cross_encoder.predict(cross_encoder_pairs)
+                for i, chunk in enumerate(similar_chunks):
+                    chunk['rerank_score'] = scores[i]
+                similar_chunks = sorted(similar_chunks, key=lambda x: x['rerank_score'], reverse=True)
+
+            context_docs = self.vector_store.get_document_context(
+                query_embedding=query_embedding,
+                max_documents=max_context_docs,
+                max_chunks_per_document=2
+            )
+
+            context_text = self._format_context_for_llm(context_docs, similar_chunks)
+
+            return {
+                'context': context_text,
+                'documents': context_docs,
+                'similar_chunks': similar_chunks,
+                'query_embedding': query_embedding,
+                'status': 'success'
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting context for query: {str(e)}")
+            return {
+                'context': f"Erro ao buscar contexto: {str(e)}",
+                'documents': [],
+                'similar_chunks': [],
+                'query_embedding': None,
+                'status': 'error',
+                'error': str(e)
+            }
+
+    async def get_context_for_query(self, query: str, filters: Optional[Dict[str, Any]] = None, max_context_docs: int = 3) -> str:
+        """Get formatted context for a query using RAG."""
+        context_data = await self._build_context_data(query, filters=filters, max_context_docs=max_context_docs)
+        return context_data['context']
+
+    async def get_context_with_metadata(
+        self,
+        query: str,
+        filters: Optional[Dict[str, Any]] = None,
+        max_context_docs: int = 3
+    ) -> Dict[str, Any]:
+        """Return formatted context together with retrieved document metadata."""
+        return await self._build_context_data(query, filters=filters, max_context_docs=max_context_docs)
+
     async def answer_query(
         self,
         query: str,
@@ -141,7 +240,7 @@ class RAGService:
             # Step 2: Search for relevant document chunks
             similar_chunks = self.vector_store.search_similar_chunks(
                 query_embedding=query_embedding,
-                similarity_threshold=0.6,
+                similarity_threshold=0.65, # Adjusted from 0.6
                 max_results=10,
                 filters=filters
             )
@@ -176,7 +275,24 @@ class RAGService:
                         'status': 'no_matches'
                     }
 
-            # Step 3: Get document context for better responses
+            # Step 3: Re-rank chunks using Cross-Encoder for better relevance
+            if self.cross_encoder and similar_chunks:
+                logger.info(f"Re-ranking {len(similar_chunks)} chunks with cross-encoder...")
+                
+                # Create pairs of [query, chunk_content]
+                cross_encoder_pairs = [[query, chunk['content_text']] for chunk in similar_chunks]
+                
+                # Predict scores
+                scores = self.cross_encoder.predict(cross_encoder_pairs)
+                
+                # Add scores to chunks and sort
+                for i, chunk in enumerate(similar_chunks):
+                    chunk['rerank_score'] = scores[i]
+                
+                similar_chunks = sorted(similar_chunks, key=lambda x: x['rerank_score'], reverse=True)
+                logger.info(f"Top re-ranked chunk score: {similar_chunks[0]['rerank_score']:.4f}")
+
+            # Step 4: Get document context for better responses
             context_docs = self.vector_store.get_document_context(
                 query_embedding=query_embedding,
                 max_documents=max_context_docs,

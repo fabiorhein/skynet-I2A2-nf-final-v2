@@ -316,6 +316,8 @@ class PostgreSQLStorage(StorageInterface):
         self,
         page: int = 1,
         page_size: int = 10,
+        order_by: str = 'created_at',
+        order_direction: str = 'desc',
         **filters
     ) -> PaginatedResponse:
         """Get a paginated list of fiscal documents with optional filtering."""
@@ -369,9 +371,17 @@ class PostgreSQLStorage(StorageInterface):
 
         # Get paginated results
         offset = (page - 1) * page_size
+        
+        # Validate order_by to prevent SQL injection
+        allowed_order_by = ['created_at', 'updated_at', 'issue_date', 'total_value', 'document_type']
+        if order_by not in allowed_order_by:
+            order_by = 'created_at'
+            
+        order_direction = 'DESC' if order_direction.lower() == 'desc' else 'ASC'
+        
         query = f"""
         SELECT * FROM fiscal_documents{where_clause}
-        ORDER BY created_at DESC
+        ORDER BY {order_by} {order_direction}
         LIMIT %s OFFSET %s
         """
 
