@@ -1,21 +1,23 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import streamlit as st
 
 # Page configuration must be the first Streamlit command
 st.set_page_config(
-    page_title="SkyNET-I2A2 - Processamento Fiscal Inteligente",
-    page_icon="📊",
+    page_title="SkyNET-I2A2",
+    page_icon="🛰️",
     layout="wide"
 )
 
-from backend.agents import coordinator
+# Import only basic modules here
 from pathlib import Path
 import json
 
-# Import the storage manager
-from backend.database import storage_manager
-
 # Initialize storage backend
 try:
+    from backend.database import storage_manager
     storage = storage_manager.storage
 except Exception as e:
     st.error(f"Erro ao inicializar o armazenamento: {str(e)}")
@@ -69,4 +71,3 @@ elif menu == 'Histórico':
 elif menu == 'RAG':
     from frontend.pages import rag
     rag.main()
-
