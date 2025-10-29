@@ -254,6 +254,41 @@ cache_ttl_days = 30
 
   asyncio.run(main())
   ```
+- O pipeline de embeddings agora usa uma **fila dedicada (`embedding_jobs`)**. Sempre que um documento é salvo pelo importador ou pela página de RAG ele é enfileirado automaticamente com status `pending` e processado em segundo plano por um worker (abaixo).
+
+#### Worker de Embeddings
+
+- Execute localmente com o ambiente virtual ativo e `PYTHONPATH` apontando para a raiz do projeto:
+  ```bash
+  export PYTHONPATH=$(pwd)
+  python -m scripts.rag_worker
+  ```
+- No primeiro start o script carrega o modelo Sentence Transformers (`PORTULAN/serafim-100m…`) e o cross-encoder de reranking. Logs indicam cada job consumido, chunks gerados e status final.
+- Produção: mantenha o worker em execução contínua via `systemd`, `pm2` ou container dedicado, por exemplo:
+  ```ini
+  [Service]
+  WorkingDirectory=/app/skynet
+  Environment=PYTHONUNBUFFERED=1
+  ExecStart=/app/skynet/.venv/bin/python -m scripts.rag_worker
+  Restart=always
+  ```
+- O worker consulta periodicamente a fila (`poll_interval`) e respeita um limite de execuções paralelas (`max_concurrent_jobs`). Ajuste esses parâmetros na inicialização conforme a capacidade do servidor.
+
+#### Boas práticas de reprocessamento
+
+- Cada par `(fiscal_document_id, chunk_number)` é único na tabela `document_chunks`. Se precisar reprocessar um documento já indexado, primeiro remova seus chunks atuais:
+  ```sql
+  DELETE FROM document_chunks WHERE fiscal_document_id = '<doc_id>';
+  UPDATE fiscal_documents SET embedding_status = 'pending' WHERE id = '<doc_id>';
+  ```
+- Evite enfileirar o mesmo documento repetidamente. Antes de chamar `enqueue_document_for_rag`, verifique `embedding_status`; documentos já concluídos não precisam ser reenfileirados.
+- Para diagnosticar jobs com falha utilize o painel "🧵 Status da Fila de Embeddings" (página RAG) ou consulte diretamente:
+  ```sql
+  SELECT id, document_id, status, attempts, last_error
+  FROM embedding_jobs
+  WHERE status IN ('failed','pending');
+  ```
+- Caso deseje reenfileirar manualmente, basta atualizar o status para `pending` ou usar novamente o botão de enfileiramento na interface.
 
 ## ▶️ Execução
 

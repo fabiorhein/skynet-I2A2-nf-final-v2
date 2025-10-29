@@ -87,22 +87,19 @@ def process_single_file(uploaded_file, storage, tmp_dir: Path, prepare_doc_func,
             result['validation_status'] = record.get('validation_status', 'pending')
             result['success'] = True
             
-            # Processar com RAG se disponível
+            # Enfileirar documento para RAG se serviço estiver disponível
             if 'rag_service' in st.session_state and st.session_state.rag_service:
                 try:
-                    import asyncio
-                    
-                    async def process_rag():
-                        doc_for_rag = storage.get_fiscal_documents(id=document_id, page=1, page_size=1)
-                        if doc_for_rag and hasattr(doc_for_rag, 'items') and doc_for_rag.items:
-                            return await st.session_state.rag_service.process_document_for_rag(doc_for_rag.items[0])
-                        return {'success': False, 'error': 'Documento não encontrado para processamento RAG'}
-                    
-                    # Executar processamento RAG em segundo plano
-                    asyncio.create_task(process_rag())
-                    
+                    st.session_state.rag_service.enqueue_document_for_rag(
+                        document_id=document_id,
+                        payload={
+                            'source': 'importador_utils',
+                            'file_name': record.get('file_name'),
+                            'issuer_cnpj': record.get('issuer_cnpj'),
+                        },
+                    )
                 except Exception as rag_error:
-                    logger.error(f"Erro ao agendar processamento RAG: {rag_error}")
+                    logger.error(f"Erro ao enfileirar documento %s para RAG: %s", document_id, rag_error)
         
     except Exception as e:
         result['error'] = str(e)

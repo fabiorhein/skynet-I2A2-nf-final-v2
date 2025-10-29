@@ -7,14 +7,14 @@ Esta página demonstra o sistema RAG implementado, permitindo:
 3. Processamento de documentos para embeddings
 4. Validação de documentos usando contexto
 """
-import streamlit as st
 import asyncio
 import logging
 import time
 from datetime import datetime
-import pandas as pd
 from typing import Dict, Any, List, Optional
+
 import pandas as pd
+import streamlit as st
 
 # Backend imports
 from backend.services import RAGService
@@ -24,16 +24,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def initialize_rag_service():
+def initialize_rag_service() -> bool:
     """Inicializa o serviço RAG se ainda não estiver inicializado."""
-    if 'rag_service' not in st.session_state:
+    if 'rag_service' not in st.session_state or st.session_state.rag_service is None:
         try:
-            st.session_state.rag_service = RAGService()
+            from backend.services.vector_store_service import VectorStoreService
+            vector_store = VectorStoreService()
+            st.session_state.rag_service = RAGService(vector_store)
             logger.info("RAG service initialized")
         except Exception as e:
             st.error(f"Erro ao inicializar serviço RAG: {str(e)}")
+            st.session_state.rag_service = None
             return False
-    return True
+    return st.session_state.rag_service is not None
 
 
 def show_rag_monitoring():
@@ -42,6 +45,8 @@ def show_rag_monitoring():
 
     if not initialize_rag_service():
         return
+
+    rag_service: RAGService = st.session_state.rag_service
 
     try:
         # Buscar documentos do banco de dados
@@ -79,7 +84,7 @@ def show_rag_monitoring():
                 else:
                     docs_without_embeddings.append(doc)
 
-            # Exibir estatísticas
+            # Estatísticas do estado atual
             st.markdown("### 📊 Status dos Documentos")
 
             col1, col2, col3, col4 = st.columns(4)
@@ -118,6 +123,18 @@ def show_rag_monitoring():
 
                     st.bar_chart(status_df.set_index('Status_Display'))
 
+            # Painel de fila de processamento
+            queue_stats = rag_service.get_embedding_queue_stats()
+            with st.expander("🧵 Status da Fila de Embeddings", expanded=False):
+                if queue_stats:
+                    col_q1, col_q2, col_q3, col_q4 = st.columns(4)
+                    col_q1.metric("Jobs Pendentes", queue_stats.get('pending', 0))
+                    col_q2.metric("Em Execução", queue_stats.get('processing', 0))
+                    col_q3.metric("Concluídos", queue_stats.get('completed', 0))
+                    col_q4.metric("Falharam", queue_stats.get('failed', 0))
+                else:
+                    st.info("Fila de embeddings indisponível ou vazia.")
+
             # Lista de documentos que precisam de processamento
             if docs_without_embeddings:
                 st.markdown("### 📋 Documentos que Precisam de Processamento")
@@ -155,9 +172,9 @@ def show_rag_monitoring():
                     )
 
                     # Botão para processar documentos selecionados
-                    if st.button(f'🚀 Processar {len(docs_without_embeddings)} Documentos para RAG',
+                    if st.button(f'🚀 Enfileirar {len(docs_without_embeddings)} Documentos para RAG',
                                type='primary', width='stretch'):
-                        process_documents_for_rag(docs_without_embeddings)
+                        enqueue_documents_for_rag(docs_without_embeddings)
 
             # Lista de documentos já processados
             if docs_with_embeddings:
@@ -208,191 +225,49 @@ def show_rag_monitoring():
         st.error(f"Erro ao carregar monitoramento: {str(e)}")
 
 
-def process_documents_for_rag(documents):
-    """Processa uma lista de documentos para RAG com feedback em tempo real."""
+def enqueue_documents_for_rag(documents: List[Dict[str, Any]]) -> None:
+    """Enfileira uma lista de documentos para processamento RAG."""
     if not documents:
-        st.warning("Nenhum documento para processar.")
+        st.warning("Nenhum documento para enfileirar.")
         return
 
-    total_docs = len(documents)
-    
-    # Configuração do layout
-    st.markdown(f"### 🚀 Processando {total_docs} Documentos...")
-    
-    # Criar colunas para o contador e barra de progresso
-    col_counter, col_progress = st.columns([1, 4])
-    
-    with col_counter:
-        st.markdown("#### Progresso")
-        progress_text = st.empty()
-        progress_text.markdown(f"**0 de {total_docs}** documentos processados")
-    
-    with col_progress:
-        st.markdown("#### &nbsp;")  # Espaçador para alinhar com o contador
-        progress_bar = st.progress(0)
-    
-    # Área para status detalhado
-    status_container = st.container()
-    status_text = status_container.empty()
-    
-    # Inicializar contadores
-    success_count = 0
-    error_count = 0
-    results = []
-    
-    # Criar colunas para métricas em tempo real
-    metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
-    
-    with metrics_col1:
-        st.metric("Total de Documentos", total_docs)
-    
-    with metrics_col2:
-        success_metric = st.metric("Processados com Sucesso", "0")
-    
-    with metrics_col3:
-        error_metric = st.metric("Com Erros", "0")
-    
-    # Processar cada documento
-    for i, doc in enumerate(documents, 1):
-        doc_id_short = str(doc.get('id', 'N/A'))[:8] + '...' if doc.get('id') else 'N/A'
-        doc_name = doc.get('file_name', doc_id_short)
-        
+    rag_service: RAGService = st.session_state.rag_service
+
+    jobs_enqueued = []
+    errors = []
+
+    for doc in documents:
+        doc_id = doc.get('id')
+        if not doc_id:
+            errors.append(('sem_id', 'Documento sem ID válido'))
+            continue
+
         try:
-            # Atualizar status
-            status_text.markdown(f"""
-            **Documento {i} de {total_docs}**  
-            📄 **Arquivo:** {doc_name}  
-            🔄 **Status:** Processando...
-            """)
-            
-            # Garantir que o documento tem formato correto para RAG
-            rag_document = {
-                'id': doc.get('id'),
-                'file_name': doc.get('file_name'),
-                'document_type': doc.get('document_type'),
-                'document_number': doc.get('document_number'),
-                'issuer_cnpj': doc.get('issuer_cnpj'),
-                'recipient_cnpj': doc.get('recipient_cnpj'),
-                'issue_date': doc.get('issue_date'),
-                'total_value': doc.get('total_value'),
-                'cfop': doc.get('cfop'),
-                'extracted_data': doc.get('extracted_data', {}),
-                'validation_status': doc.get('validation_status'),
-                'classification': doc.get('classification', {}),
-                'raw_text': doc.get('raw_text', ''),
-                'validation_details': doc.get('validation_details', {}),
-                'metadata': doc.get('metadata', {}),
-                'document_data': doc.get('document_data', {})
-            }
+            job = rag_service.enqueue_document_for_rag(
+                document_id=doc_id,
+                payload={
+                    'source': 'rag_monitor_batch',
+                    'file_name': doc.get('file_name'),
+                    'issuer_cnpj': doc.get('issuer_cnpj'),
+                },
+            )
+            jobs_enqueued.append((doc_id, job.get('id')))
+        except Exception as exc:
+            errors.append((doc_id, str(exc)))
 
-            # Remover campos None/empty
-            rag_document = {k: v for k, v in rag_document.items() if v is not None}
+    if jobs_enqueued:
+        st.success(f"✅ {len(jobs_enqueued)} documentos enfileirados para processamento")
+        with st.expander('📊 Detalhes dos jobs', expanded=False):
+            for doc_id, job_id in jobs_enqueued:
+                st.markdown(f"- Documento `{doc_id}` → Job `{job_id}`")
 
-            # Processar documento
-            result = asyncio.run(st.session_state.rag_service.process_document_for_rag(rag_document))
+    if errors:
+        st.warning(f"⚠️ {len(errors)} documentos falharam ao enfileirar")
+        with st.expander('❌ Falhas ao enfileirar', expanded=False):
+            for doc_id, error in errors:
+                st.markdown(f"- Documento `{doc_id}`: {error}")
 
-            if result.get('success', False):
-                success_count += 1
-                chunks_count = result.get('chunks_processed', 0)
-                results.append((doc['id'], True, chunks_count, None))
-                
-                # Atualizar métricas
-                success_metric.metric("Processados com Sucesso", success_count)
-                
-                # Atualizar status
-                status_text.markdown(f"""
-                **Documento {i} de {total_docs}**  
-                📄 **Arquivo:** {doc_name}  
-                ✅ **Status:** Processado com sucesso!  
-                🔢 **Chunks criados:** {chunks_count}
-                """)
-            else:
-                error_count += 1
-                error_msg = result.get('error', 'Erro desconhecido')
-                results.append((doc['id'], False, 0, error_msg))
-                
-                # Atualizar métricas
-                error_metric.metric("Com Erros", error_count)
-                
-                # Atualizar status
-                status_text.markdown(f"""
-                **Documento {i} de {total_docs}**  
-                📄 **Arquivo:** {doc_name}  
-                ❌ **Status:** Falha no processamento  
-                📝 **Erro:** {error_msg[:100]}{'...' if len(str(error_msg)) > 100 else ''}
-                """)
-
-        except Exception as e:
-            error_count += 1
-            error_msg = str(e)
-            results.append((doc.get('id', 'N/A'), False, 0, error_msg))
-            
-            # Atualizar métricas
-            error_metric.metric("Com Erros", error_count)
-            
-            # Atualizar status
-            status_text.markdown(f"""
-            **Documento {i} de {total_docs}**  
-            📄 **Arquivo:** {doc_name}  
-            ❌ **Status:** Erro inesperado  
-            🐞 **Detalhes:** {error_msg[:150]}{'...' if len(error_msg) > 150 else ''}
-            """)
-
-        # Atualizar barra de progresso e contador
-        progress = i / total_docs
-        progress_bar.progress(progress)
-        progress_text.markdown(f"**{i} de {total_docs}** documentos processados")
-        
-        # Pequena pausa para atualizar a UI
-        time.sleep(0.1)
-
-    # Concluir processamento
-    progress_bar.progress(1.0)
-    progress_text.markdown(f"**{total_docs} de {total_docs}** documentos processados")
-    status_text.markdown("### ✅ Processamento concluído!")
-
-    # Mostrar resumo final
-    st.balloons()  # Efeito de confetes
-    
-    # Criar colunas para o resumo
-    summary_col1, summary_col2, summary_col3 = st.columns(3)
-    
-    with summary_col1:
-        st.metric("Total Processado", total_docs)
-    
-    with summary_col2:
-        st.metric("Sucesso", f"{success_count} ({success_count/max(total_docs, 1)*100:.1f}%)", 
-                 delta=f"{success_count} documentos" if success_count > 0 else None)
-    
-    with summary_col3:
-        st.metric("Falhas", f"{error_count} ({error_count/max(total_docs, 1)*100:.1f}%)", 
-                 delta=f"{error_count} documentos" if error_count > 0 else None,
-                 delta_color="inverse")
-
-    # Detalhes dos resultados
-    if results:
-        with st.expander('📊 Detalhes do Processamento', expanded=error_count > 0):
-            for doc_id, success, chunks, error in results:
-                doc_id_display = str(doc_id)[:8] + '...' if doc_id else 'N/A'
-                if success:
-                    st.success(f'✅ Documento {doc_id_display}: {chunks} chunks criados')
-                else:
-                    st.error(f'❌ Documento {doc_id_display}: {error}')
-                    
-        # Botão para baixar relatório
-        csv = 'ID,Status,Chunks Criados,Detalhes\n' + '\n'.join(
-            f'{doc_id},{success},{chunks if success else "N/A"},"{error if not success else ""}"'
-            for doc_id, success, chunks, error in results
-        )
-        
-        st.download_button(
-            label="📥 Baixar Relatório em CSV",
-            data=csv,
-            file_name=f'relatorio_rag_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
-            mime='text/csv',
-        )
-
-    # Atualizar estatísticas
+    # Atualizar a página para refletir novos estados
     st.rerun()
 
 
