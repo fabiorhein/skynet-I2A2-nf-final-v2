@@ -37,27 +37,50 @@ SkyNET-I2A2 é uma plataforma completa para ingestão, validação e análise in
 
 O SkyNET-I2A2 automatiza o ciclo de vida de documentos fiscais: captura (upload, OCR ou XML), extração estruturada, validação fiscal, armazenamento em PostgreSQL e consulta inteligente via RAG. O `config.py` centraliza parâmetros sensíveis, priorizando variáveis de ambiente, segredos do Streamlit e `.streamlit/secrets.toml`, garantindo execução consistente em diferentes ambientes.
 
+## 🧭 Sumário Executivo
+
+SkyNET-I2A2 entrega uma jornada fiscal ponta a ponta com foco em produtividade e conformidade regulatória. A plataforma une captura multicanal de documentos (PDF, imagem, XML), validação tributária consultiva e um assistente conversacional com RAG para aproveitar conhecimento histórico. Tudo é centralizado em PostgreSQL com auditoria completa, garantindo rastreabilidade e governança para times fiscais, jurídicos e de tecnologia.
+
+**Por que importa para stakeholders?**
+- **Agilidade operacional:** upload em lote com OCR automatizado, normalização de dados e validações imediatas.
+- **Confiabilidade regulatória:** regras fiscais atualizadas, histórico de decisões e relatórios auditáveis por CNPJ/documento.
+- **Inteligência aplicada:** chat orientado a intents + memória conversacional com RAG para reaproveitar respostas, diminuir retrabalho e acelerar tomadas de decisão.
+- **Escalabilidade segura:** arquitetura modular com PostgreSQL, pgvector e serviços Python prontos para ambientes cloud ou on-premises.
+
+**Resultados observados recentemente**
+- Upload 100% estável, com fila controlada e feedback de UX aprimorado no importador.
+- Migração completa para PostgreSQL direto (documentos, chunks e chat), eliminando inconsistências e melhorando desempenho.
+- Memória de respostas do assistente integrada ao vetor store, permitindo consultas contextuais multissessão.
+- Suíte de testes abrangente (22+ cenários) cobrindo validações fiscais, OCR, RAG e cache do chat.
+
+O roadmap imediato inclui ampliar métricas de uso em tempo real, adicionar painéis executivos e abrir conectores adicionais (ERP/contabilidade) mediante necessidades do negócio.
+
 ## ✨ Principais Funcionalidades
 
 ### Processamento documental
-- Upload de NFe, NFCe, CTe, MDFe, PDFs e imagens com OCR Tesseract.
-- Parser XML especializado (`backend/tools/xml_parser.py`) com detecção automática de schema.
-- Normalização de datas brasileiras e conversão de valores monetários.
+- Upload em lote de NFe, NFCe, CTe, MDFe, DANFE em PDF e imagens com OCR via Tesseract/Poppler.
+- Parser XML especializado (`backend/tools/xml_parser.py`) com detecção automática de schema e extração normalizada.
+- Conversão automática de datas brasileiras e valores monetários antes da persistência.
+- Análise automática com o `DocumentAnalyzer` para enriquecer metadados, destinatários e totais.
 
-### Validação fiscal
-- FiscalValidator com checagens de ICMS, ICMS-ST, IPI, PIS/COFINS e consistência de totais.
-- Conversão automática de formatos brasileiros (datas, valores e CNPJ).
-- Registro detalhado de metadados e validações em PostgreSQL.
+### Validação fiscal consultiva
+- `FiscalValidator` com checagens detalhadas (ICMS, ICMS-ST, IPI, PIS/COFINS, totalizações, destinatário).
+- Recomendações consultivas na UI sempre que há inconsistência, destacando passos de correção.
+- Histórico de validação salvo em PostgreSQL com JSON estruturado por documento.
+- Relatórios consolidados por CNPJ e status disponíveis nas páginas Histórico e Chat.
 
-### Inteligência artificial e RAG
-- Serviço de chat com histórico persistente, cache e respostas contextualizadas.
-- RAGService com fallback de embeddings (Sentence Transformers local + Gemini opcional).
-- Busca semântica via pgvector e Google Gemini quando disponível.
+### Inteligência artificial e RAG conversacional
+- Chat IA orientado a intents (lista, resumo, validação, how-to, busca específica) com cache contextual.
+- RAGService combinando embeddings gratuitos (Sentence Transformers) e reranking com cross-encoder.
+- Armazenamento integrado de chunks de documentos e também das respostas do assistente (memória conversacional). 
+- Busca semântica em documentos e no histórico de respostas do assistente usando pgvector.
+- Respostas informam quando vieram do cache dentro da sessão, expandindo a explicação conforme solicitado pelo usuário.
 
-### Armazenamento e governança
-- Integração nativa com PostgreSQL (`backend/database/postgresql_storage.py`).
-- Vector store usando pgvector para armazenar embeddings e chunks de documentos.
-- Scripts de migração e verificações automáticas para manter o schema alinhado.
+### Governança, auditoria e operações
+- Persistência unificada em PostgreSQL com schemas para documentos, chunks, mensagens de chat e histórico de validações.
+- Scripts de migração automatizados, verificação de extensões (`vector`, `uuid-ossp`, `pgcrypto`) e criação de índices.
+- Monitoramento de conexão no sidebar do Streamlit indicando fallback para armazenamento local quando necessário.
+- Exportações estruturadas em JSON e relatórios customizados diretamente pelo chat/Histórico.
 
 ## 🏗️ Arquitetura e Fluxo
 
@@ -83,12 +106,12 @@ Pergunta → geração de embedding → busca semântica → contexto → respos
 
 ## 🧰 Tecnologias Principais
 
-- Python 3.11+
-- Streamlit (frontend)
-- PostgreSQL 12+ com extensão pgvector
-- Tesseract OCR + Poppler (PDF para imagem)
-- Sentence Transformers / Google Gemini para embeddings
-- pytest para testes automatizados
+- Python 3.12 + Poetry/Pip
+- Streamlit 1.50+ (frontend de múltiplas páginas)
+- PostgreSQL 12+ com extensão pgvector e JSONB avançado
+- Tesseract OCR + Poppler (pdf2image) para extração batch
+- Sentence Transformers (PORTULAN/serafim-100m…) e cross-encoder Mixedbread para RAG
+- pytest + coverage + scripts customizados para testes e manutenção
 
 ## ✅ Pré-requisitos
 
@@ -245,13 +268,13 @@ O menu lateral apresenta Home, Importador, Chat IA, Histórico e RAG. O `Storage
 
 ### Ambiente de Produção
 
-- Configure variáveis de ambiente e secrets em seu servidor ou serviço (Streamlit Cloud, Docker, etc.).
+- Configure variáveis de ambiente e secrets no servidor (Streamlit Community Cloud, EC2, Docker, etc.).
 - Exponha a aplicação:
   ```bash
   streamlit run app.py --server.address 0.0.0.0 --server.port 8501
   ```
-- Utilize proxy reverso (Nginx/Traefik) e processos supervisionados (systemd, supervisor) conforme necessário.
-- Garanta SSL e políticas de backup do PostgreSQL.
+- Utilize proxy reverso (Nginx/Traefik) e supervisão (systemd/supervisor) conforme necessário.
+- Configure backups automáticos do PostgreSQL e rotação de logs.
 
 ## 🖥️ Páginas do Sistema
 
@@ -264,21 +287,25 @@ O menu lateral apresenta Home, Importador, Chat IA, Histórico e RAG. O `Storage
 - Upload de múltiplos arquivos (PDF, imagens, XML) com pré-visualização.
 - Extração automática de texto via OCR e parser XML dedicado.
 - Validação de campos fiscais, edição manual e envio direto ao PostgreSQL.
+- Botão de limpeza da fila, bloqueio do uploader enquanto existem arquivos processando e alertas sobre limitações do Streamlit.
 
 ### Chat IA 💬
 - Sessões persistentes de conversa com contexto fiscal carregado automaticamente.
-- Cache inteligente que sinaliza quando uma resposta veio de consultas anteriores.
-- Exportação de conversas e integração opcional com resultados RAG.
+- Cache inteligente que sinaliza quando uma resposta veio de consultas anteriores e complementa a explicação.
+- Integração direta com RAG: respostas alimentam o vetor store como memória conversacional para reutilização futura.
+- Exportação de conversas, suporte a intents específicas (lista, resumo, how-to, validação, RAG direto).
 
 ### Histórico 📜
 - Lista paginada de documentos processados com filtros por data, CNPJ e tipo.
 - Visualização detalhada utilizando `frontend/components/document_renderer.py`.
-- Exportação de dados consolidados para auditoria.
+- Exportação de dados consolidados para auditoria e filtros por status de validação.
+- Acesso rápido a documentos recentes para servir de contexto no Chat IA.
 
 ### RAG 🔍
-- Busca semântica com ranking baseado em similaridade de embeddings (pgvector).
-- Visualização de chunks relevantes, pontuação de similaridade e metadados.
-- Ferramentas de validação suportada por IA para comparação entre documentos.
+- Busca semântica com ranking baseado em similaridade de embeddings (pgvector) e reranking cross-encoder.
+- Visualização de chunks relevantes, pontuação, documento de origem e metadados completos.
+- Possibilidade de combinar documentos recentes com histórico de chat na mesma busca.
+- Ferramentas de validação suportada por IA para comparação entre documentos e instruções consultivas.
 
 ## 🧪 Testes
 
