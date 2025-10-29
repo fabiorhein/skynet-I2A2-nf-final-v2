@@ -32,8 +32,9 @@ menu = st.sidebar.selectbox('Navegação', ['Home', 'Importador', 'Chat IA', 'Hi
 # Initialize session state for RAG service
 if 'rag_service' not in st.session_state:
     try:
-        from backend.services import RAGService
-        st.session_state.rag_service = RAGService()
+        from backend.services import RAGService, VectorStoreService
+        vector_store = VectorStoreService()
+        st.session_state.rag_service = RAGService(vector_store=vector_store)
         st.sidebar.success("✅ Sistema RAG inicializado")
     except Exception as e:
         st.sidebar.error(f"❌ Erro no RAG: {str(e)[:50]}...")

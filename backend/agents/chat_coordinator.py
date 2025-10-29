@@ -60,10 +60,19 @@ class ChatCoordinator:
 
         except Exception as e:
             logger.error(f"Error processing query: {e}")
+            error_str = str(e)
+            if '429' in error_str or 'ResourceExhausted' in error_str or 'Resource exhausted' in error_str:
+                user_msg = (
+                    '⚠️ O sistema atingiu o limite de uso da API de IA no momento. '
+                    'Por favor, tente novamente em alguns minutos. Caso o problema persista, contate o suporte. '
+                    'Mais detalhes: https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429'
+                )
+            else:
+                user_msg = 'Desculpe, ocorreu um erro ao processar sua pergunta.'
             return {
                 'success': False,
-                'error': str(e),
-                'response': 'Desculpe, ocorreu um erro ao processar sua pergunta.',
+                'error': error_str,
+                'response': user_msg,
                 'metadata': {'error': True}
             }
 

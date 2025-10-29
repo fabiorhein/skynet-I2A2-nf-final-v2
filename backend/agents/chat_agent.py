@@ -11,11 +11,12 @@ import json
 import hashlib
 import asyncio
 from typing import List, Dict, Any, Optional, Tuple, Union
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date, time
 from dataclasses import dataclass
 import uuid
 import logging
 import re
+from decimal import Decimal
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -42,7 +43,11 @@ except ImportError:
     SUPABASE_KEY = get_config_value('SUPABASE_KEY') or get_config_value('connections.supabase.KEY')
 
 from backend.services.document_analyzer import DocumentAnalyzer
-from backend.database.storage_manager import storage_manager, get_async_storage
+from backend.database.storage_manager import storage_manager
+from backend.services.rag_service import RAGService
+from backend.services.vector_store_service import VectorStoreService
+from backend.services.fallback_embedding_service import FallbackEmbeddingService
+
 
 logger = logging.getLogger(__name__)
 
@@ -91,31 +96,10 @@ class DocumentSearchEngine:
             # Limit results
             documents = filtered_docs[:limit]
 
-            # Get summaries for these documents
-            summaries = []
-            insights = []
-
-            for doc in documents:
-                # Get document summaries if available
-                doc_summaries = await self.storage.get_fiscal_documents(
-                    id=doc['id'], page=1, page_size=1
-                )
-                if doc_summaries.items:
-                    # Extract summary text from document data (if stored)
-                    pass
-
-                # Get analysis insights for this document
-                doc_insights = await self.storage.get_fiscal_documents(
-                    id=doc['id'], page=1, page_size=1
-                )
-                if doc_insights.items and doc_insights.items[0].get('classification'):
-                    # Extract insights from classification data
-                    pass
-
             return DocumentContext(
                 documents=documents,
-                summaries=summaries,
-                insights=insights
+                summaries=[],
+                insights=[]
             )
 
         except Exception as e:
@@ -217,100 +201,51 @@ class ChatAgent:
             logger.error("GOOGLE_API_KEY not configured")
             self.model = None
         else:
-            # Configuração do modelo Gemini - tentar 2.0-flash primeiro, depois 1.5-flash
             try:
-                # Tentar modelo mais avançado primeiro
-                model_name = 'gemini-2.0-flash-exp'
-                try:
-                    self.model = ChatGoogleGenerativeAI(
-                        model=model_name,
-                        google_api_key=GOOGLE_API_KEY,
-                        temperature=0.0,
-                        request_timeout=30
-                    )
-                    self.model_name = model_name
-                    logger.info(f"✅ Successfully initialized Gemini model: {model_name}")
-                except Exception as e:
-                    logger.warning(f"Gemini 2.0-flash not available: {e}")
-                    # Fallback para 1.5-flash
-                    model_name = 'gemini-1.5-flash'
-                    self.model = ChatGoogleGenerativeAI(
-                        model=model_name,
-                        google_api_key=GOOGLE_API_KEY,
-                        temperature=0.0,
-                        request_timeout=30
-                    )
-                    self.model_name = model_name
-                    logger.info(f"✅ Successfully initialized fallback Gemini model: {model_name}")
+                model_name = 'gemini-2.0-flash'
+                self.model = ChatGoogleGenerativeAI(
+                    model=model_name,
+                    google_api_key=GOOGLE_API_KEY,
+                    temperature=0.0,
+                    request_timeout=30
+                )
+                self.model_name = model_name
+                logger.info(f"✅ Successfully initialized Gemini model: {model_name}")
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"❌ Failed to initialize Gemini models: {error_msg}")
                 if "quota" in error_msg.lower() or "429" in error_msg:
                     friendly_msg = (
-                        "Limite de quota da API do Gemini excedido.\n\n"
-                        "🔄 **Verifique seu plano e tente novamente:**\n"
-                        "1. Acesse: https://ai.google.dev/gemini-api/docs/rate-limits\n"
-                        "2. Considere usar uma chave API diferente\n"
-                        "3. Aguarde a liberação da quota (geralmente 1-2 horas)\n\n"
-                        "💡 Alternativamente, configure uma chave API do OpenAI em .streamlit/secrets.toml"
+                        "Limite de quota da API do Gemini excedido."
                     )
                 else:
                     friendly_msg = (
-                        "Erro ao inicializar modelos Gemini.\n\n"
-                        "💡 Para resolver:\n"
-                        "1. Verifique se a GOOGLE_API_KEY está correta em .streamlit/secrets.toml\n"
-                        "2. Certifique-se de que sua conta tem acesso aos modelos Gemini\n"
-                        "3. Considere usar uma chave API do OpenAI como alternativa"
+                        "Erro ao inicializar modelos Gemini."
                     )
                 raise Exception(friendly_msg) from e
 
-        # Simple conversation history (replaces deprecated LangChain memory)
-        self.conversation_history = {}
-
         # System prompt
         self.system_prompt = """
-        Você é um assistente especialista em documentos fiscais brasileiros. Responda sempre em português de forma clara, precisa e útil.
+Você é um assistente fiscal especialista em documentos fiscais brasileiros. Responda de forma consultiva, clara e proativa, sempre considerando o histórico da sessão.
 
-        **Diretrizes Gerais:**
-        1. Use os dados fornecidos pelo sistema para responder com 100% de precisão
-        2. Seja específico com números, quantidades e valores
-        3. Use formatação markdown para melhorar a legibilidade
-        4. Responda de forma natural e conversacional
-        5. Foque nos dados reais, não em conhecimento geral
+Regras:
+- Analise a pergunta e o contexto da conversa.
+- Classifique: metadados (lista/contagem), conteúdo (RAG/validação), ou procedural/howto.
+- Para howto, sempre explique passo a passo, mesmo sem documento fiscal.
+- Use dados fornecidos, mas sempre acrescente análise e recomendações.
+- Nunca diga que não encontrou informação em perguntas howto: sempre oriente tecnicamente.
+- Use Markdown para organizar e destacar informações.
 
-        **Para perguntas sobre contagem:**
-        - Destaque o total de documentos
-        - Mencione o valor total se disponível
-        - Inclua distribuição por categoria com percentuais
-        - Seja direto e informativo
-
-        **Para pedidos de lista:**
-        - Apresente os documentos de forma organizada
-        - Inclua tipo, emissor, valor e data quando disponível
-        - Use tabelas ou listas numeradas para clareza
-        - Mencione se está mostrando apenas parte dos documentos
-
-        **Para resumos/categorias:**
-        - Foque na distribuição por tipo de documento
-        - Inclua percentuais para cada categoria
-        - Mencione os principais emissores
-        - Destaque padrões ou observações relevantes
-
-        **Para perguntas específicas:**
-        - Use o contexto fornecido para responder
-        - Seja preciso com os dados disponíveis
-        - Explique se alguma informação não está disponível
-
-        Responda sempre baseado nos dados fornecidos, não invente informações.
-        """
+Exemplo:
+Usuário: "Como corrigir erro de rejeição 215?"
+Resposta: "Rejeição 215 indica CNPJ inválido. Verifique o CNPJ do emitente no XML, sem caracteres extras, e se corresponde ao cadastro na Sefaz."
+"""
 
     async def create_session(self, session_name: str = None) -> str:
         """Create a new chat session."""
-
         try:
             session = self.storage.create_chat_session(session_name)
             return session['id']
-
         except Exception as e:
             logger.error(f"Error creating chat session: {e}")
             raise
@@ -323,10 +258,8 @@ class ChatAgent:
         metadata: Dict[str, Any] = None
     ) -> None:
         """Save a message to the chat session."""
-
         try:
             self.storage.save_chat_message(session_id, message_type, content, metadata or {})
-
         except Exception as e:
             logger.error(f"Error saving message: {e}")
 
@@ -334,18 +267,24 @@ class ChatAgent:
         """Get conversation history for display."""
         try:
             messages = self.storage.get_chat_messages(session_id, limit=50)
-            # Convert to the format expected by the frontend
             return messages
-
         except Exception as e:
             logger.error(f"Error getting conversation history: {e}")
             return []
 
     async def get_conversation_context(self, session_id: str) -> str:
-        """Get conversation history as context for the LLM."""
+        """Get conversation history as context for the LLM, including consultative summary and last exchanges."""
         try:
-            return self.storage.get_chat_context(session_id, limit=5)
-
+            history = self.storage.get_chat_messages(session_id, limit=50)
+            summary = self._summarize_conversation_context(history)
+            # Seleciona as últimas 5 mensagens (perguntas e respostas)
+            last_msgs = history[-10:] if len(history) >= 10 else history
+            formatted_msgs = []
+            for msg in last_msgs:
+                who = 'Usuário' if msg.get('message_type') == 'user' else 'Assistente'
+                formatted_msgs.append(f"[{who}]: {msg.get('content','').strip()}")
+            last_msgs_str = '\n'.join(formatted_msgs)
+            return f"Resumo da sessão:\n{summary}\n\nHistórico recente:\n{last_msgs_str}"
         except Exception as e:
             logger.error(f"Error getting conversation context: {e}")
             return "Erro ao carregar histórico da conversa."
@@ -354,148 +293,136 @@ class ChatAgent:
         """Obtém um resumo dos documentos com base nos filtros fornecidos."""
         return await self.document_analyzer.get_documents_summary(filters)
 
-    async def _get_all_documents_summary(self, time_filter=None) -> Dict[str, Any]:
+    async def _get_all_documents_summary(self, time_filter: Optional[Union[str, datetime]] = None) -> Dict[str, Any]:
         """
         Obtém um resumo dos documentos para análise de categorias.
         
         Args:
             time_filter: Filtra documentos criados após esta data/hora.
-                        Se None, retorna todos os documentos.
+                       Pode ser uma string de linguagem natural (ex: "hoje") ou um objeto datetime.
         """
-        return await self.document_analyzer.get_all_documents_summary(time_filter=time_filter)
+        parsed_time_filter = None
+        if isinstance(time_filter, str):
+            parsed_time_filter = self._parse_time_filter(time_filter)
+        else:
+            parsed_time_filter = time_filter
 
-    def _is_summary_request(self, query: str) -> bool:
-        """Verifica se a pergunta é sobre resumo/categorias de documentos."""
+        return await self.document_analyzer.get_all_documents_summary(time_filter=parsed_time_filter)
+
+    def _detect_validation_query(self, query: str) -> Optional[Dict[str, Any]]:
+        """Heuristically detect validation-related and procedural/howto queries without invoking the LLM."""
+
+        validation_keywords = [
+            'validaç',
+            'validac',
+            'inconsistência',
+            'inconsistencia',
+            'status da validação',
+            'status de validação',
+            'status da validacao',
+            'status de validacao'
+        ]
+        howto_keywords = [
+            'como ', 'como faço', 'como verificar', 'como corrigir', 'me ensina', 'me explique', 'tutorial', 'passo a passo', 'o que significa', 'explica', 'explicar', 'explicação', 'orientação', 'procedimento', 'validador', 'assinar xml', 'validar xml', 'corrigir xml', 'resolver erro', 'resolver rejeição', 'por que', 'motivo do erro'
+        ]
+
         query_lower = query.lower()
-        summary_keywords = [
-            'resumo', 'categorias', 'tipos de documentos', 'distribuição',
-            'quantos documentos', 'quais categorias', 'quais tipos',
-            'visão geral', 'análise geral', 'estatísticas', 'estatistica',
-            'estatísticas dos documentos', 'estatistica dos documentos',
-            'resumo dos documentos', 'categorias de documentos', 'tipos de nota',
-            'quais são as categorias', 'quantos de cada tipo', 'distribuição de documentos'
-        ]
-        count_keywords = [
-            'quantidade total', 'quantos documentos', 'quantas notas',
-            'total de notas', 'número total', 'contagem total'
-        ]
-        list_keywords = ['lista', 'listar', 'todos os documentos', 'todas as notas', 'me traga uma lista']
+        # Procedural/howto detection
+        if any(kw in query_lower for kw in howto_keywords):
+            return {'intent': 'howto', 'params': {}}
+        # Validation detection
+        if any(keyword in query_lower for keyword in validation_keywords):
+            params: Dict[str, Any] = {}
+            reference = self._extract_document_reference(query)
+            if reference:
+                params['document_reference'] = reference
+            return {'intent': 'validation', 'params': params}
+        return None
 
-        has_summary = any(keyword in query_lower for keyword in summary_keywords)
-        has_count = any(keyword in query_lower for keyword in count_keywords)
-        has_list = any(keyword in query_lower for keyword in list_keywords)
+    def _get_query_intent_with_llm(self, query: str) -> Dict[str, Any]:
+        """Classify the user's query using an LLM to determine the required action."""
+        
+        prompt = f"""
+Classifique a pergunta do usuário em uma destas categorias e extraia parâmetros:
+- count (quantidade de documentos)
+- summary (resumo/distribuição)
+- list (lista de documentos, pode ter filtros)
+- validation (validação/status de documento)
+- rag (conteúdo específico, análise semântica)
+- generic (saudação ou fora das demais)
 
-        return has_summary and not has_count and not has_list
+Parâmetros possíveis: limit, time_filter, order_by, document_reference.
 
-    def _is_list_request(self, query: str) -> bool:
-        """Verifica se a consulta é um pedido de listagem de documentos."""
-        query_lower = query.lower()
+Exemplos:
+Pergunta: "quantas notas temos?"
+Resposta: {{"intent": "count", "params": {{}}}}
+Pergunta: "última nota importada"
+Resposta: {{"intent": "list", "params": {{"limit": 1}}}}
+Pergunta: "validações da NF-e 123"
+Resposta: {{"intent": "validation", "params": {{"document_reference": "NF-e 123"}}}}
 
-        list_keywords = [
-            'listar', 'lista', 'quais são', 'mostrar documentos', 'ver documentos',
-            'listar documentos', 'documentos fiscais', 'notas fiscais', 'mostrar notas',
-            'quero ver', 'quais notas', 'quais documentos', 'listar notas', 'mostrar nota',
-            'documents list', 'invoice list', 'list invoices'
-        ]
+Pergunta do usuário: "{query}"
+Responda APENAS com o JSON.
+"""
+        
+        try:
+            messages = [HumanMessage(content=prompt)]
+            response = self.model.invoke(messages, config={'temperature': 0.0})
+            content = response.content if hasattr(response, 'content') else str(response)
+            
+            json_response_str = content.strip().replace('`', '').replace('json', '')
+            result = json.loads(json_response_str)
+            
+            if 'intent' in result and 'params' in result:
+                return result
+            else:
+                return {'intent': 'rag', 'params': {'query': query}} # Fallback
+                
+        except Exception as e:
+            logger.error(f"Error classifying intent with LLM: {e}")
+            return {'intent': 'rag', 'params': {'query': query}} # Fallback on error
 
-        recent_keywords = [
-            'últimas notas', 'notas recentes', 'últimos documentos',
-            'documentos recentes', 'notas fiscais recentes', 'últimas notas fiscais',
-            'mais recentes', 'notas mais recentes', 'documentos mais recentes',
-            'últimos lançamentos', '10 últimas notas', 'dez últimas notas',
-            'últimos registros', 'registros recentes'
-        ]
+    def _clean_response_content(self, content: str) -> str:
+        # Simple cleaning for now
+        return content.strip()
 
-        analysis_keywords = [
-            'análise criteriosa', 'análise detalhada', 'análise completa',
-            'insights', 'recomendações', 'pontos de atenção', 'resumo crítico',
-            'panorama', 'diagnóstico', 'sugestões'
-        ]
-
-        # Novas palavras-chave para perguntas sobre valores e características
-        value_keywords = [
-            'maior valor', 'menor valor', 'valor mais alto', 'valor mais baixo',
-            'mais caro', 'mais barato', 'qual o maior', 'qual o menor',
-            'valor máximo', 'valor mínimo', 'nota mais cara', 'nota mais barata',
-            'documento mais caro', 'documento mais barato', 'com maior valor',
-            'com menor valor', 'valor total', 'qual a nota', 'qual o documento'
-        ]
-
-        return any(keyword in query_lower for keyword in 
-                  list_keywords + recent_keywords + analysis_keywords + value_keywords)
-
-    def _get_query_intent(self, query: str) -> str:
-        query_lower = query.lower()
-
-        analysis_keywords = [
-            'análise criteriosa', 'análise detalhada', 'análise completa',
-            'insights', 'recomendações', 'pontos de atenção', 'resumo crítico',
-            'panorama', 'diagnóstico', 'sugestões'
-        ]
-
-        recent_keywords = [
-            'últimas notas', 'notas recentes', 'últimos documentos',
-            'documentos recentes', 'notas fiscais recentes', 'últimas notas fiscais',
-            'mais recentes', 'notas mais recentes', 'documentos mais recentes',
-            'últimos lançamentos', 'últimas entradas', 'últimos registros'
-        ]
-
-        if any(keyword in query_lower for keyword in analysis_keywords):
-            return 'analysis'
-        if any(keyword in query_lower for keyword in recent_keywords):
-            return 'recent'
-        return 'generic'
-
-    def _is_count_request(self, query: str) -> bool:
-        """Verifica se a pergunta é sobre contagem específica."""
-        query_lower = query.lower()
-        count_keywords = [
-            'quantidade total', 'quantos documentos', 'quantas notas',
-            'total de notas', 'número total', 'contagem total'
-        ]
-
-        return any(keyword in query_lower for keyword in count_keywords)
-
-    def _prepare_summary_prompt(self, query: str, summary_data: Dict[str, Any]) -> str:
-        """Prepara o contexto para perguntas de resumo de documentos."""
-        context_parts = []
-
-        # Informações básicas
-        total_docs = summary_data['total_documents']
-        context_parts.append(f"📊 **Informações do Banco de Dados:**")
-        context_parts.append(f"- Total de documentos: **{total_docs}**")
-        context_parts.append(f"- Valor total dos documentos: **R$ {summary_data['total_value']:,.2f}**")
-        context_parts.append("")
-
-        # Categorias por tipo
-        if summary_data['by_type']:
-            context_parts.append("📋 **Distribuição por Categoria:**")
-            for category, count in summary_data['by_type'].items():
-                percentage = (count / total_docs) * 100 if total_docs > 0 else 0
-                context_parts.append(f"- **{category}**: {count} documentos ({percentage:.1f}%)")
-
-        # Emissores principais
-        if summary_data['by_issuer']:
-            context_parts.append("")
-            context_parts.append("🏢 **Principais Emissores:**")
-            sorted_issuers = sorted(summary_data['by_issuer'].items(), key=lambda x: x[1], reverse=True)
-            for issuer, count in sorted_issuers[:5]:  # Top 5 emissores
-                context_parts.append(f"- **{issuer}**: {count} documentos")
-
-        # Instruções para resposta
-        context_parts.append("")
-        context_parts.append("📝 **Instruções para a resposta:**")
-        context_parts.append("1. Use os dados fornecidos para criar um resumo preciso")
-        context_parts.append("2. Apresente as informações em formato de tabela quando apropriado")
-        context_parts.append("3. Seja específico sobre quantidades e categorias")
-        context_parts.append("4. Destaque informações importantes em negrito")
-        context_parts.append("5. Responda sempre em português claro e objetivo")
-
-        return "\n".join(context_parts)
-
-    async def _search_documents(self, query: str, limit: int = 5) -> List[Dict]:
-        """Busca documentos relevantes usando busca semântica."""
-        return await self.document_analyzer.search_documents(query, limit)
+    def _summarize_conversation_context(self, history: List[Dict[str, Any]]) -> str:
+        """Build a consultative summary from the conversation history."""
+        if not history:
+            return "Nenhum histórico disponível."
+        # Collect suppliers, CNPJs, validation errors, document types, and recent topics
+        suppliers = set()
+        cnpjs = set()
+        errors = 0
+        docs = set()
+        topics = []
+        for msg in history:
+            meta = msg.get('metadata') or {}
+            if meta.get('documents'):
+                for d in meta['documents']:
+                    if isinstance(d, dict):
+                        if d.get('issuer_cnpj'):
+                            cnpjs.add(d['issuer_cnpj'])
+                        if d.get('issuer_name'):
+                            suppliers.add(d['issuer_name'])
+                        if d.get('validation_status') == 'error':
+                            errors += 1
+                        if d.get('document_type'):
+                            docs.add(d['document_type'])
+            if msg.get('content'):
+                topics.append(msg['content'][:80])
+        summary = []
+        if suppliers:
+            summary.append(f"Fornecedores citados: {', '.join(sorted(suppliers))}")
+        if cnpjs:
+            summary.append(f"CNPJs discutidos: {', '.join(sorted(cnpjs))}")
+        if docs:
+            summary.append(f"Tipos de documento: {', '.join(sorted(docs))}")
+        if errors > 0:
+            summary.append(f"Notas com erro de validação nesta sessão: {errors}")
+        if topics:
+            summary.append(f"Principais tópicos: {', '.join(topics[-3:])}")
+        return '\n'.join(summary) if summary else "Nenhum dado relevante extraído do histórico."
 
     async def generate_response(
         self,
@@ -505,9 +432,8 @@ class ChatAgent:
     ) -> ChatResponse:
         """Generate a response using LLM with caching and context."""
 
-        # Check if Gemini is available
         if not self.model:
-            error_message = "API do Google Gemini não configurada. Verifique se a GOOGLE_API_KEY está definida em .streamlit/secrets.toml"
+            error_message = "API do Google Gemini não configurada."
             await self.save_message(session_id, 'assistant', error_message, {'error': True})
             return ChatResponse(
                 content=error_message,
@@ -515,165 +441,115 @@ class ChatAgent:
                 cached=False
             )
 
-        # Check cache first
-        cached_info: Optional[Dict[str, Any]] = None
-        if context:
-            cached_info = await self.cache.get_cached_response(query, context)
-            if cached_info:
-                cached_session = cached_info.get('cached_session_id')
-                cached_content = cached_info.get('content', '')
-                cached_metadata = cached_info.get('metadata', {})
-                cached_time = cached_info.get('cached_at')
-
-                if cached_session and cached_session == session_id:
-                    annotated_content = "🔁 **Pergunta repetida nesta sessão**\n\n" \
-                        "Reaproveitando a resposta anterior e mantendo o histórico da conversa.\n\n" \
-                        f"{cached_content}"
-                    metadata = {
-                        **cached_metadata,
-                        'cached': True,
-                        'cached_session_id': cached_session,
-                        'cached_at': cached_time,
-                        'tokens_used': 0,
-                        'reused_in_session': True
-                    }
-                    await self.save_message(session_id, 'assistant', annotated_content, metadata)
-                    return ChatResponse(
-                        content=annotated_content,
-                        metadata=metadata,
-                        cached=True
-                    )
-                else:
-                    # Cache pertence a outra sessão – continuar processamento normal
-                    cached_info = None
-
-        # Get relevant document context
-        document_context = DocumentContext(documents=[], summaries=[], insights=[])
-
         try:
-            # Determinar o tipo de pergunta e responder adequadamente
-            if self._is_count_request(query):
-                # Para perguntas sobre contagem total
-                return await self._handle_count_request(session_id, query)
-
-            elif self._is_list_request(query):
-                # Para perguntas sobre lista de documentos
-                return await self._handle_list_request(session_id, query)
-
-            elif self._is_summary_request(query):
-                # Para perguntas sobre resumo/categorias
-                return await self._handle_summary_request(session_id, query)
-
+            # Heuristic detection for validation queries before LLM call
+            heuristic_intent = self._detect_validation_query(query)
+            if heuristic_intent:
+                intent_data = heuristic_intent
             else:
-                # Para perguntas específicas ou gerais - usar busca normal
+                intent_data = self._get_query_intent_with_llm(query)
+            intent = intent_data.get('intent', 'rag')
+            params = intent_data.get('params', {})
+
+            if intent == 'count':
+                return await self._handle_count_request(session_id, query, params)
+            elif intent == 'summary':
+                return await self._handle_summary_request(session_id, query, params)
+            elif intent == 'list':
+                return await self._handle_list_request(session_id, query, params)
+            elif intent == 'validation':
+                return await self._handle_validation_request(session_id, query, params)
+            elif intent == 'howto':
+                return await self._handle_howto_request(session_id, query, params)
+            else: # Handles 'rag' and 'generic'
                 return await self._handle_specific_search(session_id, query, context)
 
         except Exception as e:
-            logger.error(f"Erro ao processar pergunta: {e}")
-            # Fallback para busca genérica
+            logger.error(f"Erro ao processar pergunta: {e}", exc_info=True)
             return await self._handle_specific_search(session_id, query, context)
 
-    async def _handle_count_request(self, session_id: str, query: str) -> ChatResponse:
+    async def _handle_howto_request(self, session_id: str, query: str, params: Dict[str, Any]) -> ChatResponse:
+        """Responde perguntas do tipo howto de forma consultiva, didática e passo a passo."""
+        try:
+            prompt = f"Pergunta procedural/howto do usuário: {query}\nResponda de forma didática, passo a passo, com recomendações técnicas e exemplos se possível. Use Markdown."
+            messages = await self._build_llm_messages(session_id, prompt)
+            response = self.model.invoke(messages)
+            content = self._clean_response_content(response.content)
+            metadata = { 'query_type': 'howto' }
+            await self._persist_assistant_response(session_id, content, metadata)
+            return ChatResponse(content=content, metadata=metadata)
+        except Exception as e:
+            error_message = f"Erro ao responder pergunta procedural/howto: {str(e)}"
+            await self.save_message(session_id, 'assistant', error_message, {'error': True})
+            return ChatResponse(content=error_message, metadata={'error': True})
+
+    async def _handle_count_request(self, session_id: str, query: str, params: Dict[str, Any]) -> ChatResponse:
         """Handle requests for document counts using LLM for natural response."""
         try:
             summary_data = await self._get_all_documents_summary()
 
             if not summary_data or summary_data['total_documents'] == 0:
-                # Use Gemini for natural response even when no documents
-                prompt = f"""O usuário perguntou sobre a quantidade de documentos no banco de dados.
-
-**Dados encontrados:**
-- Total de documentos: 0
-- Não há documentos para análise
-
-Por favor, responda de forma natural e informativa sobre a ausência de documentos no sistema."""
+                prompt = "Não há documentos no sistema. Informe isso ao usuário."
             else:
-                # Prepare raw data for Gemini
                 total = summary_data['total_documents']
                 total_value = summary_data['total_value']
                 categories = summary_data['by_type']
-                issuers = summary_data['by_issuer']
+                prompt = f"Total: {total} documentos | Valor total: R$ {total_value:,.2f} | Categorias: {json.dumps(categories)}"
 
-                prompt = f"""O usuário perguntou sobre a quantidade total de documentos no banco de dados.
+            messages = await self._build_llm_messages(session_id, prompt)
+            response = self.model.invoke(messages)
+            content = self._clean_response_content(response.content)
+            
+            metadata = { 'query_type': 'count', 'raw_data': summary_data }
+            await self._persist_assistant_response(session_id, content, metadata)
 
-**Dados brutos do banco:**
-- Total de documentos fiscais: {total}
-- Valor total dos documentos: R$ {total_value:,.2f}
-- Número de categorias diferentes: {len(categories)}
-- Número de emissores diferentes: {len(issuers)}
-
-**Categorias encontradas:**
-"""
-                for category, count in categories.items():
-                    percentage = (count / total) * 100
-                    prompt += f"- {category}: {count} documentos ({percentage:.1f}%)\n"
-
-                prompt += f"""
-**Principais emissores:**
-"""
-                sorted_issuers = sorted(issuers.items(), key=lambda x: x[1], reverse=True)
-                for issuer, count in sorted_issuers[:5]:
-                    prompt += f"- {issuer}: {count} documentos\n"
-
-                prompt += f"""
-
-**Instruções:**
-Responda de forma natural e conversacional, como se estivesse falando diretamente com o usuário.
-Use os dados fornecidos para dar uma resposta precisa e útil.
-Estruture a resposta de forma clara, usando negrito para destacar números importantes.
-Seja específico sobre quantidades e categorias encontradas.
-Responda em português."""
-
-            # Send to Gemini for natural formatting
-            messages = [
-                SystemMessage(content=self.system_prompt),
-                HumanMessage(content=prompt)
-            ]
-
-            response = self.model.invoke(messages, config={
-                'temperature': 0.1,
-                'max_tokens': 800,
-                'top_p': 0.9,
-                'frequency_penalty': 0.3,
-                'presence_penalty': 0.3
-            })
-
-            content = response.content if hasattr(response, 'content') else str(response)
-            content = self._clean_response_content(content)
-
-            # Create metadata
-            metadata = {
-                'model': self.model_name or 'unknown',
-                'timestamp': datetime.now().isoformat(),
-                'tokens_used': len(content.split()),
-                'query_type': 'count',
-                'raw_data': summary_data
-            }
-
-            await self.save_message(session_id, 'assistant', content, metadata)
-
-            return ChatResponse(
-                content=content,
-                metadata=metadata,
-                cached=False,
-                tokens_used=metadata['tokens_used']
-            )
+            return ChatResponse(content=content, metadata=metadata)
 
         except Exception as e:
             error_message = f"Erro ao buscar contagem de documentos: {str(e)}"
             await self.save_message(session_id, 'assistant', error_message, {'error': True})
-            return ChatResponse(content=error_message, metadata={'error': True}, cached=False)
+            return ChatResponse(content=error_message, metadata={'error': True})
+
+    async def _build_llm_messages(self, session_id: str, prompt: str, contexto_legal: Optional[str] = None, ramo_atividade: Optional[str] = None) -> List[Union[SystemMessage, HumanMessage]]:
+        """Build the list of messages for the LLM, including conversation history and dynamic context."""
+        conversation_context = await self.get_conversation_context(session_id)
+        contexto_extra = ""
+        if contexto_legal:
+            contexto_extra += f"\n[Contexto Legal]: {contexto_legal}"
+        if ramo_atividade:
+            contexto_extra += f"\n[Ramo de Atividade]: {ramo_atividade}"
+        full_prompt = f"""**Histórico da Conversa Anterior:**
+{conversation_context}{contexto_extra}
+
+**Dados para a Pergunta Atual:**
+{prompt}"""
+        return [
+            SystemMessage(content=self.system_prompt),
+            HumanMessage(content=full_prompt)
+        ]
+
+    def _parse_time_filter(self, time_filter_str: Optional[str]) -> Optional[datetime]:
+        """Parse a natural language time filter string into a datetime object."""
+        if not time_filter_str:
+            return None
+
+        now = datetime.now()
+        filter_lower = time_filter_str.lower()
+
+        if 'hoje' in filter_lower:
+            return now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if 'ontem' in filter_lower:
+            return (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+        match = re.search(r'últimos (\d+) dias', filter_lower)
+        if match:
+            days = int(match.group(1))
+            return now - timedelta(days=days)
+
+        return None
 
     def _get_metadata_template(self, is_recent_query: bool = False, error: bool = False) -> Dict[str, Any]:
-        """Return a standardized metadata template.
-        
-        Args:
-            is_recent_query: Whether this is a recent documents query
-            error: Whether this is an error response
-            
-        Returns:
-            Dict with standardized metadata structure
-        """
+        """Return a standardized metadata template."""
         return {
             'model': 'system' if error else (self.model_name or 'unknown'),
             'timestamp': datetime.now().isoformat(),
@@ -685,813 +561,743 @@ Responda em português."""
             **({'error': True} if error else {})
         }
 
-    async def _handle_list_request(self, session_id: str, query: str) -> ChatResponse:
+    def _build_metadata_documents(self, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Prepare a sanitized list of documents to store in message metadata."""
+
+        metadata_documents: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        for doc in documents:
+            if not isinstance(doc, dict):
+                continue
+
+            doc_id = doc.get('id')
+            full_doc: Optional[Dict[str, Any]] = None
+
+            if doc_id and doc_id not in seen_ids:
+                try:
+                    full_doc = self.storage.get_fiscal_document(doc_id)
+                except Exception as fetch_error:
+                    logger.debug(f"Não foi possível carregar documento completo {doc_id}: {fetch_error}")
+
+            selected_doc = full_doc or doc
+            metadata_doc = self._prepare_document_metadata(selected_doc if isinstance(selected_doc, dict) else {})
+
+            if metadata_doc:
+                metadata_documents.append(metadata_doc)
+                doc_identifier = metadata_doc.get('id')
+                if isinstance(doc_identifier, str):
+                    seen_ids.add(doc_identifier)
+
+        return metadata_documents
+
+    def _prepare_document_metadata(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Sanitize document data before storing in metadata."""
+
+        if not document:
+            return None
+
+        issuer_cnpj = document.get('issuer_cnpj')
+        issuer_name = document.get('issuer_name')
+
+        extracted = document.get('extracted_data')
+        if isinstance(extracted, str):
+            try:
+                extracted = json.loads(extracted)
+            except (TypeError, ValueError):
+                extracted = {}
+
+        if isinstance(extracted, dict):
+            issuer_data = extracted.get('emitente') or {}
+            issuer_cnpj = issuer_cnpj or issuer_data.get('cnpj')
+            issuer_name = issuer_name or issuer_data.get('razao_social') or issuer_data.get('nome')
+
+        metadata_doc = {
+            'id': document.get('id'),
+            'file_name': document.get('file_name'),
+            'document_number': document.get('document_number'),
+            'document_key': document.get('document_key'),
+            'document_type': document.get('document_type'),
+            'issuer_cnpj': issuer_cnpj,
+            'issuer_name': issuer_name,
+            'validation_status': document.get('validation_status'),
+            'created_at': document.get('created_at')
+        }
+
+        sanitized = {
+            key: self._sanitize_metadata_value(value)
+            for key, value in metadata_doc.items()
+            if value not in (None, '', [])
+        }
+
+        return sanitized or None
+
+    def _sanitize_metadata_value(self, value: Any) -> Any:
+        """Ensure metadata values are JSON serializable."""
+
+        if isinstance(value, (datetime, date, time)):
+            return value.isoformat()
+        if isinstance(value, Decimal):
+            return float(value)
+        if isinstance(value, (bytes, bytearray)):
+            return value.decode('utf-8', errors='ignore')
+        return value
+
+    async def _get_recent_documents_from_history(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return the most recent assistant documents metadata from conversation history."""
+
+        history = await self.get_conversation_history(session_id)
+
+        for message in reversed(history):
+            if not isinstance(message, dict):
+                continue
+            if message.get('message_type') != 'assistant':
+                continue
+
+            metadata = message.get('metadata') or {}
+            documents = metadata.get('documents') if isinstance(metadata, dict) else []
+
+            if isinstance(documents, list) and documents:
+                return [doc for doc in documents if isinstance(doc, dict)]
+
+        return []
+
+    def _find_documents_by_reference(self, reference: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Search storage for documents matching a textual reference."""
+
+        if not reference:
+            return []
+
+        try:
+            search_page = self.storage.get_fiscal_documents(page=1, page_size=100)
+            documents = getattr(search_page, 'items', [])
+        except Exception as e:
+            logger.error(f"Erro ao buscar documentos por referência: {e}")
+            return []
+
+        matched = [doc for doc in documents if isinstance(doc, dict) and self._matches_reference(doc, reference)]
+
+        return self._load_full_documents(matched, limit)
+
+    def _load_full_documents(self, documents: List[Dict[str, Any]], limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Ensure we have full document data for the provided entries."""
+
+        results: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        for doc in documents:
+            if not isinstance(doc, dict):
+                continue
+
+            doc_id = doc.get('id')
+            if doc_id and doc_id in seen_ids:
+                continue
+
+            full_doc = None
+            if doc_id:
+                try:
+                    full_doc = self.storage.get_fiscal_document(doc_id)
+                except Exception as fetch_error:
+                    logger.debug(f"Não foi possível carregar documento completo {doc_id}: {fetch_error}")
+
+            selected_doc = full_doc or doc
+
+            if isinstance(selected_doc, dict):
+                results.append(selected_doc)
+                if doc_id:
+                    seen_ids.add(doc_id)
+            if limit and len(results) >= limit:
+                break
+
+        return results
+
+    async def _handle_list_request(self, session_id: str, query: str, params: Dict[str, Any]) -> ChatResponse:
         """Handle requests for document lists using LLM for natural response."""
         try:
             query_lower = query.lower()
-            time_filter = None
 
-            intent = self._get_query_intent(query)
-            is_recent_query = intent == 'recent'
-            is_analysis_request = intent == 'analysis'
+            doc_limit = params.get('limit')
+            order_by = params.get('order_by', 'created_at')
+            time_filter_str = params.get('time_filter')
+            time_filter = self._parse_time_filter(time_filter_str)
 
-            # Detecta se é uma pergunta sobre valores extremos
-            is_value_query = any(keyword in query_lower for keyword in [
-                'maior valor', 'menor valor', 'valor mais alto', 'valor mais baixo',
-                'mais caro', 'mais barato', 'valor máximo', 'valor mínimo',
-                'nota mais cara', 'nota mais barata', 'documento mais caro', 'documento mais barato'
-            ])
-
-            # Verifica se há um filtro de tempo específico na consulta
-            import re
-            from datetime import datetime, timedelta
+            is_recent_query = (order_by == 'created_at') or (time_filter is not None)
             
-            time_patterns = [
-                (r'(\d+)\s*minutos?\s*atrás', 'minutes'),
-                (r'(\d+)\s*horas?\s*atrás', 'hours'),
-                (r'(\d+)\s*dias?\s*atrás', 'days'),
-                (r'(\d+)\s*semanas?\s*atrás', 'weeks'),
-                (r'últimos?\s*(\d+)\s*minutos?', 'minutes'),
-                (r'últimas?\s*(\d+)\s*horas?', 'hours'),
-                (r'últimos?\s*(\d+)\s*dias?', 'days'),
-                (r'últimas?\s*(\d+)\s*semanas?', 'weeks'),
-                (r'nos\s*últimos?\s*(\d+)\s*minutos?', 'minutes'),
-                (r'nas\s*últimas?\s*(\d+)\s*horas?', 'hours'),
-                (r'nos\s*últimos?\s*(\d+)\s*dias?', 'days'),
-                (r'nas\s*últimas?\s*(\d+)\s*semanas?', 'weeks'),
-            ]
-            
-            doc_limit = None
-
-            for pattern, unit in time_patterns:
-                match = re.search(pattern, query_lower)
-                if match:
-                    value = int(match.group(1))
-                    delta = timedelta(**{unit: value})
-                    time_filter = datetime.now() - delta
-                    is_recent_query = True
-                    break
-
-            # Detect explicit quantity requests (e.g., "5 últimos documentos")
-            quantity_patterns = [
-                r'(?:os|as)?\s*(\d+)\s*(?:últimos|últimas|mais\s+recentes|recentes)',
-                r'(?:listar|mostrar)\s*(\d+)\s*(?:documentos|notas)'
-            ]
-
-            for quantity_pattern in quantity_patterns:
-                match = re.search(quantity_pattern, query_lower)
-                if match:
-                    try:
-                        doc_limit = max(1, int(match.group(1)))
-                        break
-                    except ValueError:
-                        continue
-
-            if doc_limit is None:
-                number_words = {
-                    'um': 1, 'uma': 1,
-                    'dois': 2, 'duas': 2,
-                    'três': 3, 'tres': 3,
-                    'quatro': 4,
-                    'cinco': 5,
-                    'seis': 6,
-                    'sete': 7,
-                    'oito': 8,
-                    'nove': 9,
-                    'dez': 10,
-                    'quinze': 15
-                }
-                for word, value in number_words.items():
-                    if word in query_lower and any(trigger in query_lower for trigger in ['últimos', 'últimas', 'recentes']) and value:
-                        doc_limit = value
-                        break
-            
-            # Busca os documentos com ordenação por data e filtro de tempo
             summary_data = await self._get_all_documents_summary(time_filter=time_filter)
-            documents_to_show = []  # Initialize as empty list
-            total = 0
             
             if not summary_data or summary_data['total_documents'] == 0:
-                # Return early with a friendly message when no documents are found
                 message = "📭 Não foram encontrados documentos no sistema com os critérios fornecidos."
                 metadata = self._get_metadata_template(is_recent_query=is_recent_query)
-                await self.save_message(session_id, 'assistant', message, metadata)
-                return ChatResponse(content=message, metadata=metadata, cached=False)
-            else:
-                # Prepara os dados brutos para o Gemini
-                total = summary_data['total_documents']
-                documents = summary_data['documents']
-                
-                # Ordena os documentos baseado no tipo de consulta
-                if is_value_query:
-                    # Para perguntas sobre valores, ordena por valor (do maior para o menor)
-                    # Primeiro filtra documentos que têm valor válido
-                    documents_with_value = []
-                    for doc in documents:
-                        if doc.get('extracted_data'):
-                            try:
-                                data = doc['extracted_data']
-                                if isinstance(data, str):
-                                    data = json.loads(data)
-                                if isinstance(data, dict):
-                                    value = data.get('total', data.get('valor_total', data.get('value', None)))
-                                    if value is not None and value != 'N/A':
-                                        try:
-                                            value = float(value)
-                                            doc['_sort_value'] = value
-                                            documents_with_value.append(doc)
-                                        except (ValueError, TypeError):
-                                            pass
-                            except Exception:
-                                pass
-                    
-                    # Se encontrou documentos com valor, ordena por valor
-                    if documents_with_value:
-                        # Verifica se é pergunta sobre maior ou menor valor
-                        is_max_value = any(keyword in query_lower for keyword in [
-                            'maior valor', 'valor mais alto', 'mais caro', 'valor máximo', 
-                            'nota mais cara', 'documento mais caro'
-                        ])
-                        
-                        if is_max_value:
-                            documents_sorted = sorted(documents_with_value, key=lambda x: x['_sort_value'], reverse=True)
-                        else:
-                            documents_sorted = sorted(documents_with_value, key=lambda x: x['_sort_value'])
-                    else:
-                        # Fallback para ordenação por data se não conseguir extrair valores
-                        documents_sorted = sorted(
-                            documents, 
-                            key=lambda x: x.get('created_at', ''), 
-                            reverse=True
-                        )
-                else:
-                    # Ordenação padrão por data de criação (mais recentes primeiro)
-                    documents_sorted = sorted(
-                        documents, 
-                        key=lambda x: x.get('created_at', ''), 
-                        reverse=True
-                    )
-                
-                # Para consultas sobre valores extremos, mostra apenas 1 documento por padrão
-                if is_value_query and doc_limit is None:
-                    default_limit = 1
-                elif is_recent_query:
-                    default_limit = 10
-                else:
-                    default_limit = 15
-                
-                limit = doc_limit if (doc_limit and doc_limit > 0) else default_limit
-                documents_to_show = documents_sorted[:limit]
+                await self._persist_assistant_response(session_id, message, metadata)
+                return ChatResponse(content=message, metadata=metadata)
 
-                # Prepara o prompt baseado no tipo de consulta
-                base_prompt = []
-                if is_analysis_request:
-                    base_prompt.append("O usuário pediu uma análise criteriosa dos documentos fiscais importados.")
-                    base_prompt.append(
-                        "Além de listar os documentos relevantes, forneça uma análise detalhada com: "
-                        "principais categorias e emissores, valores agregados, status de processamento "
-                        "e recomendações ou próximos passos para o usuário."
-                    )
-                elif is_value_query:
-                    if any(keyword in query_lower for keyword in [
-                        'maior valor', 'valor mais alto', 'mais caro', 'valor máximo', 
-                        'nota mais cara', 'documento mais caro'
-                    ]):
-                        base_prompt.append("O usuário quer saber qual é a nota fiscal com o maior valor total.")
-                        base_prompt.append("Mostre apenas o documento com o maior valor encontrado.")
-                    else:
-                        base_prompt.append("O usuário quer saber qual é a nota fiscal com o menor valor total.")
-                        base_prompt.append("Mostre apenas o documento com o menor valor encontrado.")
-                elif is_recent_query:
-                    base_prompt.append("O usuário pediu uma lista com as notas fiscais mais recentes do banco de dados.")
-                else:
-                    base_prompt.append("O usuário pediu uma lista com documentos fiscais do banco de dados.")
+            total = summary_data['total_documents']
+            documents = summary_data['documents']
+            
+            documents_sorted = documents # The summary already returns them sorted
+            
+            limit = doc_limit if (doc_limit and doc_limit > 0) else 10
+            documents_to_show = documents_sorted[:limit]
 
-                base_prompt.append("\n**Dados brutos encontrados:**")
-                base_prompt.append(f"- Total de documentos: {total}")
-                base_prompt.append(f"- Valor total: R$ {summary_data['total_value']:.2f}")
+            prompt = f"Lista de documentos (máx {limit}): {json.dumps(documents_to_show, default=str)}"
 
-                if is_recent_query:
-                    base_prompt.append(f"- Mostrando as {len(documents_to_show)} notas mais recentes")
-                else:
-                    base_prompt.append(f"- Mostrando {len(documents_to_show)} de {total} documentos")
+            messages = await self._build_llm_messages(session_id, prompt)
+            response = self.model.invoke(messages)
+            content = self._clean_response_content(response.content)
 
-                if is_analysis_request:
-                    # Adiciona visão agregada para embasar a análise
-                    by_type = summary_data.get('by_type', {})
-                    if by_type:
-                        base_prompt.append("\n**Distribuição por tipo:**")
-                        for doc_type, count in sorted(by_type.items(), key=lambda item: item[1], reverse=True):
-                            percentage = (count / total * 100) if total else 0
-                            base_prompt.append(f"- {doc_type}: {count} documentos ({percentage:.1f}%)")
-
-                    by_issuer = summary_data.get('by_issuer', {})
-                    if by_issuer:
-                        base_prompt.append("\n**Principais emissores:**")
-                        for issuer, count in sorted(by_issuer.items(), key=lambda item: item[1], reverse=True)[:5]:
-                            percentage = (count / total * 100) if total else 0
-                            base_prompt.append(f"- {issuer}: {count} documentos ({percentage:.1f}%)")
-
-                    status_counts: Dict[str, int] = {}
-                    for doc in documents:
-                        status = (doc.get('validation_status') or 'desconhecido').lower()
-                        status_counts[status] = status_counts.get(status, 0) + 1
-
-                    if status_counts:
-                        base_prompt.append("\n**Status de processamento:**")
-                        for status, count in sorted(status_counts.items(), key=lambda item: item[1], reverse=True):
-                            percentage = (count / total * 100) if total else 0
-                            base_prompt.append(f"- {status}: {count} documentos ({percentage:.1f}%)")
-
-                    base_prompt.append("\nInclua recomendações práticas com base nesses dados (por exemplo, prioridades de validação ou consolidação financeira).")
-
-                base_prompt.append("")
-                prompt = "\n".join(base_prompt)
-                
-                # Adiciona detalhes de cada documento
-                for i, doc in enumerate(documents_to_show, 1):
-                    doc_type = doc.get('categorized_type', 'N/A')
-                    file_name = doc.get('file_name', 'N/A')
-                    cnpj = doc.get('issuer_cnpj', 'N/A')
-                    
-                    # Formata a data e hora de forma mais amigável
-                    created_at = doc.get('created_at')
-                    formatted_date = 'Data não disponível'
-                    if created_at:
-                        try:
-                            if isinstance(created_at, datetime):
-                                dt = created_at
-                            elif isinstance(created_at, str):
-                                dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                            else:
-                                dt = None
-
-                            if dt is not None:
-                                if dt.tzinfo is None:
-                                    dt = dt.replace(tzinfo=timezone.utc)
-                                formatted_date = dt.astimezone(timezone.utc).strftime('%d/%m/%Y às %H:%M')
-                            elif isinstance(created_at, str):
-                                formatted_date = created_at[:10]
-                        except (ValueError, TypeError):
-                            if isinstance(created_at, str):
-                                formatted_date = created_at[:10]
-                    
-                    # Extrai o valor
-                    value = 'N/A'
-                    if doc.get('extracted_data'):
-                        try:
-                            data = doc['extracted_data']
-                            if isinstance(data, str):
-                                data = json.loads(data)
-                            if isinstance(data, dict):
-                                value = data.get('total', data.get('valor_total', data.get('value', 'N/A')))
-                                # Formata o valor monetário
-                                if value not in ['N/A', None]:
-                                    try:
-                                        value = float(value)
-                                        value = f'R$ {value:,.2f}'.replace('.', 'v').replace(',', '.').replace('v', ',')
-                                    except (ValueError, TypeError):
-                                        pass
-                        except Exception as e:
-                            logger.warning(f"Erro ao extrair valor do documento: {e}")
-                    
-                    # Adiciona detalhes do documento ao prompt
-                    prompt += f"{i}. **{doc_type}**\n"
-                    prompt += f"   📄 **Arquivo:** {file_name}\n"
-                    prompt += f"   🏢 **CNPJ Emissor:** {cnpj}\n"
-                    prompt += f"   💰 **Valor:** {value}\n"
-                    prompt += f"   📅 **Data/Hora:** {formatted_date}\n"
-                    # Adiciona status de validação se disponível
-                    if doc.get('validation_status'):
-                        status_emoji = '✅' if doc['validation_status'] == 'valid' else '⚠️' if doc['validation_status'] == 'warning' else '❌'
-                        prompt += f"   {status_emoji} **Status:** {doc['validation_status'].capitalize()}\n"
-                    prompt += "\n"
-
-                if not is_recent_query and total > limit:
-                    prompt += f"*(Mostrando apenas os primeiros {limit} documentos. Total no banco: {total})*\n\n"
-                elif is_recent_query and len(documents_to_show) < total:
-                    prompt += f"*(Mostrando as {len(documents_to_show)} notas mais recentes. Total no banco: {total})*\n\n"
-
-                # Instruções para a IA
-                prompt += """**Instruções:**
-Responda de forma natural e conversacional, como se estivesse apresentando os documentos para o usuário.
-"""
-                if is_value_query:
-                    prompt += """- Esta é uma pergunta específica sobre valores dos documentos
-- Destaque claramente qual é o documento com o valor mais alto/baixo encontrado
-- Mostre o valor de forma destacada e formatada corretamente
-- Explique que este é o resultado baseado nos dados disponíveis
-"""
-                elif is_recent_query:
-                    prompt += """- Se for uma consulta por notas recentes, destaque que são as mais atuais
-"""
-                else:
-                    prompt += """- Para pedidos de análise criteriosa, vá além da lista: forneça interpretação, destaques e próximos passos
-"""
-
-                prompt += """- Inclua informações importantes como tipo, emissor, valor e data/hora
-- Formate os valores monetários corretamente (R$ X.XXX,XX)
-- Use formatação markdown para melhorar a legibilidade (negrito, itálico, listas)
-- Seja específico sobre quantos documentos estão sendo mostrados
-- Inclua o total de documentos no banco para referência
-- Responda em português"""
-
-            try:
-                # Envia para o Gemini para formatação natural
-                messages = [
-                    SystemMessage(content=self.system_prompt),
-                    HumanMessage(content=prompt)
-                ]
-
-                response = self.model.invoke(messages, config={
-                    'temperature': 0.2,
-                    'max_tokens': 2000,  # Aumentado para permitir respostas mais completas
-                    'top_p': 0.9,
-                    'frequency_penalty': 0.3,
-                    'presence_penalty': 0.3
-                })
-
-                content = response.content if hasattr(response, 'content') else str(response)
-                content = self._clean_response_content(content)
-
-                # Create tracking metadata using the template
-                metadata = self._get_metadata_template(is_recent_query=is_recent_query)
-                metadata.update({
-                    'model': self.model_name or 'unknown',
-                    'tokens_used': len(content.split()),
-                    'document_count': len(documents_to_show) if documents_to_show else 0,
-                    'total_documents': total
-                })
-            except Exception as e:
-                logger.error(f"Erro ao processar resposta do modelo: {str(e)}")
-                content = "🔍 Desculpe, ocorreu um erro ao processar sua solicitação. Tente novamente mais tarde."
-                metadata = self._get_metadata_template(is_recent_query=is_recent_query, error=True)
-                metadata['error'] = str(e)
-
+            metadata_documents = self._build_metadata_documents(documents_to_show)
+            metadata = {
+                'query_type': 'list',
+                'document_count': len(metadata_documents),
+                'total_documents': total,
+                'documents': metadata_documents
+            }
             await self.save_message(session_id, 'assistant', content, metadata)
 
-            return ChatResponse(
-                content=content,
-                metadata=metadata,
-                cached=False,
-                tokens_used=metadata['tokens_used']
-            )
+            return ChatResponse(content=content, metadata=metadata)
 
         except Exception as e:
             error_message = f"Erro ao buscar lista de documentos: {str(e)}"
             logger.error(f"Error in _handle_list_request: {str(e)}", exc_info=True)
             metadata = self._get_metadata_template(error=True)
-            metadata['error'] = str(e)
-            await self.save_message(session_id, 'assistant', error_message, metadata)
-            return ChatResponse(content=error_message, metadata=metadata, cached=False)
+            await self._persist_assistant_response(session_id, error_message, metadata)
+            return ChatResponse(content=error_message, metadata=metadata)
 
-    async def _handle_summary_request(self, session_id: str, query: str) -> ChatResponse:
+    async def _handle_summary_request(self, session_id: str, query: str, params: Dict[str, Any]) -> ChatResponse:
         """Handle requests for document summaries using LLM for natural response."""
         try:
             summary_data = await self._get_all_documents_summary()
 
             if not summary_data or summary_data['total_documents'] == 0:
-                # Use Gemini for natural response even when no documents
-                prompt = f"""O usuário pediu um resumo das categorias dos documentos fiscais, mas não foram encontrados documentos no banco de dados.
-
-Por favor, responda de forma natural explicando que não há documentos disponíveis para análise."""
+                prompt = "Não há documentos para resumir. Informe isso ao usuário."
             else:
-                # Prepare raw data for Gemini
-                total = summary_data['total_documents']
-                total_value = summary_data['total_value']
-                categories = summary_data['by_type']
-                issuers = summary_data['by_issuer']
+                prompt = f"Resumo dos documentos: {json.dumps(summary_data, default=str)}"
 
-                prompt = f"""O usuário pediu um resumo das categorias dos documentos fiscais no sistema.
+            messages = await self._build_llm_messages(session_id, prompt)
+            response = self.model.invoke(messages)
+            content = self._clean_response_content(response.content)
 
-**Dados brutos do banco de dados:**
-- Total de documentos fiscais: {total}
-- Valor total dos documentos: R$ {total_value:,.2f}
-- Número de categorias diferentes: {len(categories)}
-- Número de emissores diferentes: {len(issuers)}
+            metadata = { 'query_type': 'summary', 'raw_data': summary_data }
+            await self._persist_assistant_response(session_id, content, metadata)
 
-**Distribuição por categoria (dados brutos):**
-"""
-                for category, count in categories.items():
-                    percentage = (count / total) * 100
-                    prompt += f"- {category}: {count} documentos ({percentage:.1f}%)\n"
-
-                prompt += f"""
-
-**Principais emissores (dados brutos):**
-"""
-                sorted_issuers = sorted(issuers.items(), key=lambda x: x[1], reverse=True)
-                for issuer, count in sorted_issuers[:5]:
-                    prompt += f"- {issuer}: {count} documentos\n"
-
-                prompt += f"""
-
-**Instruções para resposta:**
-Responda de forma natural e conversacional, como se estivesse analisando os dados e explicando para o usuário.
-Use os dados fornecidos para criar um resumo claro e informativo.
-Estruture a resposta de forma organizada, destacando:
-1. O total geral de documentos
-2. A distribuição por categoria com percentuais
-3. Os principais emissores
-4. Observações relevantes sobre os dados
-
-Use formatação markdown (negrito, tabelas, listas) para melhorar a legibilidade.
-Seja específico e use os números exatos do banco de dados.
-Responda em português de forma profissional e útil."""
-
-            # Send to Gemini for natural formatting
-            messages = [
-                SystemMessage(content=self.system_prompt),
-                HumanMessage(content=prompt)
-            ]
-
-            response = self.model.invoke(messages, config={
-                'temperature': 0.2,
-                'max_tokens': 1000,
-                'top_p': 0.9,
-                'frequency_penalty': 0.3,
-                'presence_penalty': 0.3
-            })
-
-            content = response.content if hasattr(response, 'content') else str(response)
-            content = self._clean_response_content(content)
-
-            # Create metadata
-            metadata = {
-                'model': self.model_name or 'unknown',
-                'timestamp': datetime.now().isoformat(),
-                'tokens_used': len(content.split()),
-                'query_type': 'summary',
-                'raw_data': summary_data
-            }
-
-            await self.save_message(session_id, 'assistant', content, metadata)
-
-            return ChatResponse(
-                content=content,
-                metadata=metadata,
-                cached=False,
-                tokens_used=metadata['tokens_used']
-            )
+            return ChatResponse(content=content, metadata=metadata)
 
         except Exception as e:
             error_message = f"Erro ao gerar resumo: {str(e)}"
-            await self.save_message(session_id, 'assistant', error_message, {'error': True})
-            return ChatResponse(content=error_message, metadata={'error': True}, cached=False)
+            await self._persist_assistant_response(session_id, error_message, {'error': True})
+            return ChatResponse(content=error_message, metadata={'error': True})
 
     async def _handle_specific_search(self, session_id: str, query: str, context: Optional[Dict[str, Any]]) -> ChatResponse:
-        """Handle specific document searches using RAG when available."""
-        document_context = DocumentContext(documents=[], summaries=[], insights=[])
+        """Handle specific document searches using RAG."""
+        try:
+            vector_store = VectorStoreService()
+            rag_service = RAGService(vector_store=vector_store)
+            
+            context_data = await rag_service.get_context_with_metadata(query)
+            context_prompt = context_data.get('context')
+
+            if not context_prompt or context_data.get('status') == 'no_matches':
+                # Detect if this is a procedural/howto query and fallback to didactic answer
+                if self._detect_validation_query(query) and self._detect_validation_query(query).get('intent') == 'howto':
+                    return await self._handle_howto_request(session_id, query, {})
+                message = "Não encontrei informações relevantes para sua pergunta."
+                metadata = {
+                    'query_type': 'rag',
+                    'status': context_data.get('status', 'no_context'),
+                    'documents': [],
+                    'document_count': 0
+                }
+                await self.save_message(session_id, 'assistant', message, metadata)
+                return ChatResponse(content=message, metadata=metadata)
+
+            metadata_documents = self._build_metadata_from_context_docs(context_data.get('documents', []))
+
+            messages = await self._build_llm_messages(session_id, f"{context_prompt}\n\nPergunta: {query}")
+            response = self.model.invoke(messages)
+            content = self._clean_response_content(response.content)
+
+            metadata = {
+                'query_type': 'rag',
+                'status': context_data.get('status', 'success'),
+                'document_count': len(metadata_documents),
+                'documents': metadata_documents
+            }
+            await self._persist_assistant_response(session_id, content, metadata)
+
+            return ChatResponse(content=content, metadata=metadata)
+        
+        except Exception as e:
+            logger.error(f"RAG search failed, using fallback: {e}", exc_info=True)
+            # Fallback to a generic response without RAG
+            prompt = "Não consegui realizar a busca semântica. Responda à pergunta do usuário da melhor forma possível sem dados adicionais."
+            messages = await self._build_llm_messages(session_id, f"{prompt}\n\nPergunta: {query}")
+            response = self.model.invoke(messages)
+            content = self._clean_response_content(response.content)
+            
+            metadata = {
+                'query_type': 'rag_fallback',
+                'error': str(e)
+            }
+            await self._persist_assistant_response(session_id, content, metadata)
+            return ChatResponse(content=content, metadata=metadata, cached=False)
+
+    async def _persist_assistant_response(self, session_id: str, content: str, metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Save assistant message and archive embeddings for conversational RAG."""
+        await self.save_message(session_id, 'assistant', content, metadata)
+
+        if not content:
+            return None
+
+        message_id = metadata.get('message_id')
+        if message_id is None:
+            try:
+                recent_messages = self.storage.get_chat_messages(session_id, limit=1)
+                if recent_messages:
+                    message_id = str(recent_messages[-1].get('id'))
+            except Exception as exc:
+                logger.debug(f"Não foi possível obter o ID da mensagem recém salva: {exc}")
 
         try:
-            # Tentar usar RAG se disponível para busca semântica
-            try:
-                from backend.services.rag_service import RAGService
-                rag_service = RAGService()
+            chunks = self._split_response_into_chunks(content, metadata, session_id, message_id)
+            if not chunks:
+                return None
 
-                # Gerar embedding da query
-                query_embedding = rag_service.embedding_service.generate_query_embedding(query)
+            embedding_service = FallbackEmbeddingService(preferred_provider="free")
+            for chunk in chunks:
+                chunk['embedding'] = embedding_service.generate_embedding(chunk['content_text'])
 
-                # Buscar documentos relevantes usando RAG
-                similar_docs = rag_service.vector_store.get_document_context(
-                    query_embedding=query_embedding,
-                    max_documents=context.get('limit', 5) if context else 5,
-                    max_chunks_per_document=2
-                )
+            vector_store = VectorStoreService()
+            vector_store.save_chat_message_chunks(chunks)
+        except Exception as exc:
+            logger.error(f"Erro ao arquivar resposta da IA para RAG: {exc}")
 
-                if similar_docs:
-                    # Extrair IDs dos documentos
-                    doc_ids = [doc['fiscal_document_id'] for doc in similar_docs]
+        return None
 
-                    # Buscar documentos completos usando PostgreSQL direto
-                    from backend.database.postgresql_storage import PostgreSQLStorage
-                    db = PostgreSQLStorage()
+    def _split_response_into_chunks(
+        self,
+        content: str,
+        metadata: Dict[str, Any],
+        session_id: str,
+        message_id: Optional[str],
+        chunk_size: int = 1200,
+        overlap: int = 200
+    ) -> List[Dict[str, Any]]:
+        """Split assistant response into overlapping character chunks."""
+        if not content:
+            return []
 
-                    documents = []
-                    for doc_id in doc_ids:
-                        doc = db.get_fiscal_document(doc_id)
-                        if doc:
-                            # Adicionar similaridade do RAG
-                            doc_similarity = next((d['total_similarity'] for d in similar_docs if d['fiscal_document_id'] == doc_id), 0)
-                            doc['rag_similarity'] = doc_similarity
-                            documents.append(doc)
+        chunks: List[Dict[str, Any]] = []
+        start = 0
+        index = 0
 
-                    if documents:
-                        document_context = DocumentContext(
-                            documents=documents,
-                            summaries=[],
-                            insights=[]
-                        )
-                        logger.info(f"RAG search found {len(documents)} relevant documents")
+        while start < len(content):
+            end = min(len(content), start + chunk_size)
+            chunk_text = content[start:end].strip()
 
-            except Exception as rag_error:
-                logger.warning(f"RAG search failed, using fallback: {rag_error}")
-                # Fallback para busca por texto
-                if context and 'document_types' in context:
-                    relevant_docs = await self._search_documents(query, limit=context.get('limit', 5))
-                    if relevant_docs:
-                        documents = []
-                        for doc in relevant_docs:
-                            if isinstance(doc, tuple) and len(doc) > 0:
-                                doc = doc[0]
-                            documents.append(doc)
+            if chunk_text:
+                chunk_metadata = {
+                    'chunk_number': index,
+                    'chat_session_id': session_id,
+                    'chat_message_id': message_id,
+                    'chunk_size': len(chunk_text),
+                    'original_length': len(content),
+                    'query_type': metadata.get('query_type'),
+                    'created_at': datetime.utcnow().isoformat()
+                }
 
-                        document_context = DocumentContext(
-                            documents=documents,
-                            summaries=[],
-                            insights=[]
-                        )
+                chunks.append({
+                    'content_text': chunk_text,
+                    'metadata': chunk_metadata
+                })
+                index += 1
 
-        except Exception as e:
-            logger.error(f"Erro na busca específica: {e}")
+            if end == len(content):
+                break
 
-        # Get conversation history for context
-        history_context = await self.get_conversation_context(session_id)
+            start = end - overlap if overlap > 0 else end
 
-        # Prepare context for LLM
-        context_prompt = self._prepare_context_prompt(query, document_context, context, history_context)
+        return chunks
 
-        # Generate response using the chat model
-        messages = [
-            SystemMessage(content=self.system_prompt),
-            HumanMessage(content=f"{context_prompt}\n\nPergunta: {query}")
+    def _build_metadata_from_context_docs(self, context_docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert RAG context documents into stored metadata format."""
+
+        if not context_docs:
+            return []
+
+        docs_with_id = [
+            {'id': doc_id}
+            for doc_id in {
+                doc.get('fiscal_document_id') or doc.get('id')
+                for doc in context_docs
+                if doc.get('fiscal_document_id') or doc.get('id')
+            }
         ]
 
-        try:
-            response = self.model.invoke(messages, config={
-                'temperature': 0.3,
-                'max_tokens': 1000,
-                'top_p': 0.9,
-                'frequency_penalty': 0.5,
-                'presence_penalty': 0.5
-            })
+        metadata_documents: List[Dict[str, Any]] = []
 
-            content = response.content if hasattr(response, 'content') else str(response)
-            content = self._clean_response_content(content)
+        if docs_with_id:
+            full_docs = self._load_full_documents(docs_with_id, limit=len(docs_with_id))
+            metadata_documents = self._build_metadata_documents(full_docs)
 
-            # Create metadata
-            metadata = {
-                'model': self.model_name or 'unknown',
-                'timestamp': datetime.now().isoformat(),
-                'tokens_used': len(content.split()),
-                'rag_used': len(document_context.documents) > 0,
-                'documents_found': len(document_context.documents)
+        if metadata_documents:
+            return metadata_documents
+
+        fallback_metadata = []
+        for doc in context_docs:
+            entry = {
+                'id': doc.get('fiscal_document_id') or doc.get('id'),
+                'file_name': doc.get('file_name'),
+                'issuer_cnpj': doc.get('issuer_cnpj'),
+                'document_number': doc.get('document_number'),
+                'document_type': doc.get('document_type')
             }
 
-            # Cache the response
-            if context:
-                await self.cache.cache_response(
-                    query=query,
-                    context=context,
-                    response=content,
-                    metadata=metadata,
-                    query_type=context.get('query_type', 'general'),
-                    session_id=session_id
-                )
+            sanitized = {
+                key: self._sanitize_metadata_value(value)
+                for key, value in entry.items()
+                if value not in (None, '', [])
+            }
 
-            # Save to conversation history
-            await self.save_message(session_id, 'assistant', content, metadata)
+            if sanitized:
+                fallback_metadata.append(sanitized)
 
-            return ChatResponse(
-                content=content,
-                metadata=metadata,
-                cached=False,
-                tokens_used=metadata['tokens_used']
-            )
+        return fallback_metadata
 
-        except Exception as e:
-            error_message = f"Desculpe, ocorreu um erro ao processar sua pergunta: {str(e)}"
-            await self.save_message(session_id, 'assistant', error_message, {'error': True})
-            return ChatResponse(
-                content=error_message,
-                metadata={'error': True, 'error_message': str(e)},
-                cached=False
-            )
+    async def _handle_validation_request(self, session_id: str, query: str, params: Dict[str, Any]) -> ChatResponse:
+        """Handle validation detail requests directly from metadata storage."""
 
-    def _format_as_table(self, content: str) -> str:
-        """Format lists and document information as Markdown tables."""
+        document_reference = params.get('document_reference', '') or ''
+        query_lower = query.lower()
+        metadata_docs: List[Dict[str, Any]] = []
+        cnpj_tokens = self._extract_cnpjs(query)
+        document_type_hints = self._extract_document_type_hints(query_lower)
+
         try:
-            # Check for document types
-            doc_keywords = ['nfe', 'nf-e', 'cte', 'ct-e', 'mdfe', 'md-fe', 'nfse', 'nfs-e', 'nfce', 'nfc-e']
-            
-            # Check for bullet point lists
-            lines = content.split('\n')
-            bullet_points = [line.strip('-*• ') for line in lines if line.strip().startswith(('- ', '* ', '• '))]
-            
-            # If we found a list with more than 2 items, format as table
-            if len(bullet_points) > 2:
-                # Try to split each bullet into columns
-                table_rows = []
-                for point in bullet_points:
-                    # Try to split on common separators
-                    parts = re.split(r'[:\-]\s*', point, maxsplit=1)
-                    if len(parts) == 2:
-                        table_rows.append([parts[0].strip(), parts[1].strip()])
-                    else:
-                        table_rows.append([point.strip(), ''])
-                
-                # If we have at least 2 columns, format as table
-                if table_rows and len(table_rows[0]) > 1:
-                    table = ['| ' + ' | '.join(['Item', 'Descrição']) + ' |',
-                             '|' + '|'.join(['---'] * len(table_rows[0])) + '|']
-                    for row in table_rows:
-                        table.append('| ' + ' | '.join(row) + ' |')
-                    return '\n'.join(table)
-            
-            # Document types table (special case) - improved detection
-            has_doc_types = any(keyword in content.lower() for keyword in doc_keywords)
-            has_list_indicators = any(indicator in content.lower() for indicator in ['lista de', 'tipos de', 'documentos:', 'categorias:'])
-            
-            if has_doc_types and has_list_indicators:
-                return """
-| Documento | Nome Completo | Finalidade Principal |
-|-----------|---------------|----------------------|
-| **NF-e** | Nota Fiscal Eletrônica | Documentação de operações com mercadorias |
-| **NFC-e** | Nota Fiscal de Consumidor Eletrônica | Vendas a consumidores finais |
-| **CT-e** | Conhecimento de Transporte Eletrônico | Documentação de serviços de transporte |
-| **MDF-e** | Manifesto de Documentos Fiscais | Agrupamento de documentos de transporte |
-| **NFSe** | Nota Fiscal de Serviço Eletrônica | Documentação de prestação de serviços |
-| **CF-e** | Cupom Fiscal Eletrônico | Documentação de vendas no varejo (alguns estados) |
+            if not document_reference:
+                document_reference = self._extract_document_reference(query) or ''
 
-**Legenda**:
-- **NF-e/NFC-e**: Documentos de venda
-- **CT-e/MDF-e**: Documentos de transporte
-- **NFSe/CF-e**: Documentos de serviço/varejo
-"""
-            
-            # If no special formatting applied, return original content
-            return content
-            
+            document_reference = document_reference.strip().strip(' .,;:\n\t')
+
+            if document_reference:
+                normalized_ref = document_reference.lower()
+                generic_phrases = [
+                    'ultima mensagem respondida',
+                    'última mensagem respondida',
+                    'ultima resposta',
+                    'última resposta',
+                    'mensagem anterior'
+                ]
+                if any(phrase in normalized_ref for phrase in generic_phrases):
+                    document_reference = ''
+
+            matched_documents: Dict[str, Dict[str, Any]] = {}
+
+            def add_matched(documents: List[Dict[str, Any]]) -> None:
+                for doc in documents:
+                    if not isinstance(doc, dict):
+                        continue
+                    doc_id = doc.get('id')
+                    key = doc_id or f"generated-{len(matched_documents)}"
+                    if key not in matched_documents:
+                        matched_documents[key] = doc
+
+            if document_reference:
+                add_matched(self._find_documents_by_reference(document_reference))
+
+            for cnpj in cnpj_tokens:
+                add_matched(self._find_documents_by_reference(cnpj))
+
+            if not matched_documents:
+                metadata_docs = await self._get_recent_documents_from_history(session_id)
+
+                def metadata_matches(doc: Dict[str, Any]) -> bool:
+                    if not isinstance(doc, dict):
+                        return False
+
+                    if document_reference and not self._matches_reference(doc, document_reference):
+                        return False
+
+                    if cnpj_tokens:
+                        doc_cnpj = self._normalize_digits(doc.get('issuer_cnpj'))
+                        if not doc_cnpj or all(doc_cnpj != token for token in cnpj_tokens):
+                            return False
+
+                    if document_type_hints:
+                        doc_type = (doc.get('document_type') or '').lower().replace('-', '').replace('_', '')
+                        if not doc_type or all(hint not in doc_type for hint in document_type_hints):
+                            return False
+
+                    return True
+
+                filtered_metadata = [doc for doc in metadata_docs if metadata_matches(doc)] if metadata_docs else []
+
+                candidate_ids = [
+                    doc.get('id')
+                    for doc in filtered_metadata
+                    if isinstance(doc, dict) and doc.get('id')
+                ]
+
+                if not candidate_ids and metadata_docs:
+                    if document_reference:
+                        candidate_ids = [
+                            doc.get('id')
+                            for doc in metadata_docs
+                            if isinstance(doc, dict) and doc.get('id') and self._matches_reference(doc, document_reference)
+                        ]
+
+                    if not candidate_ids and cnpj_tokens:
+                        candidate_ids = [
+                            doc.get('id')
+                            for doc in metadata_docs
+                            if isinstance(doc, dict) and doc.get('id') and self._normalize_digits(doc.get('issuer_cnpj')) in cnpj_tokens
+                        ]
+
+                    if not candidate_ids and document_type_hints:
+                        candidate_ids = [
+                            doc.get('id')
+                            for doc in metadata_docs
+                            if isinstance(doc, dict) and doc.get('id') and any(
+                                hint in (doc.get('document_type') or '').lower().replace('-', '').replace('_', '')
+                                for hint in document_type_hints
+                            )
+                        ]
+
+                candidate_ids = [doc_id for doc_id in candidate_ids if doc_id]
+
+                if candidate_ids:
+                    add_matched(
+                        self._load_full_documents(
+                            [{'id': doc_id} for doc_id in candidate_ids],
+                            limit=len(candidate_ids)
+                        )
+                    )
+                elif not document_reference and metadata_docs:
+                    first_doc_id = next(
+                        (doc.get('id') for doc in metadata_docs if isinstance(doc, dict) and doc.get('id')),
+                        None
+                    )
+                    if first_doc_id:
+                        add_matched(
+                            self._load_full_documents([
+                                {'id': first_doc_id}
+                            ], limit=1)
+                        )
+
+            matched = [doc for doc in matched_documents.values() if isinstance(doc, dict)]
+
+            if not matched:
+                message = (
+                    f"❗️ Não encontrei documentos que correspondam a '{document_reference or 'sua descrição'}'.\n"
+                    "Verifique se o identificador está correto (nome do arquivo, número ou chave de acesso)."
+                )
+                metadata = {
+                    'query_type': 'validation',
+                    'document_reference': document_reference,
+                    'matches': 0
+                }
+                if metadata_docs:
+                    metadata['suggestions'] = metadata_docs[:3]
+                await self._persist_assistant_response(session_id, message, metadata)
+                return ChatResponse(content=message, metadata=metadata)
+
+            responses: List[str] = []
+            metadata_entries: List[Dict[str, Any]] = []
+
+            for doc in matched:
+                validations = doc.get('validation_details')
+                status = doc.get('validation_status', 'não informado')
+
+                formatted = self._format_validation_details(doc, status, validations)
+                responses.append(formatted)
+
+                metadata_entries.append({
+                    'document_id': doc.get('id'),
+                    'file_name': doc.get('file_name'),
+                    'validation_status': status,
+                    'has_details': bool(validations),
+                    'document_type': doc.get('document_type')
+                })
+
+            combined_response = "\n\n".join(responses)
+            metadata = {
+                'query_type': 'validation',
+                'document_reference': document_reference,
+                'documents_found': len(matched),
+                'documents': metadata_entries
+            }
+
+            await self._persist_assistant_response(session_id, combined_response, metadata)
+            return ChatResponse(content=combined_response, metadata=metadata)
+
         except Exception as e:
-            logger.warning(f"Error formatting as table: {e}")
-            return content
+            logger.error(f"Erro ao processar validações: {e}", exc_info=True)
+            error_message = "❌ Não foi possível recuperar os detalhes de validação. Tente novamente mais tarde."
+            metadata = {
+                'query_type': 'validation',
+                'error': True,
+                'document_reference': params.get('document_reference')
+            }
+            await self._persist_assistant_response(session_id, error_message, metadata)
+            return ChatResponse(content=error_message, metadata=metadata, cached=False)
 
-    def _clean_response_content(self, content: str) -> str:
-        """Clean and format the LLM response content."""
-        if not content:
-            return ""
+    def _extract_cnpjs(self, text: str) -> List[str]:
+        if not text:
+            return []
 
-        # Remove extra whitespace and normalize line breaks
-        cleaned = content.strip()
+        found = re.findall(r'\d{14}', text)
+        unique: List[str] = []
+        for item in found:
+            normalized = self._normalize_digits(item)
+            if normalized and normalized not in unique:
+                unique.append(normalized)
+        return unique
 
-        # Fix common formatting issues
-        cleaned = cleaned.replace('```json', '```')
-        cleaned = cleaned.replace('```python', '```')
+    def _extract_document_type_hints(self, text_lower: str) -> List[str]:
+        if not text_lower:
+            return []
 
-        # First, try to format as table if appropriate
-        if any(keyword in cleaned.lower() for keyword in ['tabela', 'lista de', 'documentos fiscais', 'exemplo:', 'tipos de']):
-            formatted = self._format_as_table(cleaned)
-            if formatted != cleaned:  # Only return if formatting was applied
-                return formatted
-        
-        # Split into sentences for better processing
-        import re
-        sentences = re.split(r'(?<=[.!?])\s+', cleaned)
-        
-        # Remove duplicate sentences while preserving order
-        seen = set()
-        clean_sentences = []
-        for sentence in sentences:
-            # Normalize and check for duplicates
-            norm_sent = ' '.join(sentence.lower().split())
-            if norm_sent not in seen and len(norm_sent) > 10:  # Ignore very short sentences
-                seen.add(norm_sent)
-                clean_sentences.append(sentence)
-        
-        # Join back with proper spacing
-        cleaned_content = ' '.join(clean_sentences)
-        
-        # Remove any remaining repeated phrases (simple heuristic)
-        words = cleaned_content.split()
-        unique_words = []
-        for word in words:
-            if len(unique_words) < 2 or word.lower() not in [w.lower() for w in unique_words[-3:]]:
-                unique_words.append(word)
-        
-        return ' '.join(unique_words)
+        type_map = {
+            'cte': ['cte', 'ct-e'],
+            'nfe': ['nfe', 'nf-e', 'nota fiscal eletrônica', 'nota fiscal eletronica'],
+            'nfce': ['nfce', 'nfc-e'],
+            'mdfe': ['mdfe', 'mdf-e'],
+            'nfse': ['nfse', 'nfs-e']
+        }
 
-    def _prepare_context_prompt(
-            self,
-            query: str,
-            document_context: DocumentContext,
-            context: Optional[Dict[str, Any]],
-            history_context: str = ""
-    ) -> str:
-        """Prepara o contexto para o prompt do LLM.
-        
-        Args:
-            query: A consulta do usuário
-            document_context: Contexto dos documentos relevantes
-            context: Contexto adicional (filtros, preferências, etc.)
-            history_context: Histórico da conversa
-            
-        Returns:
-            str: Contexto formatado para o prompt
-        """
-        """Prepare context information for the LLM prompt."""
-        context_parts = []
-        has_documents = bool(document_context and document_context.documents)
+        hints: set[str] = set()
+        for key, markers in type_map.items():
+            if any(marker in text_lower for marker in markers):
+                hints.add(key)
 
-        # Add document context if available
-        if has_documents:
-            context_parts.append("📄 Documentos disponíveis para análise:")
-            
-            # Tenta formatar como tabela se for uma lista de documentos
-            if len(document_context.documents) > 1:
-                # Extrai os campos mais importantes para a tabela
-                table_header = "| Tipo | Número | Emissor | Data | Valor |\n"
-                table_header += "|------|--------|---------|------|-------|\n"
-                
-                table_rows = []
-                for doc in document_context.documents[:5]:  # Limita a 5 documentos na tabela
-                    doc_type = doc.get('document_type', 'N/A')
-                    doc_number = doc.get('document_number', 'N/A')
-                    issuer = doc.get('issuer_name') or doc.get('issuer_cnpj', 'N/A')
-                    date = doc.get('emission_date') or doc.get('created_at', 'N/A')
-                    
-                    # Tenta extrair o valor total dos dados extraídos
-                    total_value = 'N/A'
-                    if 'extracted_data' in doc and doc['extracted_data']:
-                        try:
-                            if isinstance(doc['extracted_data'], str):
-                                data = json.loads(doc['extracted_data'])
+        return list(hints)
+
+    def _matches_reference(self, document: Dict[str, Any], reference: str) -> bool:
+        """Check whether a document matches the reference string."""
+        if not reference:
+            return False
+
+        reference_lower = reference.lower().strip()
+        reference_digits = re.sub(r'\D', '', reference_lower)
+
+        fields: List[str] = []
+
+        def add_field(value: Any) -> None:
+            if value not in (None, '', []):
+                fields.append(str(value))
+
+        add_field(document.get('file_name'))
+        add_field(document.get('document_number'))
+        add_field(document.get('document_key'))
+        add_field(document.get('id'))
+        add_field(document.get('issuer_cnpj'))
+        add_field(document.get('issuer_name'))
+
+        extracted = document.get('extracted_data')
+        if isinstance(extracted, str):
+            try:
+                extracted = json.loads(extracted)
+            except (TypeError, ValueError):
+                extracted = {}
+
+        if isinstance(extracted, dict):
+            emitente = extracted.get('emitente') or {}
+            destinatario = extracted.get('destinatario') or {}
+
+            add_field(emitente.get('cnpj'))
+            add_field(emitente.get('razao_social'))
+            add_field(emitente.get('nome'))
+            add_field(destinatario.get('cnpj'))
+            add_field(destinatario.get('razao_social'))
+            add_field(destinatario.get('nome'))
+
+        for field in fields:
+            field_lower = field.lower()
+            if reference_lower and reference_lower in field_lower:
+                return True
+
+            if reference_digits:
+                field_digits = re.sub(r'\D', '', field_lower)
+                if field_digits and reference_digits in field_digits:
+                    return True
+
+        return False
+
+    def _format_validation_details(self, document: Dict[str, Any], status: str, validations: Any) -> str:
+        """Format validation details into a human-friendly Markdown response with consultative tips."""
+        file_name = document.get('file_name', 'Documento sem nome')
+        status_icon = {
+            'valid': '✅',
+            'warning': '⚠️',
+            'invalid': '❌',
+            'error': 'ℹ️'
+        }.get(status, 'ℹ️')
+
+        lines = [
+            f"**Documento:** {file_name}",
+            f"**Status das validações:** {status_icon} {status.capitalize()}"
+        ]
+
+        # Consultoria e recomendações
+        if status.lower() in ('error', 'invalid', 'não informado'):
+            lines.append("\n🔎 **Dicas para resolver problemas de validação:**")
+            lines.append("- Verifique se o arquivo XML está assinado corretamente e não foi corrompido.")
+            lines.append("- Confirme se as datas, CNPJ e valores estão corretos e compatíveis com o cadastro do fornecedor.")
+            lines.append("- Utilize o validador oficial da Sefaz para identificar erros específicos.")
+            lines.append("- Se o problema persistir em várias notas deste fornecedor, pode ser um erro sistêmico: considere revisar o cadastro ou entrar em contato com o fornecedor.")
+        elif status.lower() == 'valid':
+            lines.append("\n✅ Nenhum erro de validação encontrado. Documento está regular.")
+
+        if validations:
+            try:
+                if isinstance(validations, str):
+                    validations = json.loads(validations)
+
+                if isinstance(validations, dict):
+                    items = validations.get('items') or validations.get('checks') or []
+                    if items:
+                        lines.append("\n**Detalhes:**")
+                        for item in items:
+                            if isinstance(item, dict):
+                                title = item.get('title') or item.get('description') or 'Validação'
+                                result = item.get('result', 'Sem resultado')
+                                detail = item.get('detail') or item.get('message')
+                                lines.append(f"- **{title}:** {result}")
+                                if detail:
+                                    lines.append(f"  - {detail}")
                             else:
-                                data = doc['extracted_data']
-                                
-                            if isinstance(data, dict):
-                                total_value = data.get('total', data.get('valor_total', 'N/A'))
-                        except (json.JSONDecodeError, AttributeError):
-                            pass
-                    
-                    table_rows.append(f"| {doc_type} | {doc_number} | {issuer} | {date} | {total_value} |")
-                
-                if table_rows:
-                    context_parts.append(table_header + "\n".join(table_rows))
-            
-            # Se não for uma tabela ou além da tabela, mostra detalhes adicionais
-            if len(document_context.documents) == 1 or len(document_context.documents) > 5:
-                for doc in document_context.documents[:3]:  # Limita a 3 documentos detalhados
-                    doc_info = [
-                        f"- {k}: {v}" for k, v in doc.items()
-                        if k not in ['content', 'embedding', 'extracted_data'] and v is not None
-                    ]
-                    if doc_info:
-                        context_parts.append("\n".join(doc_info))
-                        
-                    # Adiciona dados extraídos formatados, se disponíveis
-                    if 'extracted_data' in doc and doc['extracted_data']:
-                        try:
-                            if isinstance(doc['extracted_data'], str):
-                                data = json.loads(doc['extracted_data'])
-                            else:
-                                data = doc['extracted_data']
-                                
-                            if isinstance(data, dict):
-                                extracted_info = [
-                                    f"- {k}: {v}" for k, v in data.items()
-                                    if v is not None and k not in ['content', 'embedding']
-                                ]
-                                if extracted_info:
-                                    context_parts.append("\nDados extraídos:" + "\n" + "\n".join(extracted_info[:5]))  # Limita a 5 itens
-                        except (json.JSONDecodeError, AttributeError):
-                            pass
-        
-        # Add conversation history if available
-        if history_context:
-            context_parts.append(f"\n💬 Histórico da Conversa:\n{history_context}")
+                                lines.append(f"- {item}")
+                    else:
+                        lines.append("\nNenhum detalhe adicional de validação está disponível.")
+                else:
+                    lines.append("\nValidações registradas em formato não estruturado.")
 
-        # Add instructions for response
-        if has_documents:
-            context_parts.append(
-                "\n📝 Instruções para a resposta:\n"
-                "1. Analise a pergunta e verifique se ela se refere aos documentos carregados.\n"
-                "2. Se a pergunta for sobre os documentos, responda com base neles.\n"
-                "3. Se a pergunta for mais geral ou não houver documentos relevantes, use seu conhecimento geral.\n"
-                "4. Estruture a resposta de forma clara e objetiva."
-            )
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"Erro ao interpretar validation_details: {e}")
+                lines.append("\nNão foi possível interpretar os detalhes de validação armazenados.")
         else:
-            context_parts.append(
-                "\nℹ️ Não há documentos específicos carregados. "
-                "Você deve responder com base no seu conhecimento geral sobre documentos fiscais brasileiros.\n"
-                "\n📝 Instruções para a resposta:\n"
-                "1. Responda de forma clara e completa, mesmo sem documentos específicos.\n"
-                "2. Use seu conhecimento sobre legislação fiscal brasileira.\n"
-                "3. Se a pergunta for muito específica e exigir documentos, explique isso ao usuário.\n"
-                "4. Formate a resposta de forma organizada e fácil de entender."
-            )
+            lines.append("\nNenhum detalhe de validação foi registrado para este documento.")
 
-        # Add insights if available (after instructions to keep them prominent)
-        if has_documents and hasattr(document_context, 'insights') and document_context.insights:
-            context_parts.append("\n🔍 Insights identificados nos documentos:")
-            for insight in document_context.insights[:3]:  # Limit to top 3 insights
-                if isinstance(insight, dict):
-                    if 'insight_type' in insight and 'insight_text' in insight:
-                        context_parts.append(f"📌 {insight['insight_type'].title()}:")
-                        context_parts.append(f"   {insight['insight_text']}")
-                    elif 'insight_text' in insight:
-                        context_parts.append(f"- {insight['insight_text']}")
-                elif isinstance(insight, str):
-                    context_parts.append(f"- {insight}")
+        # Análise de padrões no histórico
+        if hasattr(self, 'storage'):
+            try:
+                cnpj = document.get('issuer_cnpj')
+                if cnpj:
+                    # Busca no histórico da sessão por outros erros do mesmo CNPJ
+                    all_msgs = []
+                    try:
+                        all_msgs = self.storage.get_chat_messages(document.get('session_id'), limit=50)
+                    except Exception:
+                        pass
+                    erro_count = 0
+                    for msg in all_msgs:
+                        meta = msg.get('metadata') or {}
+                        docs = meta.get('documents') or []
+                        for d in docs:
+                            if isinstance(d, dict) and d.get('issuer_cnpj') == cnpj and d.get('validation_status') == 'error':
+                                erro_count += 1
+                    if erro_count > 1:
+                        lines.append(f"\n🔔 Atenção: Encontramos {erro_count} notas deste fornecedor com erro de validação nesta sessão. Isso pode indicar um problema recorrente.")
+            except Exception as e:
+                logger.debug(f"Erro ao analisar padrões de erro no histórico: {e}")
 
-        return "\n".join(context_parts) if context_parts else "Nenhum contexto específico disponível."
-
+        return "\n".join(lines)

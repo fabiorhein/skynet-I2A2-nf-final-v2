@@ -202,9 +202,19 @@ class LLMOCRMapper:
                         pass
         return doc
 
-    def map_ocr_text(self, text: str) -> Dict[str, Any]:
+    def _extract_chave_acesso(self, text: str) -> str:
+        """Extrai a chave de acesso (44 dígitos) do texto, mesmo se estiver fragmentada ou espaçada."""
+        import re
+        # Remove caracteres não numéricos e espaços
+        digits = re.sub(r'\D', '', text)
+        # Procura sequência de 44 dígitos
+        match = re.search(r'(\d{44})', digits)
+        return match.group(1) if match else None
+
+    def map_ocr_text(self, text: str, contexto_legal: str = None, ramo_atividade: str = None) -> Dict[str, Any]:
         """Map OCR text to structured document using LLM (Gemini) or heuristic fallback.
 
+        Permite passar contexto legal e ramo de atividade para adaptar o prompt.
         Returns a dictionary with keys similar to the XML parser output.
         """
         if not text or not text.strip():
@@ -217,30 +227,33 @@ class LLMOCRMapper:
         # Try LLM mapping if available, otherwise fall back to heuristics
         if self.available and self.api_key:
             try:
-                # Build prompt instructing the model to reply with JSON only
-                prompt = (
-                    "Extraia os campos principais de uma nota fiscal a partir do texto OCR. "
-                    "Responda SOMENTE um objeto JSON válido sem explicações. "
-                    "O JSON deve conter, quando possível, as chaves: numero, data_emissao, "
-                    "emitente {razao_social, cnpj, inscricao_estadual}, destinatario {razao_social, cnpj_cpf}, "
-                    "itens (lista de objetos com descricao, quantidade, valor_unitario, valor_total), "
-                    "impostos {icms, pis, cofins, ipi}, total. "
-                    "Se algum campo não estiver presente, use null ou omit.\n\n"
-                )
-                prompt += "TEXTO:\n" + text + "\n\nJSON:\n"
+                contexto_extra = ""
+                if contexto_legal:
+                    contexto_extra += f"\n[Contexto Legal]: {contexto_legal}"
+                if ramo_atividade:
+                    contexto_extra += f"\n[Ramo de Atividade]: {ramo_atividade}"
+                prompt = "Extraia os principais campos de uma nota fiscal do texto OCR e responda SOMENTE com JSON válido. " \
+                         "Campos: numero, data_emissao, emitente, destinatario, itens, impostos, total, chave_acesso. " \
+                         "Se faltar algum campo, use null ou omita.\n\nTEXTO:\n" + text + contexto_extra + "\n\nJSON:\n"
 
                 resp_text = self._call_llm(prompt)
                 
                 # Se a resposta estiver vazia, usar o mapeador heurístico
                 if not resp_text.strip():
                     return self._heuristic_map(text)
-                    
+                
                 parsed = self._extract_json(resp_text)
                 
                 # Se não conseguirmos extrair um JSON válido, usar o mapeador heurístico
                 if not isinstance(parsed, dict):
                     return self._heuristic_map(text)
-                    
+
+                # Extração robusta da chave de acesso do raw_text
+                chave = self._extract_chave_acesso(text)
+                if chave:
+                    parsed['chave_acesso'] = chave
+                elif 'chave_acesso' not in parsed or not parsed['chave_acesso']:
+                    parsed['chave_acesso'] = None
                 return parsed
                 
             except Exception as e:
