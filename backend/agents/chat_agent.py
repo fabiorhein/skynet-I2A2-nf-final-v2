@@ -46,6 +46,7 @@ from backend.services.document_analyzer import DocumentAnalyzer
 from backend.database.storage_manager import storage_manager
 from backend.services.rag_service import RAGService
 from backend.services.vector_store_service import VectorStoreService
+from backend.services.fallback_embedding_service import FallbackEmbeddingService
 
 
 logger = logging.getLogger(__name__)
@@ -475,7 +476,7 @@ Responda APENAS com o JSON.
             response = self.model.invoke(messages)
             content = self._clean_response_content(response.content)
             metadata = { 'query_type': 'howto' }
-            await self.save_message(session_id, 'assistant', content, metadata)
+            await self._persist_assistant_response(session_id, content, metadata)
             return ChatResponse(content=content, metadata=metadata)
         except Exception as e:
             error_message = f"Erro ao responder pergunta procedural/howto: {str(e)}"
@@ -500,7 +501,7 @@ Responda APENAS com o JSON.
             content = self._clean_response_content(response.content)
             
             metadata = { 'query_type': 'count', 'raw_data': summary_data }
-            await self.save_message(session_id, 'assistant', content, metadata)
+            await self._persist_assistant_response(session_id, content, metadata)
 
             return ChatResponse(content=content, metadata=metadata)
 
@@ -509,16 +510,19 @@ Responda APENAS com o JSON.
             await self.save_message(session_id, 'assistant', error_message, {'error': True})
             return ChatResponse(content=error_message, metadata={'error': True})
 
-    async def _build_llm_messages(self, session_id: str, prompt: str) -> List[Union[SystemMessage, HumanMessage]]:
-        """Build the list of messages for the LLM, including conversation history."""
+    async def _build_llm_messages(self, session_id: str, prompt: str, contexto_legal: Optional[str] = None, ramo_atividade: Optional[str] = None) -> List[Union[SystemMessage, HumanMessage]]:
+        """Build the list of messages for the LLM, including conversation history and dynamic context."""
         conversation_context = await self.get_conversation_context(session_id)
-        
+        contexto_extra = ""
+        if contexto_legal:
+            contexto_extra += f"\n[Contexto Legal]: {contexto_legal}"
+        if ramo_atividade:
+            contexto_extra += f"\n[Ramo de Atividade]: {ramo_atividade}"
         full_prompt = f"""**Histórico da Conversa Anterior:**
-{conversation_context}
+{conversation_context}{contexto_extra}
 
 **Dados para a Pergunta Atual:**
 {prompt}"""
-
         return [
             SystemMessage(content=self.system_prompt),
             HumanMessage(content=full_prompt)
@@ -724,7 +728,7 @@ Responda APENAS com o JSON.
             if not summary_data or summary_data['total_documents'] == 0:
                 message = "📭 Não foram encontrados documentos no sistema com os critérios fornecidos."
                 metadata = self._get_metadata_template(is_recent_query=is_recent_query)
-                await self.save_message(session_id, 'assistant', message, metadata)
+                await self._persist_assistant_response(session_id, message, metadata)
                 return ChatResponse(content=message, metadata=metadata)
 
             total = summary_data['total_documents']
@@ -756,7 +760,7 @@ Responda APENAS com o JSON.
             error_message = f"Erro ao buscar lista de documentos: {str(e)}"
             logger.error(f"Error in _handle_list_request: {str(e)}", exc_info=True)
             metadata = self._get_metadata_template(error=True)
-            await self.save_message(session_id, 'assistant', error_message, metadata)
+            await self._persist_assistant_response(session_id, error_message, metadata)
             return ChatResponse(content=error_message, metadata=metadata)
 
     async def _handle_summary_request(self, session_id: str, query: str, params: Dict[str, Any]) -> ChatResponse:
@@ -774,13 +778,13 @@ Responda APENAS com o JSON.
             content = self._clean_response_content(response.content)
 
             metadata = { 'query_type': 'summary', 'raw_data': summary_data }
-            await self.save_message(session_id, 'assistant', content, metadata)
+            await self._persist_assistant_response(session_id, content, metadata)
 
             return ChatResponse(content=content, metadata=metadata)
 
         except Exception as e:
             error_message = f"Erro ao gerar resumo: {str(e)}"
-            await self.save_message(session_id, 'assistant', error_message, {'error': True})
+            await self._persist_assistant_response(session_id, error_message, {'error': True})
             return ChatResponse(content=error_message, metadata={'error': True})
 
     async def _handle_specific_search(self, session_id: str, query: str, context: Optional[Dict[str, Any]]) -> ChatResponse:
@@ -818,8 +822,8 @@ Responda APENAS com o JSON.
                 'document_count': len(metadata_documents),
                 'documents': metadata_documents
             }
-            await self.save_message(session_id, 'assistant', content, metadata)
-            
+            await self._persist_assistant_response(session_id, content, metadata)
+
             return ChatResponse(content=content, metadata=metadata)
         
         except Exception as e:
@@ -834,9 +838,85 @@ Responda APENAS com o JSON.
                 'query_type': 'rag_fallback',
                 'error': str(e)
             }
-            await self.save_message(session_id, 'assistant', content, metadata)
-            
-            return ChatResponse(content=content, metadata=metadata)
+            await self._persist_assistant_response(session_id, content, metadata)
+            return ChatResponse(content=content, metadata=metadata, cached=False)
+
+    async def _persist_assistant_response(self, session_id: str, content: str, metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Save assistant message and archive embeddings for conversational RAG."""
+        await self.save_message(session_id, 'assistant', content, metadata)
+
+        if not content:
+            return None
+
+        message_id = metadata.get('message_id')
+        if message_id is None:
+            try:
+                recent_messages = self.storage.get_chat_messages(session_id, limit=1)
+                if recent_messages:
+                    message_id = str(recent_messages[-1].get('id'))
+            except Exception as exc:
+                logger.debug(f"Não foi possível obter o ID da mensagem recém salva: {exc}")
+
+        try:
+            chunks = self._split_response_into_chunks(content, metadata, session_id, message_id)
+            if not chunks:
+                return None
+
+            embedding_service = FallbackEmbeddingService(preferred_provider="free")
+            for chunk in chunks:
+                chunk['embedding'] = embedding_service.generate_embedding(chunk['content_text'])
+
+            vector_store = VectorStoreService()
+            vector_store.save_chat_message_chunks(chunks)
+        except Exception as exc:
+            logger.error(f"Erro ao arquivar resposta da IA para RAG: {exc}")
+
+        return None
+
+    def _split_response_into_chunks(
+        self,
+        content: str,
+        metadata: Dict[str, Any],
+        session_id: str,
+        message_id: Optional[str],
+        chunk_size: int = 1200,
+        overlap: int = 200
+    ) -> List[Dict[str, Any]]:
+        """Split assistant response into overlapping character chunks."""
+        if not content:
+            return []
+
+        chunks: List[Dict[str, Any]] = []
+        start = 0
+        index = 0
+
+        while start < len(content):
+            end = min(len(content), start + chunk_size)
+            chunk_text = content[start:end].strip()
+
+            if chunk_text:
+                chunk_metadata = {
+                    'chunk_number': index,
+                    'chat_session_id': session_id,
+                    'chat_message_id': message_id,
+                    'chunk_size': len(chunk_text),
+                    'original_length': len(content),
+                    'query_type': metadata.get('query_type'),
+                    'created_at': datetime.utcnow().isoformat()
+                }
+
+                chunks.append({
+                    'content_text': chunk_text,
+                    'metadata': chunk_metadata
+                })
+                index += 1
+
+            if end == len(content):
+                break
+
+            start = end - overlap if overlap > 0 else end
+
+        return chunks
 
     def _build_metadata_from_context_docs(self, context_docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Convert RAG context documents into stored metadata format."""
@@ -893,7 +973,6 @@ Responda APENAS com o JSON.
         document_type_hints = self._extract_document_type_hints(query_lower)
 
         try:
-            # Attempt to extract potential document reference from query if not provided
             if not document_reference:
                 document_reference = self._extract_document_reference(query) or ''
 
@@ -952,7 +1031,11 @@ Responda APENAS com o JSON.
 
                 filtered_metadata = [doc for doc in metadata_docs if metadata_matches(doc)] if metadata_docs else []
 
-                candidate_ids: List[str] = [doc.get('id') for doc in filtered_metadata if isinstance(doc, dict) and doc.get('id')]
+                candidate_ids = [
+                    doc.get('id')
+                    for doc in filtered_metadata
+                    if isinstance(doc, dict) and doc.get('id')
+                ]
 
                 if not candidate_ids and metadata_docs:
                     if document_reference:
@@ -989,7 +1072,10 @@ Responda APENAS com o JSON.
                         )
                     )
                 elif not document_reference and metadata_docs:
-                    first_doc_id = next((doc.get('id') for doc in metadata_docs if isinstance(doc, dict) and doc.get('id')), None)
+                    first_doc_id = next(
+                        (doc.get('id') for doc in metadata_docs if isinstance(doc, dict) and doc.get('id')),
+                        None
+                    )
                     if first_doc_id:
                         add_matched(
                             self._load_full_documents([
@@ -1011,11 +1097,11 @@ Responda APENAS com o JSON.
                 }
                 if metadata_docs:
                     metadata['suggestions'] = metadata_docs[:3]
-                await self.save_message(session_id, 'assistant', message, metadata)
+                await self._persist_assistant_response(session_id, message, metadata)
                 return ChatResponse(content=message, metadata=metadata)
 
-            responses = []
-            metadata_entries = []
+            responses: List[str] = []
+            metadata_entries: List[Dict[str, Any]] = []
 
             for doc in matched:
                 validations = doc.get('validation_details')
@@ -1040,21 +1126,19 @@ Responda APENAS com o JSON.
                 'documents': metadata_entries
             }
 
-            await self.save_message(session_id, 'assistant', combined_response, metadata)
-
+            await self._persist_assistant_response(session_id, combined_response, metadata)
             return ChatResponse(content=combined_response, metadata=metadata)
 
         except Exception as e:
-            logger.error(f"Erro ao buscar validações: {e}", exc_info=True)
-            error_message = "❌ Ocorreu um erro ao buscar as validações. Tente novamente mais tarde."
-            metadata = {'query_type': 'validation', 'error': str(e)}
-            await self.save_message(session_id, 'assistant', error_message, metadata)
+            logger.error(f"Erro ao processar validações: {e}", exc_info=True)
+            error_message = "❌ Não foi possível recuperar os detalhes de validação. Tente novamente mais tarde."
+            metadata = {
+                'query_type': 'validation',
+                'error': True,
+                'document_reference': params.get('document_reference')
+            }
+            await self._persist_assistant_response(session_id, error_message, metadata)
             return ChatResponse(content=error_message, metadata=metadata, cached=False)
-
-    def _normalize_digits(self, value: Optional[str]) -> str:
-        if not value:
-            return ''
-        return re.sub(r'\D', '', str(value))
 
     def _extract_cnpjs(self, text: str) -> List[str]:
         if not text:

@@ -211,9 +211,10 @@ class LLMOCRMapper:
         match = re.search(r'(\d{44})', digits)
         return match.group(1) if match else None
 
-    def map_ocr_text(self, text: str) -> Dict[str, Any]:
+    def map_ocr_text(self, text: str, contexto_legal: str = None, ramo_atividade: str = None) -> Dict[str, Any]:
         """Map OCR text to structured document using LLM (Gemini) or heuristic fallback.
 
+        Permite passar contexto legal e ramo de atividade para adaptar o prompt.
         Returns a dictionary with keys similar to the XML parser output.
         """
         if not text or not text.strip():
@@ -226,10 +227,14 @@ class LLMOCRMapper:
         # Try LLM mapping if available, otherwise fall back to heuristics
         if self.available and self.api_key:
             try:
-                # Build prompt instructing the model to reply with JSON only
+                contexto_extra = ""
+                if contexto_legal:
+                    contexto_extra += f"\n[Contexto Legal]: {contexto_legal}"
+                if ramo_atividade:
+                    contexto_extra += f"\n[Ramo de Atividade]: {ramo_atividade}"
                 prompt = "Extraia os principais campos de uma nota fiscal do texto OCR e responda SOMENTE com JSON válido. " \
                          "Campos: numero, data_emissao, emitente, destinatario, itens, impostos, total, chave_acesso. " \
-                         "Se faltar algum campo, use null ou omita.\n\nTEXTO:\n" + text + "\n\nJSON:\n"
+                         "Se faltar algum campo, use null ou omita.\n\nTEXTO:\n" + text + contexto_extra + "\n\nJSON:\n"
 
                 resp_text = self._call_llm(prompt)
                 

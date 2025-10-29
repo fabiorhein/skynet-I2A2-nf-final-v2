@@ -229,15 +229,31 @@ def render(storage):
     # Área de upload com melhor visual
     st.markdown("---")
     st.markdown("### 📄 Upload de Documentos")
+    st.info("""
+**Atenção:** Para substituir arquivos enviados, remova manualmente os arquivos antigos clicando no **'X'** ao lado do nome do arquivo antes de fazer um novo upload. 
 
+*Esta é uma limitação do componente de upload do Streamlit: não é possível limpar a lista de arquivos via código.*
+""")
+
+    # Botão para limpar todos os uploads (troca a chave do file_uploader)
+    if 'uploader_key' not in st.session_state:
+        st.session_state.uploader_key = 0
+    clear_uploads = st.button('🗑️ Limpar uploads')
+    if clear_uploads:
+        st.session_state.uploader_key += 1
+
+    # Upload múltiplo de arquivos
     # Upload múltiplo de arquivos
     uploaded_files = st.file_uploader(
         'Arraste ou selecione um ou mais arquivos',
         type=['xml', 'pdf', 'png', 'jpg', 'jpeg'],
         help='Selecione um ou mais documentos fiscais para processamento em lote.',
         accept_multiple_files=True,
-        key='document_uploader'
+        key=f'document_uploader_{st.session_state.uploader_key}'
     )
+    if uploaded_files and len(uploaded_files) > 0:
+        st.warning('Para fazer novo upload, limpe os arquivos atuais.')
+
     
     # Opção para selecionar diretório (apenas para execução local)
     process_dir = st.checkbox('Processar diretório local (apenas para desenvolvimento)')

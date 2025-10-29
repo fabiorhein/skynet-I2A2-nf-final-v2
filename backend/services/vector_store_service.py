@@ -7,6 +7,7 @@ PostgreSQL connection with pgvector extension for efficient similarity search.
 import logging
 import json
 import math
+import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import numpy as np
@@ -31,7 +32,50 @@ class VectorStoreService:
         self.db_config = DATABASE_CONFIG
         self._connection = None
         self._initialize_connection()
+        self._ensure_chat_tables()
         logger.info("VectorStoreService initialized with PostgreSQL direct connection")
+
+    def _ensure_chat_tables(self) -> None:
+        """Ensure auxiliary tables (like chat history embeddings) exist."""
+        try:
+            chat_table_query = """
+            CREATE TABLE IF NOT EXISTS chat_message_chunks (
+                id UUID PRIMARY KEY,
+                chat_session_id UUID,
+                chat_message_id UUID,
+                chunk_number INTEGER,
+                content_text TEXT NOT NULL,
+                embedding VECTOR(768),
+                metadata JSONB,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+            self._execute_query(chat_table_query, fetch=None)
+
+            chat_session_index = """
+            CREATE INDEX IF NOT EXISTS idx_chat_message_chunks_session
+            ON chat_message_chunks (chat_session_id, chat_message_id)
+            """
+            self._execute_query(chat_session_index, fetch=None)
+
+            chat_created_index = """
+            CREATE INDEX IF NOT EXISTS idx_chat_message_chunks_created
+            ON chat_message_chunks (created_at DESC)
+            """
+            self._execute_query(chat_created_index, fetch=None)
+
+            chat_embedding_index = """
+            CREATE INDEX IF NOT EXISTS idx_chat_message_chunks_embedding
+            ON chat_message_chunks
+            USING ivfflat (embedding vector_cosine_ops)
+            WITH (lists = 100)
+            """
+            try:
+                self._execute_query(chat_embedding_index, fetch=None)
+            except Exception as ivf_error:
+                logger.debug(f"Could not create IVFFLAT index for chat_message_chunks: {ivf_error}")
+        except Exception as e:
+            logger.error(f"Error ensuring chat tables: {e}")
 
     def get_stats(self) -> Dict[str, Any]:
         """
@@ -210,6 +254,65 @@ class VectorStoreService:
             logger.error(f"Error saving document chunks: {str(e)}")
             raise
 
+    def save_chat_message_chunks(self, chunks: List[Dict[str, Any]]) -> List[str]:
+        """Persist chat message chunks with embeddings for conversational RAG."""
+        if not chunks:
+            return []
+
+        saved_ids: List[str] = []
+        insert_query = """
+            INSERT INTO chat_message_chunks (
+                id,
+                chat_session_id,
+                chat_message_id,
+                chunk_number,
+                content_text,
+                embedding,
+                metadata
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """
+
+        try:
+            for chunk in chunks:
+                embedding = chunk.get('embedding')
+                if embedding is None:
+                    logger.debug("Skipping chat chunk without embedding")
+                    continue
+
+                if isinstance(embedding, list):
+                    embedding = np.array(embedding)
+
+                metadata = chunk.get('metadata', {}) or {}
+                chat_session_id = metadata.get('chat_session_id')
+                chat_message_id = metadata.get('chat_message_id')
+
+                if not chat_session_id or not chat_message_id:
+                    logger.debug("Skipping chat chunk without session or message identifiers")
+                    continue
+
+                params = (
+                    str(uuid.uuid4()),
+                    chat_session_id,
+                    chat_message_id,
+                    metadata.get('chunk_number'),
+                    chunk.get('content_text', ''),
+                    embedding.tolist(),
+                    Json(metadata)
+                )
+
+                result = self._execute_query(insert_query, params, "one")
+                if result:
+                    saved_ids.append(str(result['id']))
+
+            logger.info(f"Saved {len(saved_ids)}/{len(chunks)} chat chunks")
+            return saved_ids
+
+        except Exception as e:
+            logger.error(f"Error saving chat message chunks: {e}")
+            raise
+
     def search_similar_chunks(
         self,
         query_embedding: List[float],
@@ -235,6 +338,76 @@ class VectorStoreService:
 
         except Exception as e:
             logger.error(f"Error searching similar chunks: {str(e)}")
+            return []
+
+    def search_similar_chat_chunks(
+        self,
+        query_embedding: List[float],
+        similarity_threshold: float = 0.6,
+        max_results: int = 5,
+        chat_session_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Search semantic chat history for relevant assistant responses."""
+        if not query_embedding:
+            return []
+
+        try:
+            query_vector = np.array(query_embedding)
+
+            base_query = """
+                SELECT
+                    id,
+                    chat_session_id,
+                    chat_message_id,
+                    chunk_number,
+                    content_text,
+                    embedding,
+                    metadata,
+                    created_at,
+                    1 - (embedding <=> %s::vector) AS similarity_score
+                FROM chat_message_chunks
+                WHERE embedding IS NOT NULL
+                  AND 1 - (embedding <=> %s::vector) >= %s
+            """
+
+            params: List[Any] = [query_vector.tolist(), query_vector.tolist(), similarity_threshold]
+
+            if chat_session_id:
+                base_query += " AND chat_session_id = %s"
+                params.append(chat_session_id)
+
+            base_query += " ORDER BY embedding <=> %s::vector LIMIT %s"
+            params.extend([query_vector.tolist(), max_results])
+
+            results = self._execute_query(base_query, tuple(params))
+
+            if not results:
+                return []
+
+            chat_chunks: List[Dict[str, Any]] = []
+            for row in results:
+                metadata = row.get('metadata')
+                if metadata and not isinstance(metadata, dict):
+                    try:
+                        metadata = json.loads(metadata)
+                    except (TypeError, json.JSONDecodeError):
+                        metadata = {}
+
+                chat_chunks.append({
+                    'id': str(row['id']),
+                    'chat_session_id': row.get('chat_session_id'),
+                    'chat_message_id': row.get('chat_message_id'),
+                    'chunk_number': row.get('chunk_number'),
+                    'content_text': row.get('content_text', ''),
+                    'metadata': metadata or {},
+                    'similarity_score': float(row.get('similarity_score', 0.0)),
+                    'created_at': row.get('created_at')
+                })
+
+            return chat_chunks
+
+        except Exception as e:
+            logger.error(f"Error searching chat chunks: {e}")
             return []
 
     def _search_similar_chunks_pgvector(
