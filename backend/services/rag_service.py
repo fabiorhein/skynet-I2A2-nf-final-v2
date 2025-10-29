@@ -137,6 +137,87 @@ class RAGService:
             logger.warning("Cross-encoder not available. Install sentence-transformers.")
             self.cross_encoder = None
 
+    # ------------------------------------------------------------------
+    # Embedding job queue helpers
+    # ------------------------------------------------------------------
+    def enqueue_document_for_rag(
+        self,
+        document_id: str,
+        *,
+        priority: int = 0,
+        payload: Optional[Dict[str, Any]] = None,
+        available_at: Optional[datetime] = None,
+        max_attempts: int = 3,
+    ) -> Dict[str, Any]:
+        """Enqueue a document to be processed asynchronously by the RAG worker."""
+        if not document_id:
+            raise ValueError("document_id is required to enqueue RAG processing")
+
+        try:
+            from backend.services.embedding_job_service import EmbeddingJobService, EmbeddingJobServiceError
+        except Exception as exc:
+            raise RuntimeError(
+                "Embedding job queue is not available. Install psycopg2-binary and ensure database access."
+            ) from exc
+
+        job_service: Optional[EmbeddingJobService] = None
+        try:
+            job_service = EmbeddingJobService()
+            job = job_service.enqueue_document(
+                document_id,
+                priority=priority,
+                payload=payload,
+                available_at=available_at,
+                max_attempts=max_attempts,
+            )
+
+            # Mark document as pending embeddings so the UI reflects queued state
+            try:
+                self.vector_store.update_document_embedding_status(document_id, 'pending')
+            except Exception as status_error:
+                logger.warning(
+                    "Failed to update embedding status to pending for document %s: %s",
+                    document_id,
+                    status_error,
+                )
+
+            logger.info(
+                "Document %s enqueued for RAG processing with job %s",
+                document_id,
+                job.get('id'),
+            )
+            return job
+        except EmbeddingJobServiceError as queue_error:
+            logger.error("Failed to enqueue document %s for embeddings: %s", document_id, queue_error)
+            raise RuntimeError(f"Falha ao enfileirar documento para processamento: {queue_error}") from queue_error
+        finally:
+            if job_service:
+                try:
+                    job_service.close()
+                except Exception:
+                    pass
+
+    def get_embedding_queue_stats(self) -> Dict[str, int]:
+        """Return statistics about the embedding processing queue."""
+        try:
+            from backend.services.embedding_job_service import EmbeddingJobService
+        except Exception:
+            return {}
+
+        job_service: Optional[EmbeddingJobService] = None
+        try:
+            job_service = EmbeddingJobService()
+            return job_service.get_stats()
+        except Exception as exc:
+            logger.error("Unable to fetch embedding queue stats: %s", exc)
+            return {}
+        finally:
+            if job_service:
+                try:
+                    job_service.close()
+                except Exception:
+                    pass
+
     async def _build_context_data(
         self,
         query: str,

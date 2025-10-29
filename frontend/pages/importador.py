@@ -316,39 +316,45 @@ def render(storage):
                                         docs_to_process.append(doc)
 
                             if docs_to_process:
-                                st.info(f'📋 Encontrados {len(docs_to_process)} documentos para processar')
+                                st.info(f'📋 Encontrados {len(docs_to_process)} documentos para enfileirar no processamento inteligente')
 
-                                async def process_all_rag():
-                                    results = []
-                                    for doc in docs_to_process:
-                                        try:
-                                            result = await st.session_state.rag_service.process_document_for_rag(doc)
-                                            results.append((doc['id'], result))
-                                        except Exception as e:
-                                            results.append((doc['id'], {'success': False, 'error': str(e)}))
-                                    return results
+                                jobs_enqueued = []
+                                errors = []
 
-                                # Processar em background
-                                rag_results = asyncio.run(process_all_rag())
+                                for doc in docs_to_process:
+                                    doc_id = doc.get('id')
+                                    if not doc_id:
+                                        errors.append((doc_id or 'sem_id', 'Documento sem ID válido para fila'))
+                                        continue
 
-                                # Mostrar resultados
-                                success_count = sum(1 for _, result in rag_results if result.get('success', False))
-                                error_count = len(rag_results) - success_count
+                                    try:
+                                        job = st.session_state.rag_service.enqueue_document_for_rag(
+                                            document_id=doc_id,
+                                            priority=0,
+                                            payload={
+                                                'source': 'batch_rag',
+                                                'file_name': doc.get('file_name'),
+                                                'issuer_cnpj': doc.get('issuer_cnpj'),
+                                            },
+                                        )
+                                        jobs_enqueued.append((doc_id, job.get('id')))
+                                    except Exception as e:
+                                        errors.append((doc_id, str(e)))
 
-                                if success_count > 0:
-                                    st.success(f'✅ {success_count} documentos processados com sucesso!')
-                                if error_count > 0:
-                                    st.warning(f'⚠️ {error_count} documentos tiveram problemas no processamento')
+                                if jobs_enqueued:
+                                    st.success(f'✅ {len(jobs_enqueued)} documentos enfileirados para processamento em segundo plano')
+                                if errors:
+                                    st.warning(f'⚠️ {len(errors)} documentos não puderam ser enfileirados')
 
-                                # Detalhes dos resultados
-                                with st.expander('📊 Detalhes do Processamento', expanded=False):
-                                    for doc_id, result in rag_results:
-                                        if result.get('success', False):
-                                            chunks = result.get('chunks_processed', 0)
-                                            st.success(f'✅ Documento {doc_id}: {chunks} chunks criados')
-                                        else:
-                                            error = result.get('error', 'Erro desconhecido')
-                                            st.error(f'❌ Documento {doc_id}: {error}')
+                                with st.expander('📊 Detalhes do enfileiramento', expanded=False):
+                                    if jobs_enqueued:
+                                        st.markdown('**Jobs criados:**')
+                                        for doc_id, job_id in jobs_enqueued:
+                                            st.success(f'Documento {doc_id}: job {job_id}')
+                                    if errors:
+                                        st.markdown('**Falhas:**')
+                                        for doc_id, error in errors:
+                                            st.error(f'Documento {doc_id}: {error}')
 
                             else:
                                 st.info('ℹ️ Todos os documentos já estão processados para busca inteligente!')
@@ -438,7 +444,6 @@ def render(storage):
                 
                 # Coletar resultados conforme são concluídos
                 results = []
-                rag_tasks = []
                 progress_bar = st.progress(0)
                 
                 for i, future in enumerate(concurrent.futures.as_completed(future_to_file)):
@@ -450,19 +455,17 @@ def render(storage):
                         if result.get('success') and 'rag_service' in st.session_state and st.session_state.rag_service:
                             document_id = result.get('document_id')
                             if document_id:
-                                # Criar uma tarefa RAG para ser executada após o processamento
-                                async def process_rag_task(doc_id):
-                                    try:
-                                        doc_for_rag = storage.get_fiscal_documents(id=doc_id, page=1, page_size=1)
-                                        if doc_for_rag and hasattr(doc_for_rag, 'items') and doc_for_rag.items:
-                                            return await st.session_state.rag_service.process_document_for_rag(doc_for_rag.items[0])
-                                        return {'success': False, 'error': 'Documento não encontrado para processamento RAG'}
-                                    except Exception as e:
-                                        logger.error(f"Erro no processamento RAG para documento {doc_id}: {e}")
-                                        return {'success': False, 'error': str(e)}
-                                
-                                # Adicionar a tarefa à lista
-                                rag_tasks.append(process_rag_task(document_id))
+                                try:
+                                    st.session_state.rag_service.enqueue_document_for_rag(
+                                        document_id=document_id,
+                                        priority=0,
+                                        payload={
+                                            'source': 'upload',
+                                            'file_name': result.get('file_name'),
+                                        },
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Falha ao enfileirar documento {document_id} para o RAG: {e}")
                                 
                     except Exception as e:
                         file = future_to_file[future]
@@ -479,34 +482,33 @@ def render(storage):
                     progress = (i + 1) / len(uploaded_files)
                     progress_bar.progress(progress)
             
-                # Executar tarefas RAG em paralelo, se houver
-                if rag_tasks:
-                    with st.spinner('Processando documentos para busca semântica...'):
-                        import asyncio
-                        
-                        # Criar um novo loop de eventos para executar as tarefas RAG
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        
+            # Enfileirar documentos processados com sucesso
+            if 'rag_service' in st.session_state and st.session_state.rag_service:
+                jobs_enqueued = []
+                for result in results:
+                    if result.get('success') and result.get('document_id'):
                         try:
-                            # Executar todas as tarefas RAG em paralelo
-                            rag_results = loop.run_until_complete(asyncio.gather(*rag_tasks, return_exceptions=True))
-                            
-                            # Atualizar status dos documentos processados pelo RAG
-                            for i, rag_result in enumerate(rag_results):
-                                if isinstance(rag_result, dict) and 'success' in rag_result:
-                                    if rag_result['success']:
-                                        logger.info(f"Documento {i+1} processado com sucesso pelo RAG")
-                                    else:
-                                        logger.warning(f"Falha ao processar documento {i+1} no RAG: {rag_result.get('error', 'Erro desconhecido')}")
-                                else:
-                                    logger.error(f"Erro inesperado ao processar documento {i+1} no RAG: {rag_result}")
-                            
-                        except Exception as e:
-                            logger.error(f"Erro ao executar processamento RAG em lote: {e}")
-                        finally:
-                            loop.close()
-            
+                            job = st.session_state.rag_service.enqueue_document_for_rag(
+                                document_id=result['document_id'],
+                                payload={
+                                    'source': 'upload_batch',
+                                    'file_name': result.get('file_name'),
+                                },
+                            )
+                            jobs_enqueued.append((result['document_id'], job.get('id')))
+                        except Exception as enqueue_error:
+                            logger.error(
+                                "Falha ao enfileirar documento %s para o RAG: %s",
+                                result['document_id'],
+                                enqueue_error,
+                            )
+
+                if jobs_enqueued:
+                    st.success(f"✅ {len(jobs_enqueued)} documentos enfileirados para processamento inteligente")
+                    with st.expander('📊 Detalhes dos jobs de upload múltiplo', expanded=False):
+                        for doc_id, job_id in jobs_enqueued:
+                            st.markdown(f"- Documento `{doc_id}` → Job `{job_id}`")
+
             # Exibir resultados
             display_import_results(results)
             
@@ -681,32 +683,28 @@ def render(storage):
                             if full_document and hasattr(full_document, 'items') and full_document.items:
                                 doc_for_rag = full_document.items[0]
 
-                                # Chamar RAG service em background
-                                with st.spinner('🧠 Processando documento para busca inteligente...'):
-                                    # Usar o RAG service da sessão se disponível
+                                # Enfileirar documento para processamento RAG
+                                with st.spinner('🧠 Agendando processamento para busca inteligente...'):
                                     if 'rag_service' in st.session_state and st.session_state.rag_service:
-                                        import asyncio
-
-                                        # Executar processamento RAG em background
-                                        async def process_rag():
-                                            try:
-                                                result = await st.session_state.rag_service.process_document_for_rag(doc_for_rag)
-                                                return result
-                                            except Exception as rag_error:
-                                                logger.error(f"Erro no processamento RAG: {rag_error}")
-                                                return {'success': False, 'error': str(rag_error)}
-
-                                        # Executar a função assíncrona
-                                        rag_result = asyncio.run(process_rag())
-
-                                        if rag_result.get('success', False):
-                                            chunks_count = rag_result.get('chunks_processed', 0)
-                                            st.success(f'✅ Documento processado para busca inteligente! ({chunks_count} chunks criados)')
-                                            logger.info(f"RAG processing completed for document {document_id}: {chunks_count} chunks")
-                                        else:
-                                            error_msg = rag_result.get('error', 'Erro desconhecido')
-                                            st.warning(f'⚠️ Documento salvo, mas houve um problema no processamento inteligente: {error_msg}')
-                                            logger.error(f"RAG processing failed for document {document_id}: {error_msg}")
+                                        try:
+                                            job = st.session_state.rag_service.enqueue_document_for_rag(
+                                                document_id=document_id,
+                                                priority=payload.get('priority', 0) if isinstance(payload := record.get('metadata', {}), dict) else 0,
+                                                payload={
+                                                    'source': 'importador_upload',
+                                                    'file_name': doc_for_rag.get('file_name'),
+                                                    'issuer_cnpj': doc_for_rag.get('issuer_cnpj'),
+                                                },
+                                            )
+                                            st.success('✅ Documento enfileirado para processamento inteligente!')
+                                            logger.info(
+                                                "RAG job %s criado para documento %s",
+                                                job.get('id'),
+                                                document_id,
+                                            )
+                                        except Exception as rag_error:
+                                            st.warning(f'⚠️ Documento salvo, mas houve problema ao enfileirar para processamento inteligente: {str(rag_error)}')
+                                            logger.error(f"RAG enqueue failed for document {document_id}: {rag_error}")
                                     else:
                                         st.info('ℹ️ Sistema RAG não disponível no momento. Documento salvo sem processamento inteligente.')
                                         logger.warning(f"RAG service not available for document {document_id}")
@@ -891,43 +889,31 @@ def render(storage):
                             st.success('✅ Documento salvo com sucesso!')
                             st.balloons()
 
-                            # RAG Processing - Processar documento automaticamente para RAG
+                            # RAG Processing - Enfileirar documento automaticamente para RAG
                             if 'id' in saved:
                                 document_id = saved['id']
-                                try:
-                                    # Chamar RAG service em background
-                                    with st.spinner('🧠 Processando documento para busca inteligente...'):
-                                        # Usar o RAG service da sessão se disponível
-                                        if 'rag_service' in st.session_state and st.session_state.rag_service:
-                                            import asyncio
-
-                                            # Executar processamento RAG em background
-                                            async def process_rag():
-                                                try:
-                                                    result = await st.session_state.rag_service.process_document_for_rag(saved)  # ✅ Usar documento salvo com ID correto
-                                                    return result
-                                                except Exception as rag_error:
-                                                    logger.error(f"Erro no processamento RAG: {rag_error}")
-                                                    return {'success': False, 'error': str(rag_error)}
-
-                                            # Executar a função assíncrona
-                                            rag_result = asyncio.run(process_rag())
-
-                                            if rag_result.get('success', False):
-                                                chunks_count = rag_result.get('chunks_processed', 0)
-                                                st.success(f'✅ Documento processado para busca inteligente! ({chunks_count} chunks criados)')
-                                                logger.info(f"RAG processing completed for document {document_id}: {chunks_count} chunks")
-                                            else:
-                                                error_msg = rag_result.get('error', 'Erro desconhecido')
-                                                st.warning(f'⚠️ Documento salvo, mas houve um problema no processamento inteligente: {error_msg}')
-                                                logger.error(f"RAG processing failed for document {document_id}: {error_msg}")
-                                        else:
-                                            st.info('ℹ️ Sistema RAG não disponível no momento. Documento salvo sem processamento inteligente.')
-                                            logger.warning(f"RAG service not available for document {document_id}")
-
-                                except Exception as rag_error:
-                                    st.warning(f'⚠️ Erro no processamento inteligente: {str(rag_error)}')
-                                    logger.error(f"RAG processing error for document {document_id}: {rag_error}")
+                                if 'rag_service' in st.session_state and st.session_state.rag_service:
+                                    try:
+                                        job = st.session_state.rag_service.enqueue_document_for_rag(
+                                            document_id=document_id,
+                                            payload={
+                                                'source': 'importador_upload_single',
+                                                'file_name': saved.get('file_name'),
+                                                'issuer_cnpj': saved.get('issuer_cnpj'),
+                                            },
+                                        )
+                                        st.info('🧠 Documento enfileirado para processamento inteligente em segundo plano.')
+                                        logger.info(
+                                            "RAG job %s enfileirado para documento %s",
+                                            job.get('id'),
+                                            document_id,
+                                        )
+                                    except Exception as rag_error:
+                                        st.warning(f'⚠️ Documento salvo, mas não foi possível enfileirar para processamento inteligente: {str(rag_error)}')
+                                        logger.error(f"RAG enqueue failed for documento {document_id}: {rag_error}")
+                                else:
+                                    st.info('ℹ️ Sistema RAG não disponível no momento. Documento salvo sem processamento inteligente.')
+                                    logger.warning(f"RAG service not available for document {document_id}")
 
                             # Salvar histórico se suportado
                             try:

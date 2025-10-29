@@ -1,5 +1,8 @@
-import sys
+import asyncio
+import logging
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
@@ -17,7 +20,8 @@ import json
 
 # Initialize storage backend
 try:
-    from backend.database import storage_manager
+    from backend.database.storage_manager import get_storage, StorageManager
+    storage_manager = StorageManager()
     storage = storage_manager.storage
 except Exception as e:
     st.error(f"Erro ao inicializar o armazenamento: {str(e)}")
@@ -32,9 +36,10 @@ menu = st.sidebar.selectbox('Navegação', ['Home', 'Importador', 'Chat IA', 'Hi
 # Initialize session state for RAG service
 if 'rag_service' not in st.session_state:
     try:
-        from backend.services import RAGService, VectorStoreService
+        from backend.services.rag_service import RAGService
+        from backend.services.vector_store_service import VectorStoreService
         vector_store = VectorStoreService()
-        st.session_state.rag_service = RAGService(vector_store=vector_store)
+        st.session_state.rag_service = RAGService(vector_store)
         st.sidebar.success("✅ Sistema RAG inicializado")
     except Exception as e:
         st.sidebar.error(f"❌ Erro no RAG: {str(e)[:50]}...")
