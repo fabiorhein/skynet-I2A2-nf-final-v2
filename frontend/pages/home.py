@@ -69,18 +69,18 @@ def render():
     
     with col3:
         with st.container(border=True, height=200):
-            st.markdown("### 📊 Análise de Dados")
+            st.markdown("### 🔍 IA & RAG Conversacional")
             st.markdown("""
-            - Estatísticas descritivas
-            - Gráficos interativos
-            - Detecção de outliers
-            - Exportação de relatórios
+            - Busca semântica com pgvector
+            - Chat com memória conversacional
+            - Contexto fiscal enriquecido automaticamente
+            - Respostas consultivas em português
             """)
     
     # Getting Started Section
     st.markdown("## 🏁 Começando")
     
-    tab1, tab2, tab3 = st.tabs(["📤 Upload de Documento", "📊 Análise de Dados", "📂 Histórico"])
+    tab1, tab2, tab3 = st.tabs(["📤 Upload de Documento", "💬 Chat IA & RAG", "📂 Histórico"])
     
     with tab1:
         st.markdown("""
@@ -93,11 +93,11 @@ def render():
     
     with tab2:
         st.markdown("""
-        ### Análise de Dados
-        1. Acesse a aba **Upload CSV**
-        2. Faça upload de um arquivo CSV
-        3. Explore as análises automáticas
-        4. Gere relatórios personalizados
+        ### Converse com a IA
+        1. Acesse a aba **Chat IA**
+        2. Faça perguntas sobre documentos ou processos fiscais
+        3. Utilize o contexto sugerido pelo RAG quando disponível
+        4. Exporte as conversas para compartilhar com a equipe
         """)
     
     with tab3:
@@ -106,7 +106,7 @@ def render():
         1. Acesse a aba **Histórico**
         2. Visualize documentos processados
         3. Filtre por data, tipo ou status
-        4. Acesse análises anteriores
+        4. Consulte revisões e documentos previamente processados
         """)
     
     # Storage Status Section
