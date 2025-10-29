@@ -11,7 +11,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import numpy as np
-from psycopg2.extras import Json, RealDictCursor
+from psycopg2.extras import Json, RealDictCursor, execute_values
 from config import DATABASE_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -180,7 +180,7 @@ class VectorStoreService:
             logger.error(f"Params: {params}")
             raise
 
-    def save_document_chunks(self, chunks: List[Dict[str, Any]]) -> List[str]:
+    def save_document_chunks(self, chunks: List[Dict[str, Any]], batch_size: int = 100) -> List[str]:
         """
         Save document chunks with embeddings to the database using direct PostgreSQL.
 
@@ -190,64 +190,113 @@ class VectorStoreService:
         Returns:
             List of chunk IDs that were successfully saved
         """
+        if not chunks:
+            return []
+
+        batch_size = max(1, batch_size)
+
         try:
-            saved_ids = []
-            query = """
+            saved_ids: List[str] = []
+            insert_query = """
                 INSERT INTO document_chunks (fiscal_document_id, chunk_number, content_text, embedding, metadata)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES %s
                 RETURNING id
             """
 
+            doc_check_query = "SELECT id FROM fiscal_documents WHERE id = %s"
+            doc_exists_cache: Dict[str, bool] = {}
+            missing_docs_logged: set[str] = set()
+
+            rows: List[tuple] = []
+            row_metadata: List[Dict[str, Any]] = []
+
             for chunk in chunks:
+                metadata = chunk.get('metadata', {}) or {}
+                chunk_number = metadata.get('chunk_number')
+                doc_id = metadata.get('document_id')
+
                 if not chunk.get('embedding'):
-                    logger.warning(f"Skipping chunk without embedding: {chunk.get('metadata', {}).get('chunk_number')}")
+                    logger.warning(f"Skipping chunk without embedding: {chunk_number}")
                     continue
 
-                # Debug: Log the document ID being used
-                doc_id_from_metadata = chunk['metadata'].get('document_id')
-                logger.debug(f"Processing chunk {chunk['metadata']['chunk_number']} for document ID: {doc_id_from_metadata}")
+                if not doc_id:
+                    logger.error(f"Skipping chunk {chunk_number} without document_id metadata")
+                    continue
 
-                # Verify document exists before saving chunk
-                doc_check_query = "SELECT id FROM fiscal_documents WHERE id = %s"
-                doc_exists = self._execute_query(doc_check_query, (doc_id_from_metadata,), "one")
+                if doc_id not in doc_exists_cache:
+                    doc_exists = self._execute_query(doc_check_query, (doc_id,), "one")
+                    doc_exists_cache[doc_id] = bool(doc_exists)
 
-                if not doc_exists:
-                    logger.error(f"Document {doc_id_from_metadata} not found in fiscal_documents table!")
-                    logger.error(f"Available documents: {self._execute_query('SELECT COUNT(*) as count FROM fiscal_documents', fetch='count')}")
+                    if not doc_exists:
+                        if doc_id not in missing_docs_logged:
+                            missing_docs_logged.add(doc_id)
+                            logger.error(f"Document {doc_id} not found in fiscal_documents table!")
+                            logger.error(
+                                f"Available documents: {self._execute_query('SELECT COUNT(*) as count FROM fiscal_documents', fetch='count')}"
+                            )
 
-                    # List first few documents for debugging
-                    docs_query = "SELECT id, file_name, document_type FROM fiscal_documents LIMIT 5"
-                    docs = self._execute_query(docs_query)
-                    logger.error(f"First few document IDs: {[d['id'][:8] for d in docs] if docs else 'No documents found'}")
+                            docs_query = "SELECT id, file_name, document_type FROM fiscal_documents LIMIT 5"
+                            docs = self._execute_query(docs_query)
+                            logger.error(
+                                f"First few document IDs: {[d['id'][:8] for d in docs] if docs else 'No documents found'}"
+                            )
+                            for doc in docs or []:
+                                logger.error(
+                                    f"  - ID: {doc['id']}, File: {doc.get('file_name')}, Type: {doc.get('document_type')}"
+                                )
 
-                    for doc in docs or []:
-                        logger.error(f"  - ID: {doc['id']}, File: {doc.get('file_name')}, Type: {doc.get('document_type')}")
+                if not doc_exists_cache.get(doc_id, False):
+                    continue
 
-                    continue  # Skip this chunk
-
-                # Convert embedding to PostgreSQL vector format
                 embedding = chunk['embedding']
                 if isinstance(embedding, list):
                     embedding = np.array(embedding)
 
-                # Prepare parameters
-                params = (
-                    doc_id_from_metadata,
-                    chunk['metadata']['chunk_number'],
-                    chunk['content_text'],
-                    embedding.tolist(),  # Convert to list for JSON serialization
-                    Json(chunk['metadata'])
+                rows.append(
+                    (
+                        doc_id,
+                        chunk_number,
+                        chunk.get('content_text', ''),
+                        embedding.tolist(),
+                        Json(metadata),
+                    )
                 )
+                row_metadata.append(metadata)
 
-                result = self._execute_query(query, params, "one")
+            if not rows:
+                logger.info("No document chunks eligible for saving")
+                return []
 
-                if result:
-                    saved_ids.append(str(result['id']))
-                    logger.debug(f"Saved chunk {chunk['metadata']['chunk_number']} for document {doc_id_from_metadata}")
-                else:
-                    logger.error(f"Failed to save chunk {chunk['metadata']['chunk_number']}")
+            if not self._connection or self._connection.closed:
+                self._initialize_connection()
 
-            logger.info(f"Successfully saved {len(saved_ids)}/{len(chunks)} chunks using PostgreSQL direct connection")
+            with self._connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                for start in range(0, len(rows), batch_size):
+                    batch_rows = rows[start:start + batch_size]
+                    batch_metadata = row_metadata[start:start + batch_size]
+
+                    results = execute_values(
+                        cursor,
+                        insert_query,
+                        batch_rows,
+                        template="(%s, %s, %s, %s, %s)",
+                        fetch=True,
+                    ) or []
+
+                    for result, metadata in zip(results, batch_metadata):
+                        saved_id = str(result['id'])
+                        saved_ids.append(saved_id)
+                        logger.debug(
+                            "Saved chunk %s for document %s",
+                            metadata.get('chunk_number'),
+                            metadata.get('document_id'),
+                        )
+
+            logger.info(
+                "Successfully saved %s/%s chunks using batched PostgreSQL inserts",
+                len(saved_ids),
+                len(chunks),
+            )
             return saved_ids
 
         except Exception as e:

@@ -35,7 +35,7 @@ class FreeEmbeddingService:
     - 'paraphrase-MiniLM-L3-v2': Very fast, 384 dimensions
     """
 
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2", batch_size: int = 32):
         """
         Initialize the free embedding service.
 
@@ -52,6 +52,7 @@ class FreeEmbeddingService:
         self.model_name = model_name
         self.model = None
         self.embedding_dimension = self._get_model_dimensions(model_name)
+        self.batch_size = max(1, batch_size)
         self._initialize_model()
 
         logger.info(f"FreeEmbeddingService initialized with model: {model_name}")
@@ -106,6 +107,25 @@ class FreeEmbeddingService:
         except:
             return 90
 
+    def _encode_texts(self, texts: List[str]) -> np.ndarray:
+        """Encode a list of texts in a single call to SentenceTransformer."""
+        if not texts:
+            return np.empty((0, self.embedding_dimension), dtype=np.float32)
+
+        embeddings = self.model.encode(
+            texts,
+            batch_size=self.batch_size,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+
+        # model.encode may return a 1D array for single element inputs
+        if embeddings.ndim == 1:
+            embeddings = np.expand_dims(embeddings, axis=0)
+
+        return embeddings.astype(np.float32)
+
     def generate_embedding(self, text: str) -> List[float]:
         """
         Generate embedding vector for the given text.
@@ -127,14 +147,7 @@ class FreeEmbeddingService:
             # Truncate text if too long (most models handle up to 512 tokens)
             text = self._truncate_text(text, max_length=1000)
 
-            # Generate embedding using the local model
-            embedding = self.model.encode(
-                text,
-                convert_to_numpy=True,
-                normalize_embeddings=True  # Normalize for better similarity search
-            )
-
-            # Convert to list for JSON serialization
+            embedding = self._encode_texts([text])[0]
             embedding_list = embedding.tolist()
 
             logger.debug(f"Generated embedding for text (length: {len(text)}) with {len(embedding_list)} dimensions")
@@ -284,14 +297,22 @@ class FreeEmbeddingService:
 
             logger.info(f"Processing {len(chunks)} chunks for embeddings")
 
-            # Generate embeddings for each chunk
-            for chunk in chunks:
+            chunk_texts = [chunk['content_text'] for chunk in chunks]
+            embeddings = self._encode_texts(chunk_texts)
+
+            for chunk, embedding in zip(chunks, embeddings):
                 try:
-                    embedding = self.generate_embedding(chunk['content_text'])
-                    chunk['embedding'] = embedding
-                    logger.debug(f"Generated embedding for chunk {chunk['metadata']['chunk_number']}")
+                    chunk['embedding'] = embedding.tolist()
+                    logger.debug(
+                        "Generated embedding for chunk %s",
+                        chunk['metadata']['chunk_number'],
+                    )
                 except Exception as e:
-                    logger.error(f"Failed to generate embedding for chunk {chunk['metadata']['chunk_number']}: {str(e)}")
+                    logger.error(
+                        "Failed to assign embedding for chunk %s: %s",
+                        chunk['metadata']['chunk_number'],
+                        str(e),
+                    )
                     chunk['embedding'] = None
 
             # Filter out chunks without embeddings
