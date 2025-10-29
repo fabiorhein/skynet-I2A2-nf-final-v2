@@ -229,16 +229,14 @@ class TestPostgreSQLStorageDateConversion:
 
             result = storage.save_fiscal_document(doc)
 
-            # Verify JSONB fields were serialized to strings
-            assert isinstance(result['extracted_data'], str)
-            assert isinstance(result['classification'], str)
-            assert isinstance(result['validation_details'], str)
-            assert isinstance(result['metadata'], str)
+            # JSONB fields should be returned as dicts
+            assert isinstance(result['extracted_data'], dict)
+            assert isinstance(result['classification'], dict)
+            assert isinstance(result['validation_details'], dict)
+            assert isinstance(result['metadata'], dict)
 
-            # Verify the JSON content is correct
-            import json
-            assert json.loads(result['extracted_data'])['emitente']['cnpj'] == '12345678000195'
-            assert json.loads(result['classification'])['tipo'] == 'venda'
+            assert result['extracted_data']['emitente']['cnpj'] == '12345678000195'
+            assert result['classification']['tipo'] == 'venda'
 
 
 class TestPostgreSQLStorageEdgeCases:
